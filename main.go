@@ -124,6 +124,7 @@ func main() {
 		modelName = "qwen3:8b"
 	}
 
+	var startup []string
 	hooks := make(map[string]string)
 	var cfg *config.Config
 	cfgPath := ""
@@ -140,17 +141,22 @@ func main() {
 		}
 	} else if len(os.Args) > 2 {
 		log.Fatalf("Failed to load config: %v", err)
+	} else {
+		startup = append(startup, fmt.Sprintf("config: %v", err))
 	}
 
 	// Connect MCP servers.
-	var startup []string
 	mcpExec := tools.NewExecutor()
 	if cfg != nil {
 		for name, serverCfg := range cfg.MCPServers {
 			if serverCfg.Disabled || serverCfg.Command == "" {
 				continue
 			}
-			transport := mcp.NewSTDIOTransport(serverCfg.Command, serverCfg.Args, serverCfg.Env)
+			env := make(map[string]string, len(serverCfg.Env))
+			for k, v := range serverCfg.Env {
+				env[k] = os.ExpandEnv(v)
+			}
+			transport := mcp.NewSTDIOTransport(serverCfg.Command, serverCfg.Args, env)
 			client, err := transport.Connect()
 			if err != nil {
 				startup = append(startup, fmt.Sprintf("MCP %s: failed to connect: %v", name, err))
