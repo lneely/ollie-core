@@ -1,80 +1,100 @@
 # Ollie
 
-A Go CLI that connects Ollama LLMs to MCP (Model Context Protocol) servers for tool use. Built because I couldn't find what I wanted with existing tools.
+An agentic CLI built on a sandboxed `execute_code` tool and a common LLM backend interface. Supports local (Ollama) and OpenAI-compatible (OpenAI, OpenRouter) backends, optional MCP server connections, and a skill system for domain-specific capabilities.
 
-## Quick Start
+## Build
 
-**Requirements:**
-- Go 1.21+
-- Ollama running locally (http://localhost:11434)
-
-**Build:**
 ```bash
 go build
 ```
 
-**Run:**
+Requires Go 1.21+.
+
+## Run
+
 ```bash
-./ollie config.json [model]
+./ollie [model]
 ```
 
-Default model is `qwen3:8b`. Override with any Ollama model name.
+Model defaults to `qwen3:8b`. Override with `OLLIE_MODEL` or pass as the first argument:
+
+```bash
+OLLIE_BACKEND=openrouter ./ollie qwen/qwen3-235b-a22b
+```
 
 ## Configuration
 
-Create a JSON file defining your MCP servers:
+### Environment: `~/.config/ollie/env`
+
+```
+OLLIE_BACKEND=openrouter       # ollama | openai | openrouter (default: ollama)
+OLLIE_OLLAMA_URL=              # base URL for Ollama (default: http://localhost:11434)
+OLLIE_OPENAI_URL=https://openrouter.ai/api
+OLLIE_OPENAI_KEY=sk-or-...
+OLLIE_MODEL=qwen/qwen3-235b-a22b
+```
+
+Shell environment variables take precedence over the env file.
+
+### Config file: `~/.config/ollie/config.json`
 
 ```json
 {
   "mcpServers": {
-    "filesystem": {
-      "command": "mcp-server-filesystem",
-      "args": ["/path/to/allowed/directory"],
+    "my-server": {
+      "command": "my-mcp-server",
+      "args": [],
       "env": {
-        "DEBUG": "true"
+        "API_TOKEN": "${API_TOKEN}"
       }
-    },
-    "disabled-example": {
-      "command": "some-server",
-      "disabled": true
     }
+  },
+  "hooks": {
+    "agentSpawn": "notify-send ollie started",
+    "userPromptSubmit": "",
+    "stop": ""
   }
 }
 ```
 
-**Options:**
-- `command` - MCP server executable (required)
-- `args` - Command arguments (optional)
-- `env` - Environment variables (optional)
-- `disabled` - Skip this server (optional)
+MCP server `env` values support `${VAR}` expansion from the parent environment. Only whitelisted vars are passed to the subprocess.
 
-MCP server commands must be in your PATH.
+An alternate config path can be provided as a second argument:
 
-## Usage
-
-Chat history displays in a scrollable viewport. Type in the multi-line text area below, submit with Enter (Ctrl+J for new lines).
-
-Tools depend on which MCP servers you configure. Example with filesystem server:
-
-```
-> What files are in the current directory?
-[Calling tool from filesystem server]
-Found: main.go, config/, mcp/, ollama/, tools/
+```bash
+./ollie qwen3:8b /path/to/config.json
 ```
 
-## Troubleshooting
+## UI
 
-**No servers connected**
-- Verify MCP server commands are in PATH
-- Check command names and arguments in config
+- **Enter** — submit message
+- **Ctrl+J** — insert newline
+- **PageUp / PageDown** — scroll chat history
+- **Ctrl+U / Ctrl+D** — half-page scroll
+- **Ctrl+C / Esc** — quit
 
-**Tools not working**
-- Ensure servers support `tools/list` and `tools/call`
-- Check tool arguments match expected schema
+Token usage is shown after each response: `[↑N ↓N tokens]`.
 
-**Ollama errors**
-- Start Ollama: `ollama serve`
-- Verify model exists: `ollama list`
+## Tools
+
+The agent has one built-in tool: `execute_code`. It runs shell code in a sandboxed environment and supports three invocation modes:
+
+- `code` — inline bash
+- `tool` + `args` — named tool script
+- `pipe` — sequence of `{tool, args}` steps
+
+MCP server tools are discovered at startup and available alongside `execute_code`.
+
+## Skills
+
+Skills are domain-specific tool scripts and knowledge discoverable at runtime:
+
+```bash
+{"tool": "discover_skill.sh", "args": ["keyword"]}
+{"tool": "load_skill.sh",     "args": ["skill-name"]}
+```
+
+The agent discovers and loads relevant skills automatically at the start of each task.
 
 ## License
 
