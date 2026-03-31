@@ -1,6 +1,8 @@
 # Ollie
 
-An agentic CLI built on a sandboxed `execute_code` tool and a common LLM backend interface. Supports local (Ollama) and OpenAI-compatible (OpenAI, OpenRouter) backends, optional MCP server connections, and a skill system for domain-specific capabilities.
+An agentic CLI built on a sandboxed `execute_code` tool and a common LLM backend interface. Supports local (Ollama) and OpenAI-compatible backends, optional MCP server connections, and a skill system for domain-specific capabilities.
+
+Intended to be used with [anvillm](https://github.com/lneely/anvillm), which provides the skill system, tool scripts, and multi-agent infrastructure that ollie builds on.
 
 ## Build
 
