@@ -18,9 +18,27 @@ import (
 	"ollie/backend"
 	"ollie/config"
 	execpkg "ollie/exec"
-	"ollie/mcp"
-	"ollie/tools"
 )
+
+// executeCodeTool is the single built-in tool exposed to the model.
+var executeCodeTool = backend.Tool{
+	Name: "execute_code",
+	Description: "Execute shell code or a named tool script in a sandboxed environment. " +
+		"Use 'code' for inline bash, 'tool'+'args' for a named script, " +
+		"or 'pipe' for a sequence of {tool, args} steps.",
+	Parameters: json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"code":     {"type": "string",  "description": "Inline shell code to run (bash)."},
+			"language": {"type": "string",  "description": "Language interpreter (default: bash)."},
+			"timeout":  {"type": "integer", "description": "Timeout in seconds (default: 30)."},
+			"sandbox":  {"type": "string",  "description": "Sandbox name (default: default)."},
+			"tool":     {"type": "string",  "description": "Named tool script to run instead of inline code."},
+			"args":     {"type": "array",   "items": {"type": "string"}, "description": "Arguments for the tool script."},
+			"pipe":     {"type": "array",   "description": "Pipeline: array of {tool, args} objects run in sequence."}
+		}
+	}`),
+}
 
 type model struct {
 	textarea textarea.Model
@@ -33,44 +51,24 @@ type model struct {
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		log.Fatal("Usage: ollie <config.json> [model]")
-	}
-
 	modelName := os.Getenv("OLLIE_MODEL")
-	if modelName == "" && len(os.Args) > 2 {
-		modelName = os.Args[2]
+	if modelName == "" && len(os.Args) > 1 {
+		modelName = os.Args[1]
 	}
 	if modelName == "" {
 		modelName = "qwen3:8b"
 	}
 
-	cfg, err := config.Load(os.Args[1])
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
-	}
-
-	// Connect MCP servers.
-	mcpExecutor := tools.NewExecutor()
-	for name, serverCfg := range cfg.MCPServers {
-		if serverCfg.Disabled || serverCfg.Command == "" {
-			continue
-		}
-		transport := mcp.NewSTDIOTransport(serverCfg.Command, serverCfg.Args, serverCfg.Env)
-		client, err := transport.Connect()
+	hooks := make(map[string]string)
+	if len(os.Args) > 2 {
+		cfg, err := config.Load(os.Args[2])
 		if err != nil {
-			log.Printf("Failed to connect to %s: %v", name, err)
-			continue
+			log.Fatalf("Failed to load config: %v", err)
 		}
-		mcpExecutor.AddServer(name, client)
-		log.Printf("Connected to MCP server: %s", name)
+		if cfg.Hooks != nil {
+			hooks = cfg.Hooks
+		}
 	}
-
-	mcpTools, err := mcpExecutor.ListTools()
-	if err != nil {
-		log.Fatalf("Failed to list tools: %v", err)
-	}
-	log.Printf("Loaded %d tools", len(mcpTools))
 
 	be, err := backend.New()
 	if err != nil {
@@ -86,14 +84,14 @@ func main() {
 	loopcfg := agent.Config{
 		Backend:  be,
 		Model:    modelName,
-		Tools:    mcpToolsToBackend(mcpTools),
-		Exec:     buildDispatch(builtinExec, mcpExecutor, mcpTools),
+		Tools:    []backend.Tool{executeCodeTool},
+		Exec:     func(name string, args json.RawMessage) (string, error) {
+			if name == "execute_code" {
+				return dispatchBuiltinExec(builtinExec, args)
+			}
+			return "", fmt.Errorf("unknown tool: %s", name)
+		},
 		MaxSteps: 20,
-	}
-
-	hooks := cfg.Hooks
-	if hooks == nil {
-		hooks = make(map[string]string)
 	}
 
 	ta := textarea.New()
@@ -185,8 +183,6 @@ func (m model) runLoop(input string) tea.Cmd {
 	display := append([]string{}, m.display...)
 
 	return func() tea.Msg {
-		// First message: create a new session with the input as goal.
-		// Subsequent messages: append to existing session.
 		if session == nil {
 			session = agent.NewSession(input)
 		} else {
@@ -228,62 +224,7 @@ func (m model) View() string {
 
 // -- helpers --
 
-func mcpToolsToBackend(mcpTools []tools.ToolInfo) []backend.Tool {
-	out := make([]backend.Tool, len(mcpTools))
-	for i, t := range mcpTools {
-		out[i] = backend.Tool{
-			Name:        t.Name,
-			Description: t.Description,
-			Parameters:  t.InputSchema,
-		}
-	}
-	return out
-}
-
-// buildDispatch routes tool calls to the MCP server that owns them, falling
-// back to the built-in execute_code sandbox if not found via MCP.
-func buildDispatch(builtin *execpkg.Executor, mcpExec *tools.Executor, mcpTools []tools.ToolInfo) agent.ToolExecutor {
-	serverOf := make(map[string]string, len(mcpTools))
-	for _, t := range mcpTools {
-		serverOf[t.Name] = t.Server
-	}
-
-	return func(name string, args json.RawMessage) (string, error) {
-		if server, ok := serverOf[name]; ok {
-			raw, err := mcpExec.Execute(server, name, args)
-			if err != nil {
-				return "", err
-			}
-			return extractMCPText(raw), nil
-		}
-		if name == "execute_code" {
-			return dispatchBuiltinExec(builtin, args)
-		}
-		return "", fmt.Errorf("unknown tool: %s", name)
-	}
-}
-
-// extractMCPText unwraps {"content":[{"type":"text","text":"..."}]}.
-func extractMCPText(raw json.RawMessage) string {
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return string(raw)
-	}
-	var parts []string
-	for _, c := range result.Content {
-		if c.Type == "text" {
-			parts = append(parts, c.Text)
-		}
-	}
-	return strings.Join(parts, "\n")
-}
-
-// dispatchBuiltinExec handles execute_code natively without MCP.
+// dispatchBuiltinExec handles execute_code natively.
 func dispatchBuiltinExec(e *execpkg.Executor, args json.RawMessage) (string, error) {
 	var a struct {
 		Code     string             `json:"code"`

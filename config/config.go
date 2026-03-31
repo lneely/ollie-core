@@ -6,18 +6,7 @@ import (
 )
 
 type Config struct {
-	MCPServers map[string]ServerConfig `json:"mcpServers"`
-	Hooks      map[string]string       `json:"hooks,omitempty"`
-}
-
-type ServerConfig struct {
-	Command  string            `json:"command,omitempty"`
-	Args     []string          `json:"args,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
-	Type     string            `json:"type,omitempty"`
-	URL      string            `json:"url,omitempty"`
-	Headers  map[string]string `json:"headers,omitempty"`
-	Disabled bool              `json:"disabled,omitempty"`
+	Hooks map[string]string `json:"hooks,omitempty"`
 }
 
 func Load(path string) (*Config, error) {
