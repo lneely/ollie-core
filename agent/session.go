@@ -41,3 +41,10 @@ func (s *Session) MarkComplete() error {
 	s.complete = true
 	return nil
 }
+
+// AppendUserMessage adds a follow-up user message and resets the complete
+// flag so the loop will run again on the next call to Loop.Run.
+func (s *Session) AppendUserMessage(content string) {
+	s.complete = false
+	s.history = append(s.history, backend.Message{Role: "user", Content: content})
+}
