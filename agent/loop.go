@@ -68,6 +68,8 @@ func (l *Loop) Run(ctx context.Context, state State) error {
 			var content string
 			var isErr bool
 
+			l.emit(OutputMsg{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
+
 			if l.cfg.Exec != nil {
 				out, err := l.cfg.Exec(tc.Name, tc.Arguments)
 				if err != nil {

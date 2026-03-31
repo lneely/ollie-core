@@ -65,13 +65,17 @@ If a relevant skill is found, load it:
 Read and follow the loaded skill's instructions before proceeding.
 Re-run discovery if the task domain shifts during execution.
 
-## Step 2 — plan before acting
+## Step 2 — plan, then execute immediately
 
-After skill discovery, state a short numbered plan:
+After skill discovery, write a short numbered plan, then execute it without
+waiting for user input:
 1. Restate the goal.
 2. List the steps you will take.
-Then execute the steps in order. Revise the plan if a step fails or reveals
-new information.`
+3. Call execute_code for the first step immediately after writing the plan.
+
+Do not stop after planning. Do not ask for confirmation. Execute each step
+in sequence, calling execute_code as many times as needed. Revise the plan
+if a step fails or reveals new information.`
 
 // executeCodeTool is the single built-in tool exposed to the model.
 var executeCodeTool = backend.Tool{
@@ -255,8 +259,10 @@ func (m model) runLoop(input string) tea.Cmd {
 			switch msg.Role {
 			case "assistant":
 				lines = append(lines, "Bot: "+msg.Content)
+			case "call":
+				lines = append(lines, fmt.Sprintf("→ %s(%s)", msg.Name, msg.Content))
 			case "tool":
-				lines = append(lines, fmt.Sprintf("→ %s: %s", msg.Name, msg.Content))
+				lines = append(lines, fmt.Sprintf("  = %s", msg.Content))
 			case "error":
 				lines = append(lines, "Error: "+msg.Content)
 			}
