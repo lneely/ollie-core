@@ -173,8 +173,19 @@ func main() {
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
 	ta.Focus()
 
+	vp := viewport.New(0, 0)
+	vp.KeyMap = viewport.KeyMap{
+		PageDown:     key.NewBinding(key.WithKeys("pgdown")),
+		PageUp:       key.NewBinding(key.WithKeys("pgup")),
+		HalfPageDown: key.NewBinding(key.WithKeys("ctrl+d")),
+		HalfPageUp:   key.NewBinding(key.WithKeys("ctrl+u")),
+		Down:         key.NewBinding(key.WithKeys()),
+		Up:           key.NewBinding(key.WithKeys()),
+	}
+
 	p := tea.NewProgram(model{
 		textarea: ta,
+		viewport: vp,
 		loopcfg:  loopcfg,
 		hooks:    hooks,
 	})
@@ -204,15 +215,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		if !m.ready {
-			m.viewport = viewport.New(msg.Width, msg.Height-5)
-			m.ready = true
-		} else {
-			m.viewport.Width = msg.Width
-			m.viewport.Height = msg.Height - 5
-		}
+		m.viewport.Width = msg.Width
+		m.viewport.Height = msg.Height - 5
 		m.textarea.SetWidth(msg.Width)
 		m.viewport.SetContent(m.renderDisplay())
+		m.ready = true
 
 	case responseMsg:
 		m.display = msg.display
@@ -243,8 +250,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	var vpCmd tea.Cmd
+	m.viewport, vpCmd = m.viewport.Update(msg)
 	m.textarea, cmd = m.textarea.Update(msg)
-	return m, cmd
+	return m, tea.Batch(cmd, vpCmd)
 }
 
 func (m model) runLoop(input string) tea.Cmd {
