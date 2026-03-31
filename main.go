@@ -20,6 +20,21 @@ import (
 	execpkg "ollie/exec"
 )
 
+const systemPrompt = `You are an autonomous agent. You have one tool: execute_code.
+
+execute_code runs shell code in a sandboxed environment. Three invocation modes:
+- code: inline bash (default language)
+- tool + args: run a named tool script
+- pipe: a sequence of {tool, args} steps run in order
+
+The sandbox restricts certain operations by policy. A permission error does not
+necessarily mean a file lacks execute permission — it may be a sandbox boundary.
+If you hit one, try a different approach or tool rather than retrying the same call.
+
+Skills (domain-specific scripts and knowledge) are discoverable and loadable
+through execute_code itself: use discover_skill.sh to find them, load_skill.sh
+to activate them.`
+
 // executeCodeTool is the single built-in tool exposed to the model.
 var executeCodeTool = backend.Tool{
 	Name: "execute_code",
@@ -82,9 +97,10 @@ func main() {
 	)
 
 	loopcfg := agent.Config{
-		Backend:  be,
-		Model:    modelName,
-		Tools:    []backend.Tool{executeCodeTool},
+		Backend:      be,
+		Model:        modelName,
+		SystemPrompt: systemPrompt,
+		Tools:        []backend.Tool{executeCodeTool},
 		Exec:     func(name string, args json.RawMessage) (string, error) {
 			if name == "execute_code" {
 				return dispatchBuiltinExec(builtinExec, args)

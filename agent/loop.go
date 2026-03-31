@@ -22,12 +22,13 @@ type OutputMsg struct {
 
 // Config holds everything the loop needs to run.
 type Config struct {
-	Backend  backend.Backend
-	Model    string
-	Tools    []backend.Tool
-	Exec     ToolExecutor
-	MaxSteps int                  // 0 → default 1 for sessions, caller sets higher for beads
-	Output   func(msg OutputMsg)  // nil → discard
+	Backend      backend.Backend
+	Model        string
+	Tools        []backend.Tool
+	Exec         ToolExecutor
+	MaxSteps     int                 // 0 → default 1
+	Output       func(msg OutputMsg) // nil → discard
+	SystemPrompt string              // prepended as system message if non-empty
 }
 
 // Loop implements observe → decide → act → update → terminate.
@@ -52,7 +53,11 @@ func (l *Loop) Run(ctx context.Context, state State) error {
 		// 1. Observe: history is the context; already up to date in state.
 
 		// 2. Decide: call the model.
-		resp, err := l.cfg.Backend.Chat(ctx, l.cfg.Model, state.History(), l.cfg.Tools)
+		history := state.History()
+		if l.cfg.SystemPrompt != "" {
+			history = append([]backend.Message{{Role: "system", Content: l.cfg.SystemPrompt}}, history...)
+		}
+		resp, err := l.cfg.Backend.Chat(ctx, l.cfg.Model, history, l.cfg.Tools)
 		if err != nil {
 			return fmt.Errorf("step %d decide: %w", step, err)
 		}
