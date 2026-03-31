@@ -21,9 +21,8 @@ func NewSTDIOTransport(command string, args []string, env map[string]string) *ST
 // Connect launches the subprocess and returns a connected Client.
 func (t *STDIOTransport) Connect() (*Client, error) {
 	cmd := exec.Command(t.command, t.args...)
-	cmd.Env = os.Environ()
 	for k, v := range t.env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, os.ExpandEnv(v)))
 	}
 
 	stdin, err := cmd.StdinPipe()

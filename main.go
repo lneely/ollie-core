@@ -152,11 +152,7 @@ func main() {
 			if serverCfg.Disabled || serverCfg.Command == "" {
 				continue
 			}
-			env := make(map[string]string, len(serverCfg.Env))
-			for k, v := range serverCfg.Env {
-				env[k] = os.ExpandEnv(v)
-			}
-			transport := mcp.NewSTDIOTransport(serverCfg.Command, serverCfg.Args, env)
+			transport := mcp.NewSTDIOTransport(serverCfg.Command, serverCfg.Args, serverCfg.Env)
 			client, err := transport.Connect()
 			if err != nil {
 				startup = append(startup, fmt.Sprintf("MCP %s: failed to connect: %v", name, err))
