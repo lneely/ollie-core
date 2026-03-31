@@ -32,6 +32,10 @@ Use execute_code whenever the task requires:
 
 Do not answer from memory when you can verify with execute_code.
 
+Do not describe what you would run or show code blocks. Call execute_code
+directly. If you find yourself writing a markdown code block, stop and make
+the tool call instead.
+
 ## execute_code — how to call it
 
 Three modes (pick one per call):
