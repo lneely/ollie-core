@@ -53,17 +53,19 @@ different tool or approach rather than retrying the same call.
 
 ## Step 1 — discover and load skills (always do this first)
 
-Before anything else, run discover_skill.sh with one or more keywords from the
-goal and the current working directory:
+Before anything else, call execute_code using the "tool" field (not "code")
+with keywords derived from the goal and the current working directory:
 
   {"tool": "discover_skill.sh", "args": ["keyword"]}
 
-If a relevant skill is found, load it:
+If a relevant skill is found, load it the same way:
 
   {"tool": "load_skill.sh", "args": ["skill-name"]}
 
 Read and follow the loaded skill's instructions before proceeding.
 Re-run discovery if the task domain shifts during execution.
+
+Never use the "code" field to run discover_skill.sh or load_skill.sh.
 
 ## Step 2 — plan, then execute immediately
 
