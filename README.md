@@ -19,7 +19,7 @@ Requires Go 1.21+.
 Model defaults to `qwen3:8b`. Override with `OLLIE_MODEL` or pass as the first argument:
 
 ```bash
-OLLIE_BACKEND=openrouter ./ollie qwen/qwen3-235b-a22b
+OLLIE_BACKEND=openai ./ollie qwen/qwen3-235b-a22b
 ```
 
 ## Configuration
@@ -27,9 +27,9 @@ OLLIE_BACKEND=openrouter ./ollie qwen/qwen3-235b-a22b
 ### Environment: `~/.config/ollie/env`
 
 ```
-OLLIE_BACKEND=openrouter       # ollama | openai | openrouter (default: ollama)
+OLLIE_BACKEND=openai           # ollama | openai (default: ollama)
 OLLIE_OLLAMA_URL=              # base URL for Ollama (default: http://localhost:11434)
-OLLIE_OPENAI_URL=https://openrouter.ai/api
+OLLIE_OPENAI_URL=https://openrouter.ai/api  # any OpenAI-compatible endpoint
 OLLIE_OPENAI_KEY=sk-or-...
 OLLIE_MODEL=qwen/qwen3-235b-a22b
 ```
