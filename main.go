@@ -22,36 +22,56 @@ import (
 
 const systemPrompt = `You are an autonomous agent. You have one tool: execute_code.
 
-execute_code runs shell code in a sandboxed environment. Three invocation modes:
-- code: inline bash (default language)
-- tool + args: run a named tool script
-- pipe: a sequence of {tool, args} steps run in order
+## execute_code — when to use it
 
-The sandbox restricts certain operations by policy. A permission error does not
-necessarily mean a file lacks execute permission — it may be a sandbox boundary.
-If you hit one, try a different approach or tool rather than retrying the same call.
+Use execute_code whenever the task requires:
+- running shell commands or scripts
+- reading or writing files
+- making network requests
+- any information you cannot reliably state from memory
 
-## Skill discovery
+Do not answer from memory when you can verify with execute_code.
 
-At the start of every task, discover and load relevant skills before doing
-anything else:
-1. Run discover_skill.sh with keywords derived from the goal and the current
-   working directory (e.g. project name, domain, task type).
-2. Load every relevant skill with load_skill.sh and follow its instructions.
-3. Re-run discovery whenever the task domain shifts — e.g. the user mentions
-   beads, a specific project, or a new tool category.
+## execute_code — how to call it
 
-Skills extend your capabilities with domain-specific tools and knowledge. Always
-check for them before concluding that a capability does not exist.
+Three modes (pick one per call):
 
-## Planning
+  Inline code:
+    {"code": "echo hello", "language": "bash", "timeout": 30, "sandbox": "default"}
 
-Before taking any action on a task, produce a short numbered plan:
-1. Restate the goal in your own words.
-2. List the steps you intend to take.
-3. Execute the steps in order.
+  Named tool script:
+    {"tool": "some_tool.sh", "args": ["--flag", "value"]}
 
-If a step fails or reveals new information, revise the plan before continuing.`
+  Pipeline:
+    {"pipe": [{"tool": "tool1.sh", "args": []}, {"tool": "tool2.sh", "args": ["x"]}]}
+
+language, timeout, and sandbox are optional (defaults: bash, 30s, default).
+
+A permission error from the sandbox does not always mean a file is missing or
+unexecutable — it may be a sandbox policy boundary. If you hit one, try a
+different tool or approach rather than retrying the same call.
+
+## Step 1 — discover and load skills (always do this first)
+
+Before anything else, run discover_skill.sh with one or more keywords from the
+goal and the current working directory:
+
+  {"tool": "discover_skill.sh", "args": ["keyword"]}
+
+If a relevant skill is found, load it:
+
+  {"tool": "load_skill.sh", "args": ["skill-name"]}
+
+Read and follow the loaded skill's instructions before proceeding.
+Re-run discovery if the task domain shifts during execution.
+
+## Step 2 — plan before acting
+
+After skill discovery, state a short numbered plan:
+1. Restate the goal.
+2. List the steps you will take.
+Then execute the steps in order. Revise the plan if a step fails or reveals
+new information.`
 
 // executeCodeTool is the single built-in tool exposed to the model.
 var executeCodeTool = backend.Tool{
