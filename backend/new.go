@@ -43,7 +43,7 @@ func loadEnvFile(path string) {
 //	OLLIE_BACKEND      ollama | openai | openrouter (default: ollama)
 //	OLLIE_OLLAMA_URL   base URL for ollama (default: http://localhost:11434)
 //	OLLIE_OPENAI_URL   base URL for openai-compatible backends
-//	OLLIE_API_KEY      API key (required for openai / openrouter)
+//	OLLIE_OPENAI_KEY   API key (required for openai / openrouter)
 func New() (Backend, error) {
 	home, _ := os.UserHomeDir()
 	loadEnvFile(home + "/.config/ollie/env")
@@ -57,13 +57,13 @@ func New() (Backend, error) {
 	case "ollama":
 		return NewOllama(os.Getenv("OLLIE_OLLAMA_URL")), nil
 	case "openai":
-		return NewOpenAI(os.Getenv("OLLIE_OPENAI_URL"), os.Getenv("OLLIE_API_KEY")), nil
+		return NewOpenAI(os.Getenv("OLLIE_OPENAI_URL"), os.Getenv("OLLIE_OPENAI_KEY")), nil
 	case "openrouter":
 		url := os.Getenv("OLLIE_OPENAI_URL")
 		if url == "" {
 			url = "https://openrouter.ai/api"
 		}
-		return NewOpenAI(url, os.Getenv("OLLIE_API_KEY")), nil
+		return NewOpenAI(url, os.Getenv("OLLIE_OPENAI_KEY")), nil
 	default:
 		return nil, fmt.Errorf("unknown OLLIE_BACKEND %q (supported: ollama, openai, openrouter)", which)
 	}
