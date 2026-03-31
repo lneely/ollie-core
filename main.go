@@ -31,9 +31,27 @@ The sandbox restricts certain operations by policy. A permission error does not
 necessarily mean a file lacks execute permission — it may be a sandbox boundary.
 If you hit one, try a different approach or tool rather than retrying the same call.
 
-Skills (domain-specific scripts and knowledge) are discoverable and loadable
-through execute_code itself: use discover_skill.sh to find them, load_skill.sh
-to activate them.`
+## Skill discovery
+
+At the start of every task, discover and load relevant skills before doing
+anything else:
+1. Run discover_skill.sh with keywords derived from the goal and the current
+   working directory (e.g. project name, domain, task type).
+2. Load every relevant skill with load_skill.sh and follow its instructions.
+3. Re-run discovery whenever the task domain shifts — e.g. the user mentions
+   beads, a specific project, or a new tool category.
+
+Skills extend your capabilities with domain-specific tools and knowledge. Always
+check for them before concluding that a capability does not exist.
+
+## Planning
+
+Before taking any action on a task, produce a short numbered plan:
+1. Restate the goal in your own words.
+2. List the steps you intend to take.
+3. Execute the steps in order.
+
+If a step fails or reveals new information, revise the plan before continuing.`
 
 // executeCodeTool is the single built-in tool exposed to the model.
 var executeCodeTool = backend.Tool{
