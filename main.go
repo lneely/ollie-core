@@ -75,14 +75,20 @@ func main() {
 	}
 
 	hooks := make(map[string]string)
+	cfgPath := ""
 	if len(os.Args) > 2 {
-		cfg, err := config.Load(os.Args[2])
-		if err != nil {
-			log.Fatalf("Failed to load config: %v", err)
-		}
+		cfgPath = os.Args[2]
+	} else {
+		home, _ := os.UserHomeDir()
+		cfgPath = home + "/.config/ollie/config.json"
+	}
+	if cfg, err := config.Load(cfgPath); err == nil {
 		if cfg.Hooks != nil {
 			hooks = cfg.Hooks
 		}
+	} else if len(os.Args) > 2 {
+		// Only fatal if the path was explicitly provided.
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
 	be, err := backend.New()
