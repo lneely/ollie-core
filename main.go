@@ -143,6 +143,7 @@ func main() {
 	}
 
 	// Connect MCP servers.
+	var startup []string
 	mcpExec := tools.NewExecutor()
 	if cfg != nil {
 		for name, serverCfg := range cfg.MCPServers {
@@ -152,11 +153,11 @@ func main() {
 			transport := mcp.NewSTDIOTransport(serverCfg.Command, serverCfg.Args, serverCfg.Env)
 			client, err := transport.Connect()
 			if err != nil {
-				log.Printf("Failed to connect to MCP server %s: %v", name, err)
+				startup = append(startup, fmt.Sprintf("MCP %s: failed to connect: %v", name, err))
 				continue
 			}
 			mcpExec.AddServer(name, client)
-			log.Printf("Connected to MCP server: %s", name)
+			startup = append(startup, fmt.Sprintf("MCP %s: connected", name))
 		}
 	}
 
@@ -165,7 +166,7 @@ func main() {
 		log.Fatalf("Failed to list MCP tools: %v", err)
 	}
 	if len(mcpTools) > 0 {
-		log.Printf("Loaded %d MCP tools", len(mcpTools))
+		startup = append(startup, fmt.Sprintf("MCP tools loaded: %d", len(mcpTools)))
 	}
 
 	be, err := backend.New()
@@ -230,6 +231,7 @@ func main() {
 		viewport: vp,
 		loopcfg:  loopcfg,
 		hooks:    hooks,
+		display:  startup,
 	})
 
 	if hook := hooks["agentSpawn"]; hook != "" {
