@@ -158,11 +158,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.Height = msg.Height - 5
 		}
 		m.textarea.SetWidth(msg.Width)
+		m.viewport.SetContent(m.renderDisplay())
 
 	case responseMsg:
 		m.display = msg.display
 		m.session = msg.session
-		m.viewport.SetContent(strings.Join(m.display, "\n"))
+		m.viewport.SetContent(m.renderDisplay())
 		m.viewport.GotoBottom()
 		return m, nil
 
@@ -176,7 +177,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.display = append(m.display, "You: "+input)
-			m.viewport.SetContent(strings.Join(m.display, "\n"))
+			m.viewport.SetContent(m.renderDisplay())
 			m.viewport.GotoBottom()
 			m.textarea.Reset()
 
@@ -238,7 +239,55 @@ func (m model) View() string {
 	return m.viewport.View() + "\n" + m.textarea.View()
 }
 
-// -- helpers --
+// -- display helpers --
+
+// renderDisplay word-wraps each display line to the viewport width and joins them.
+func (m model) renderDisplay() string {
+	w := m.viewport.Width
+	var buf strings.Builder
+	for i, line := range m.display {
+		if i > 0 {
+			buf.WriteByte('\n')
+		}
+		buf.WriteString(wordWrap(line, w))
+	}
+	return buf.String()
+}
+
+// wordWrap wraps s at word boundaries so no line exceeds width columns.
+func wordWrap(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	var out strings.Builder
+	for i, raw := range strings.Split(s, "\n") {
+		if i > 0 {
+			out.WriteByte('\n')
+		}
+		col := 0
+		first := true
+		for _, word := range strings.Fields(raw) {
+			wl := len(word)
+			switch {
+			case first:
+				out.WriteString(word)
+				col = wl
+				first = false
+			case col+1+wl > width:
+				out.WriteByte('\n')
+				out.WriteString(word)
+				col = wl
+			default:
+				out.WriteByte(' ')
+				out.WriteString(word)
+				col += 1 + wl
+			}
+		}
+	}
+	return out.String()
+}
+
+// -- tool helpers --
 
 // dispatchBuiltinExec handles execute_code natively.
 func dispatchBuiltinExec(e *execpkg.Executor, args json.RawMessage) (string, error) {
