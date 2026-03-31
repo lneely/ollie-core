@@ -1,11 +1,5 @@
 {
   "globalShortcut": "Ctrl+Space",
-  "mcpServers": {
-  "anvilmcp": {
-      "command": "anvilmcp",
-      "args": []
-    }
-  },
   "hooks": {
     "agentSpawn": "anvillm-hook agentSpawn",
     "userPromptSubmit": "anvillm-hook userPromptSubmit",

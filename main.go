@@ -18,6 +18,8 @@ import (
 	"ollie/backend"
 	"ollie/config"
 	execpkg "ollie/exec"
+	"ollie/mcp"
+	"ollie/tools"
 )
 
 const systemPrompt = `You are an autonomous agent. You have one tool: execute_code.
@@ -123,6 +125,7 @@ func main() {
 	}
 
 	hooks := make(map[string]string)
+	var cfg *config.Config
 	cfgPath := ""
 	if len(os.Args) > 2 {
 		cfgPath = os.Args[2]
@@ -130,13 +133,39 @@ func main() {
 		home, _ := os.UserHomeDir()
 		cfgPath = home + "/.config/ollie/config.json"
 	}
-	if cfg, err := config.Load(cfgPath); err == nil {
+	if c, err := config.Load(cfgPath); err == nil {
+		cfg = c
 		if cfg.Hooks != nil {
 			hooks = cfg.Hooks
 		}
 	} else if len(os.Args) > 2 {
-		// Only fatal if the path was explicitly provided.
 		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Connect MCP servers.
+	mcpExec := tools.NewExecutor()
+	if cfg != nil {
+		for name, serverCfg := range cfg.MCPServers {
+			if serverCfg.Disabled || serverCfg.Command == "" {
+				continue
+			}
+			transport := mcp.NewSTDIOTransport(serverCfg.Command, serverCfg.Args, serverCfg.Env)
+			client, err := transport.Connect()
+			if err != nil {
+				log.Printf("Failed to connect to MCP server %s: %v", name, err)
+				continue
+			}
+			mcpExec.AddServer(name, client)
+			log.Printf("Connected to MCP server: %s", name)
+		}
+	}
+
+	mcpTools, err := mcpExec.ListTools()
+	if err != nil {
+		log.Fatalf("Failed to list MCP tools: %v", err)
+	}
+	if len(mcpTools) > 0 {
+		log.Printf("Loaded %d MCP tools", len(mcpTools))
 	}
 
 	be, err := backend.New()
@@ -150,12 +179,25 @@ func main() {
 		home+"/.cache/ollie/exec",
 	)
 
+	allTools := append(mcpToolsToBackend(mcpTools), executeCodeTool)
+	serverOf := make(map[string]string, len(mcpTools))
+	for _, t := range mcpTools {
+		serverOf[t.Name] = t.Server
+	}
+
 	loopcfg := agent.Config{
 		Backend:      be,
 		Model:        modelName,
 		SystemPrompt: systemPrompt,
-		Tools:        []backend.Tool{executeCodeTool},
-		Exec:     func(name string, args json.RawMessage) (string, error) {
+		Tools:        allTools,
+		Exec: func(name string, args json.RawMessage) (string, error) {
+			if server, ok := serverOf[name]; ok {
+				raw, err := mcpExec.Execute(server, name, args)
+				if err != nil {
+					return "", err
+				}
+				return extractMCPText(raw), nil
+			}
 			if name == "execute_code" {
 				return dispatchBuiltinExec(builtinExec, args)
 			}
@@ -355,6 +397,39 @@ func wordWrap(s string, width int) string {
 }
 
 // -- tool helpers --
+
+// mcpToolsToBackend converts MCP tool descriptors to backend.Tool entries.
+func mcpToolsToBackend(mcpTools []tools.ToolInfo) []backend.Tool {
+	out := make([]backend.Tool, len(mcpTools))
+	for i, t := range mcpTools {
+		out[i] = backend.Tool{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  t.InputSchema,
+		}
+	}
+	return out
+}
+
+// extractMCPText unwraps {"content":[{"type":"text","text":"..."}]}.
+func extractMCPText(raw json.RawMessage) string {
+	var result struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return string(raw)
+	}
+	var parts []string
+	for _, c := range result.Content {
+		if c.Type == "text" {
+			parts = append(parts, c.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
 
 // dispatchBuiltinExec handles execute_code natively.
 func dispatchBuiltinExec(e *execpkg.Executor, args json.RawMessage) (string, error) {
