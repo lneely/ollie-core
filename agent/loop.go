@@ -13,10 +13,10 @@ import (
 type ToolExecutor func(name string, args json.RawMessage) (string, error)
 
 // OutputMsg is emitted by the loop for each visible event: assistant replies,
-// tool calls, tool results, and errors.
+// tool calls, tool results, errors, and token usage.
 type OutputMsg struct {
-	Role    string // "assistant" | "tool" | "error"
-	Name    string // tool name, for Role=="tool"
+	Role    string // "assistant" | "call" | "tool" | "error" | "usage"
+	Name    string // tool name, for Role=="call"/"tool"
 	Content string
 }
 
@@ -96,6 +96,11 @@ func (l *Loop) Run(ctx context.Context, state State) error {
 		if len(resp.Message.ToolCalls) == 0 && resp.Message.Content != "" {
 			l.emit(OutputMsg{Role: "assistant", Content: resp.Message.Content})
 		}
+
+		l.emit(OutputMsg{
+			Role:    "usage",
+			Content: fmt.Sprintf("↑%d ↓%d tokens", resp.Usage.InputTokens, resp.Usage.OutputTokens),
+		})
 
 		// 4. Update: append assistant message and tool results to state.
 		if err := state.Update(resp.Message, results); err != nil {

@@ -58,8 +58,10 @@ type ollamaChatRequest struct {
 }
 
 type ollamaChatResponse struct {
-	Message ollamaMessage `json:"message"`
-	Done    bool          `json:"done"`
+	Message         ollamaMessage `json:"message"`
+	Done            bool          `json:"done"`
+	PromptEvalCount int           `json:"prompt_eval_count"`
+	EvalCount       int           `json:"eval_count"`
 }
 
 // -- implementation --
@@ -134,5 +136,9 @@ func (b *OllamaBackend) Chat(ctx context.Context, model string, messages []Messa
 		stopReason = "tool_calls"
 	}
 
-	return &Response{Message: msg, StopReason: stopReason}, nil
+	return &Response{
+		Message:    msg,
+		StopReason: stopReason,
+		Usage:      Usage{InputTokens: wire.PromptEvalCount, OutputTokens: wire.EvalCount},
+	}, nil
 }

@@ -30,10 +30,17 @@ type ToolCall struct {
 	Arguments json.RawMessage `json:"arguments"` // always a JSON object
 }
 
+// Usage holds token counts for a single Chat call.
+type Usage struct {
+	InputTokens  int
+	OutputTokens int
+}
+
 // Response is the model's reply for one Chat call.
 type Response struct {
 	Message    Message
 	StopReason string // "stop" | "tool_calls" | "length" | ...
+	Usage      Usage
 }
 
 // Backend is the interface all LLM providers must implement.

@@ -62,8 +62,14 @@ type openAIChatRequest struct {
 	Stream   bool            `json:"stream"`
 }
 
+type openAIUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+}
+
 type openAIChatResponse struct {
 	Choices []openAIChoice `json:"choices"`
+	Usage   openAIUsage    `json:"usage"`
 }
 
 type openAIChoice struct {
@@ -158,5 +164,9 @@ func (b *OpenAIBackend) Chat(ctx context.Context, model string, messages []Messa
 		})
 	}
 
-	return &Response{Message: msg, StopReason: choice.FinishReason}, nil
+	return &Response{
+		Message:    msg,
+		StopReason: choice.FinishReason,
+		Usage:      Usage{InputTokens: wire.Usage.PromptTokens, OutputTokens: wire.Usage.CompletionTokens},
+	}, nil
 }

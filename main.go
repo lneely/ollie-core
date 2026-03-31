@@ -278,6 +278,8 @@ func (m model) runLoop(input string) tea.Cmd {
 				lines = append(lines, fmt.Sprintf("→ %s(%s)", msg.Name, msg.Content))
 			case "tool":
 				lines = append(lines, fmt.Sprintf("  = %s", msg.Content))
+			case "usage":
+				lines = append(lines, "["+msg.Content+"]")
 			case "error":
 				lines = append(lines, "Error: "+msg.Content)
 			}
