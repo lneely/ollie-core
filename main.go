@@ -71,11 +71,11 @@ After skill discovery, write a short numbered plan, then execute it without
 waiting for user input:
 1. Restate the goal.
 2. List the steps you will take.
-3. Call execute_code for the first step immediately after writing the plan.
+3. Begin executing the first step immediately — use execute_code if the step
+   requires it, or respond directly if no tool call is needed.
 
-Do not stop after planning. Do not ask for confirmation. Execute each step
-in sequence, calling execute_code as many times as needed. Revise the plan
-if a step fails or reveals new information.`
+Do not stop after planning. Do not ask for confirmation. Work through each
+step in sequence. Revise the plan if a step fails or reveals new information.`
 
 // executeCodeTool is the single built-in tool exposed to the model.
 var executeCodeTool = backend.Tool{
