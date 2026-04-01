@@ -78,6 +78,9 @@ func (l *Loop) Run(ctx context.Context, state State) error {
 		// Act: execute tool calls.
 		var results []ToolResult
 		for _, tc := range resp.Message.ToolCalls {
+			// In the non-streaming path, emit the call announcement here.
+			// In the streaming path this was already emitted inside
+			// runStreamStep (once all arguments were accumulated), so skip it.
 			if !l.skippedCalls[tc.Name] {
 				l.emit(OutputMsg{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
 			}
@@ -164,7 +167,6 @@ func (l *Loop) runStreamStep(
 		}
 
 		for _, tc := range ev.ToolCalls {
-			l.skippedCalls[tc.Name] = true
 			accumulatedTcs = append(accumulatedTcs, tc)
 		}
 
@@ -173,6 +175,12 @@ func (l *Loop) runStreamStep(
 			msg.Content = content.String()
 			msg.Role = "assistant"
 			msg.ToolCalls = accumulatedTcs
+			// Emit 'call' now that arguments are fully accumulated, and
+			// mark each as skipped so the Act loop does not re-emit it.
+			for _, tc := range accumulatedTcs {
+				l.emit(OutputMsg{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
+				l.skippedCalls[tc.Name] = true
+			}
 			return msg, nil
 		}
 	}
