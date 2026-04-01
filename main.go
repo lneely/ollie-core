@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -37,14 +38,14 @@ Do not restate the task. Do not hedge. Do not self-congratulate.
 Use execute_code whenever the task requires:
 - running shell commands or scripts
 - reading or writing files
-- making network requests
+ making network requests
 - any information you cannot reliably state from memory
 
 Do not answer from memory when you can verify with execute_code.
 
-Do not describe what you would run or show code blocks. Call execute_code
-directly. If you find yourself writing a markdown code block, stop and make
-the tool call instead.
+Do not describe what you would run or show code blocks.
+Call execute_code directly.
+If you find yourself writing a markdown code block, stop and make the tool call instead.
 
 ## execute_code — how to call it
 
@@ -93,12 +94,9 @@ waiting for user input:
 Do not stop after planning. Do not ask for confirmation. Work through each
 step in sequence. Revise the plan if a step fails or reveals new information.`
 
-// executeCodeTool is the single built-in tool exposed to the model.
 var executeCodeTool = backend.Tool{
-	Name: "execute_code",
-	Description: "Execute shell code or a named tool script in a sandboxed environment. " +
-		"Use 'code' for inline bash, 'tool'+'args' for a named script, " +
-		"or 'pipe' for a sequence of {tool, args} steps.",
+	Name:        "execute_code",
+	Description: "Execute shell code or a named tool script in a sandboxed environment. Use 'code' for inline bash, 'tool'+'args' for a named script, or 'pipe' for a sequence of {tool, args} steps.",
 	Parameters: json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -113,14 +111,28 @@ var executeCodeTool = backend.Tool{
 	}`),
 }
 
+// NOTE: buf and display lines use plain strings; bubbletea copies the model
+// by value on every Update(), so strings.Builder and other copy-sensitive
+// types will panic.
 type model struct {
-	textarea textarea.Model
-	viewport viewport.Model
-	session  *agent.Session
-	loopcfg  agent.Config
-	display  []string
-	ready    bool
-	hooks    map[string]string
+	textarea  textarea.Model
+	viewport  viewport.Model
+	session   *agent.Session
+	loopcfg   agent.Config
+	display   []string
+	buf       string // live streaming assistant text
+	hooks     map[string]string
+	ready     bool
+	agentCh   chan tea.Msg
+	cancel    context.CancelFunc
+	doneCh    chan struct{}
+}
+
+type agentMsg struct {
+	role    string
+	content string
+	name    string
+	done    bool
 }
 
 func main() {
@@ -145,7 +157,6 @@ func main() {
 		startup = append(startup, fmt.Sprintf("config: %v", err))
 	}
 
-	// Connect MCP servers.
 	mcpExec := tools.NewExecutor()
 	if cfg != nil {
 		for name, serverCfg := range cfg.MCPServers {
@@ -253,15 +264,96 @@ func main() {
 	}
 }
 
-// -- tea model --
-
 func (m model) Init() tea.Cmd {
 	return textarea.Blink
 }
 
-type responseMsg struct {
-	display []string
-	session *agent.Session
+// renderDisplay produces the full viewport text. Each element of m.display
+// is considered a single line; the current streaming buffer (m.buf) is the
+// last (incomplete) line.
+func (m model) renderDisplay() string {
+	var b strings.Builder
+	for i, line := range m.display {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(line)
+	}
+	if m.buf != "" {
+		if len(m.display) > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString("Bot: " + m.buf)
+	}
+	return b.String()
+}
+
+func (m *model) refreshView() {
+	m.viewport.SetContent(wordWrap(m.renderDisplay(), m.viewport.Width))
+	m.viewport.GotoBottom()
+}
+
+// finalizeBuf commits the in-progress streaming text as a new display line.
+func (m *model) finalizeBuf() {
+	if m.buf != "" {
+		m.display = append(m.display, "Bot: "+m.buf)
+		m.buf = ""
+	}
+}
+
+// apply writes one agent output event into the model.
+func (m *model) apply(am agentMsg) {
+	switch am.role {
+	case "assistant":
+		// Streaming text delta — accumulate in the live buffer.
+		m.buf += am.content
+
+	case "call":
+		// Tool call: finalize any pending bot text, then add a new line.
+		m.finalizeBuf()
+		args := squashWhitespace(am.content)
+		if len(args) > 500 {
+			args = args[:500] + "..."
+		}
+		m.display = append(m.display, fmt.Sprintf("-> %s(%s)", am.name, args))
+
+	case "tool":
+		s := squashWhitespace(am.content)
+		if len(s) > 500 {
+			s = s[:500] + "..."
+		}
+		m.display = append(m.display, "= "+s)
+
+	case "error":
+		m.finalizeBuf()
+		m.display = append(m.display, "Error: "+am.content)
+
+	case "usage":
+		m.finalizeBuf()
+		m.display = append(m.display, "["+am.content+"]")
+	}
+}
+
+// drainAgent cancels the in-flight goroutine and drains remaining events
+// so the display is in a consistent state.
+func (m *model) drainAgent() {
+	if m.cancel == nil {
+		return
+	}
+	m.cancel()
+	m.cancel = nil
+	if m.doneCh != nil {
+		<-m.doneCh // goroutine closed the channel
+		m.doneCh = nil
+	}
+	if m.agentCh != nil {
+		for msg := range m.agentCh {
+			if am, ok := msg.(agentMsg); ok {
+				m.apply(am)
+			}
+		}
+		m.agentCh = nil
+	}
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -272,15 +364,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.Width = msg.Width
 		m.viewport.Height = msg.Height - 5
 		m.textarea.SetWidth(msg.Width)
-		m.viewport.SetContent(m.renderDisplay())
+		m.refreshView()
 		m.ready = true
 
-	case responseMsg:
-		m.display = msg.display
-		m.session = msg.session
-		m.viewport.SetContent(m.renderDisplay())
-		m.viewport.GotoBottom()
-		return m, nil
+	case agentMsg:
+		m.apply(msg)
+		m.refreshView()
+		if msg.done {
+			m.agentCh = nil
+			return m, nil
+		}
+		// Chain to the next goroutine message.
+		return m, func() tea.Msg { return <-m.agentCh }
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -291,16 +386,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if input == "" {
 				return m, nil
 			}
+
+			// Cancel any running agent to avoid concurrent session mutation.
+			m.drainAgent()
+			m.finalizeBuf()
+
 			m.display = append(m.display, "You: "+input)
-			m.viewport.SetContent(m.renderDisplay())
-			m.viewport.GotoBottom()
+			m.refreshView()
 			m.textarea.Reset()
 
 			if hook := m.hooks["userPromptSubmit"]; hook != "" {
 				exec.Command("sh", "-c", hook).Run()
 			}
 
-			return m, m.runLoop(input)
+			if m.session == nil {
+				m.session = agent.NewSession(input)
+			} else {
+				m.session.AppendUserMessage(input)
+			}
+			ch, cancel, doneCh := m.startAgent(m.session)
+			m.agentCh = ch
+			m.cancel = cancel
+			m.doneCh = doneCh
+			return m, func() tea.Msg { return <-ch }
 		}
 	}
 
@@ -310,47 +418,46 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmd, vpCmd)
 }
 
-func (m model) runLoop(input string) tea.Cmd {
+// startAgent launches the loop in a goroutine, wiring its output to ch.
+// cancel stops the loop; doneCh is closed when the goroutine exits.
+func (m model) startAgent(session *agent.Session) (chan tea.Msg, context.CancelFunc, chan struct{}) {
 	loopcfg := m.loopcfg
-	session := m.session
 	hooks := m.hooks
-	display := append([]string{}, m.display...)
+	ch := make(chan tea.Msg, 64)
+	ctx, cancel := context.WithCancel(context.Background())
+	doneCh := make(chan struct{})
 
-	return func() tea.Msg {
-		if session == nil {
-			session = agent.NewSession(input)
-		} else {
-			session.AppendUserMessage(input)
-		}
+	go func() {
+		defer close(ch)
+		defer close(doneCh)
 
-		var lines []string
-		loopcfg.Output = func(msg agent.OutputMsg) {
-			switch msg.Role {
-			case "assistant":
-				lines = append(lines, "Bot: "+msg.Content)
-			case "call":
-				lines = append(lines, fmt.Sprintf("→ %s(%s)", msg.Name, msg.Content))
-			case "tool":
-				lines = append(lines, fmt.Sprintf("  = %s", msg.Content))
-			case "usage":
-				lines = append(lines, "["+msg.Content+"]")
-			case "error":
-				lines = append(lines, "Error: "+msg.Content)
+		loopcfg.Output = func(em agent.OutputMsg) {
+			select {
+			case ch <- agentMsg{role: em.Role, content: em.Content, name: em.Name}:
+			case <-ctx.Done():
+				return
 			}
 		}
 
-		if err := agent.New(loopcfg).Run(context.Background(), session); err != nil {
-			display = append(display, "Error: "+err.Error())
-		} else {
-			display = append(display, lines...)
+		if err := agent.New(loopcfg).Run(ctx, session); err != nil {
+			select {
+			case ch <- agentMsg{role: "error", content: err.Error()}:
+			case <-ctx.Done():
+				return
+			}
 		}
 
 		if hook := hooks["stop"]; hook != "" {
 			exec.Command("sh", "-c", hook).Run()
 		}
 
-		return responseMsg{display: display, session: session}
-	}
+		select {
+		case ch <- agentMsg{done: true}:
+		case <-ctx.Done():
+		}
+	}()
+
+	return ch, cancel, doneCh
 }
 
 func (m model) View() string {
@@ -360,57 +467,54 @@ func (m model) View() string {
 	return m.viewport.View() + "\n" + m.textarea.View()
 }
 
-// -- display helpers --
-
-// renderDisplay word-wraps each display line to the viewport width and joins them.
-func (m model) renderDisplay() string {
-	w := m.viewport.Width
-	var buf strings.Builder
-	for i, line := range m.display {
-		if i > 0 {
-			buf.WriteByte('\n')
-		}
-		buf.WriteString(wordWrap(line, w))
+// compactJSON removes whitespace between JSON tokens.
+func compactJSON(s string) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(s)); err != nil {
+		return squashWhitespace(s)
 	}
-	return buf.String()
+	return squashWhitespace(buf.String())
 }
 
-// wordWrap wraps s at word boundaries so no line exceeds width columns.
+// squashWhitespace collapses all runs of whitespace into single spaces.
+func squashWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// wordWrap wraps text at word boundaries so no line exceeds width.
 func wordWrap(s string, width int) string {
 	if width <= 0 {
 		return s
 	}
 	var out strings.Builder
-	for i, raw := range strings.Split(s, "\n") {
-		if i > 0 {
+	lines := strings.Split(s, "\n")
+	for _, line := range lines {
+		if out.Len() > 0 {
 			out.WriteByte('\n')
 		}
-		col := 0
-		first := true
-		for _, word := range strings.Fields(raw) {
+		col, first := 0, true
+		for _, word := range strings.Fields(line) {
 			wl := len(word)
 			switch {
 			case first:
 				out.WriteString(word)
 				col = wl
 				first = false
-			case col+1+wl > width:
+			case col+wl+1 > width:
 				out.WriteByte('\n')
 				out.WriteString(word)
 				col = wl
+				first = true // next word goes at BOL
 			default:
 				out.WriteByte(' ')
 				out.WriteString(word)
-				col += 1 + wl
+				col += wl + 1
 			}
 		}
 	}
 	return out.String()
 }
 
-// -- tool helpers --
-
-// mcpToolsToBackend converts MCP tool descriptors to backend.Tool entries.
 func mcpToolsToBackend(mcpTools []tools.ToolInfo) []backend.Tool {
 	out := make([]backend.Tool, len(mcpTools))
 	for i, t := range mcpTools {
@@ -423,7 +527,6 @@ func mcpToolsToBackend(mcpTools []tools.ToolInfo) []backend.Tool {
 	return out
 }
 
-// extractMCPText unwraps {"content":[{"type":"text","text":"..."}]}.
 func extractMCPText(raw json.RawMessage) string {
 	var result struct {
 		Content []struct {
@@ -443,7 +546,6 @@ func extractMCPText(raw json.RawMessage) string {
 	return strings.Join(parts, "\n")
 }
 
-// dispatchBuiltinExec handles execute_code natively.
 func dispatchBuiltinExec(e *execpkg.Executor, args json.RawMessage) (string, error) {
 	var a struct {
 		Code     string             `json:"code"`
@@ -457,10 +559,8 @@ func dispatchBuiltinExec(e *execpkg.Executor, args json.RawMessage) (string, err
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("execute_code: bad args: %w", err)
 	}
-
 	code := a.Code
 	trusted := false
-
 	switch {
 	case len(a.Pipe) > 0:
 		var err error
@@ -483,7 +583,6 @@ func dispatchBuiltinExec(e *execpkg.Executor, args json.RawMessage) (string, err
 			code = fmt.Sprintf("set -- %s\n%s", strings.Join(escaped, " "), code)
 		}
 	}
-
 	if code == "" {
 		return "", fmt.Errorf("execute_code: one of 'code', 'tool', or 'pipe' is required")
 	}
@@ -496,6 +595,5 @@ func dispatchBuiltinExec(e *execpkg.Executor, args json.RawMessage) (string, err
 	if a.Sandbox == "" {
 		a.Sandbox = "default"
 	}
-
 	return e.Execute(code, a.Language, a.Timeout, a.Sandbox, trusted)
 }

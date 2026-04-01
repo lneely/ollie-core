@@ -43,9 +43,29 @@ type Response struct {
 	Usage      Usage
 }
 
+// StreamEvent is a single increment from a streaming Chat call.
+// Content is an incremental text delta (append, not replace).
+// ToolCalls are complete calls ready for execution when non-empty.
+// The final event has Done==true and the fully assembled Message.
+type StreamEvent struct {
+	Content    string     // incremental text delta (may be "")
+	ToolCalls  []ToolCall // complete tool calls, if any assembled this tick
+	Done       bool
+	StopReason string     // meaningful when Done==true
+	Usage      Usage      // meaningful only when Done==true
+}
+
 // Backend is the interface all LLM providers must implement.
 type Backend interface {
 	// Chat sends messages to the model and returns its response.
 	// tools may be nil for plain completion requests.
 	Chat(ctx context.Context, model string, messages []Message, tools []Tool) (*Response, error)
+}
+
+// StreamingBackend is an optional interface; backends that support streaming
+// should implement it. Use a type assertion to check.
+type StreamingBackend interface {
+	// ChatStream returns a channel of incremental events. The channel is
+	// closed after the final Done event.
+	ChatStream(ctx context.Context, model string, messages []Message, tools []Tool) (<-chan StreamEvent, error)
 }

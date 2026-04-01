@@ -1,12 +1,14 @@
 package backend
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // OpenAIBackend speaks the OpenAI /v1/chat/completions wire format.
@@ -27,16 +29,17 @@ func NewOpenAI(baseURL, apiKey string) *OpenAIBackend {
 // -- wire types --
 
 type openAIMessage struct {
-	Role       string           `json:"role"`
-	Content    string           `json:"content,omitempty"`
-	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Role       string             `json:"role"`
+	Content    string             `json:"content,omitempty"`
+	ToolCalls  []openAIToolCall   `json:"tool_calls,omitempty"`
+	ToolCallID string             `json:"tool_call_id,omitempty"`
 }
 
 type openAIToolCall struct {
-	ID       string            `json:"id"`
-	Type     string            `json:"type"`
-	Function openAIFunctionCall `json:"function"`
+	ID       string               `json:"id"`
+	Index    int                  `json:"index,omitempty"`
+	Type     string               `json:"type"`
+	Function openAIFunctionCall   `json:"function"`
 }
 
 type openAIFunctionCall struct {
@@ -72,14 +75,32 @@ type openAIChatResponse struct {
 	Usage   openAIUsage    `json:"usage"`
 }
 
+type openAIDelta struct {
+	Role       string             `json:"role"`
+	Content    string             `json:"content"`
+	ToolCalls  []openAIToolCall   `json:"tool_calls,omitempty"`
+}
+
 type openAIChoice struct {
-	Message      openAIMessage `json:"message"`
+	Delta        openAIDelta   `json:"delta,omitempty"`
+	Message      openAIMessage `json:"message,omitempty"`
 	FinishReason string        `json:"finish_reason"`
+}
+
+type openAIStreamChoice struct {
+	Index        int                   `json:"index"`
+	Delta        openAIDelta           `json:"delta"`
+	FinishReason string                `json:"finish_reason"`
+}
+
+type openAIStreamResponse struct {
+	Choices []openAIStreamChoice `json:"choices"`
+	Usage   openAIUsage          `json:"usage"`
 }
 
 // -- implementation --
 
-func (b *OpenAIBackend) Chat(ctx context.Context, model string, messages []Message, tools []Tool) (*Response, error) {
+func (b *OpenAIBackend) doChat(ctx context.Context, model string, messages []Message, tools []Tool, stream bool) (*http.Response, error) {
 	wireMessages := make([]openAIMessage, len(messages))
 	for i, m := range messages {
 		wireMessages[i] = openAIMessage{
@@ -115,7 +136,7 @@ func (b *OpenAIBackend) Chat(ctx context.Context, model string, messages []Messa
 		Model:    model,
 		Messages: wireMessages,
 		Tools:    wireTools,
-		Stream:   false,
+		Stream:   stream,
 	}
 
 	data, err := json.Marshal(req)
@@ -136,12 +157,22 @@ func (b *OpenAIBackend) Chat(ctx context.Context, model string, messages []Messa
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return nil, fmt.Errorf("openai HTTP %d: %s", resp.StatusCode, body)
 	}
+
+	return resp, nil
+}
+
+func (b *OpenAIBackend) Chat(ctx context.Context, model string, messages []Message, tools []Tool) (*Response, error) {
+	resp, err := b.doChat(ctx, model, messages, tools, false)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
 	var wire openAIChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
@@ -155,7 +186,6 @@ func (b *OpenAIBackend) Chat(ctx context.Context, model string, messages []Messa
 	choice := wire.Choices[0]
 	msg := Message{Role: choice.Message.Role, Content: choice.Message.Content}
 	for _, tc := range choice.Message.ToolCalls {
-		// Arguments arrive as a JSON string; convert to RawMessage.
 		args := json.RawMessage(tc.Function.Arguments)
 		msg.ToolCalls = append(msg.ToolCalls, ToolCall{
 			ID:        tc.ID,
@@ -169,4 +199,98 @@ func (b *OpenAIBackend) Chat(ctx context.Context, model string, messages []Messa
 		StopReason: choice.FinishReason,
 		Usage:      Usage{InputTokens: wire.Usage.PromptTokens, OutputTokens: wire.Usage.CompletionTokens},
 	}, nil
+}
+
+func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages []Message, tools []Tool) (<-chan StreamEvent, error) {
+	resp, err := b.doChat(ctx, model, messages, tools, true)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := make(chan StreamEvent, 8)
+
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+		// Accumulate tool call fragments by index (OpenAI sends args incrementally).
+		type tcAccum struct {
+			id, name, args string
+		}
+		accum := make(map[int]*tcAccum)
+
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" || line == "data: [DONE]" {
+				continue
+			}
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			payload := line[6:] // strip "data: "
+
+			var wire openAIStreamResponse
+			if err := json.Unmarshal([]byte(payload), &wire); err != nil {
+				ch <- StreamEvent{Done: true, StopReason: fmt.Sprintf("stream decode: %v", err)}
+				return
+			}
+
+			if len(wire.Choices) == 0 {
+				continue
+			}
+
+			ev := StreamEvent{}
+			choice := wire.Choices[0]
+
+			// Text content delta.
+			if choice.Delta.Content != "" {
+				ev.Content = choice.Delta.Content
+			}
+
+			// Tool call fragments.
+			for _, dtc := range choice.Delta.ToolCalls {
+				idx := dtc.Index
+				if _, ok := accum[idx]; !ok {
+					accum[idx] = &tcAccum{id: dtc.ID, name: dtc.Function.Name}
+				}
+				a := accum[idx]
+				if dtc.ID != "" {
+					a.id = dtc.ID
+				}
+				if dtc.Function.Name != "" {
+					a.name = dtc.Function.Name
+				}
+				a.args += dtc.Function.Arguments
+			}
+
+			// If finish_reason is set, flush assembled tool calls.
+			if choice.FinishReason != "" {
+				for _, a := range accum {
+					ev.ToolCalls = append(ev.ToolCalls, ToolCall{
+						ID:        a.id,
+						Name:      a.name,
+						Arguments: json.RawMessage(a.args),
+					})
+				}
+				ev.StopReason = choice.FinishReason
+				ev.Done = true
+				ev.Usage = Usage{
+					InputTokens:  wire.Usage.PromptTokens,
+					OutputTokens: wire.Usage.CompletionTokens,
+				}
+			}
+
+			if ev.Content != "" || len(ev.ToolCalls) > 0 || ev.Done {
+				ch <- ev
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			ch <- StreamEvent{Done: true, StopReason: fmt.Sprintf("stream read: %v", err)}
+		}
+	}()
+
+	return ch, nil
 }
