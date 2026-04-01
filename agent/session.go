@@ -4,31 +4,46 @@ import "ollie/backend"
 
 // Session is an ephemeral in-memory state backend.
 // It lives only for the duration of the process; nothing is persisted.
+//
+// History() returns a bounded context window via ContextBuilder to prevent
+// prompt explosion across multi-step agent loops. Use NewSessionWithConfig
+// to override the default limits.
 type Session struct {
 	goal     string
-	history  []backend.Message
+	ctx      *ContextBuilder
 	complete bool
 }
 
-// NewSession creates a Session with the goal already placed as the first
-// user message in history, so the loop can call backend.Chat immediately.
+// NewSession creates a Session with default context window limits.
 func NewSession(goal string) *Session {
-	return &Session{
-		goal: goal,
-		history: []backend.Message{
-			{Role: "user", Content: goal},
-		},
-	}
+	return NewSessionWithConfig(goal, ContextConfig{})
 }
 
-func (s *Session) Goal() string             { return s.goal }
-func (s *Session) History() []backend.Message { return s.history }
-func (s *Session) IsComplete() bool          { return s.complete }
+// NewSessionWithConfig creates a Session with explicit context window limits.
+// Pass a zero-value ContextConfig to use all defaults.
+func NewSessionWithConfig(goal string, cfg ContextConfig) *Session {
+	s := &Session{
+		goal: goal,
+		ctx:  NewContextBuilder(cfg),
+	}
+	s.ctx.Append(backend.Message{Role: "user", Content: goal})
+	return s
+}
+
+func (s *Session) Goal() string { return s.goal }
+
+// History returns the bounded history window safe for passing to the backend.
+// A compaction notice is injected when older messages have been evicted.
+func (s *Session) History() []backend.Message {
+	return s.ctx.BoundedHistoryWithNotice()
+}
+
+func (s *Session) IsComplete() bool { return s.complete }
 
 func (s *Session) Update(assistant backend.Message, results []ToolResult) error {
-	s.history = append(s.history, assistant)
+	s.ctx.Append(assistant)
 	for _, r := range results {
-		s.history = append(s.history, backend.Message{
+		s.ctx.Append(backend.Message{
 			Role:       "tool",
 			Content:    r.Content,
 			ToolCallID: r.ToolCallID,
@@ -46,5 +61,20 @@ func (s *Session) MarkComplete() error {
 // flag so the loop will run again on the next call to Loop.Run.
 func (s *Session) AppendUserMessage(content string) {
 	s.complete = false
-	s.history = append(s.history, backend.Message{Role: "user", Content: content})
+	s.ctx.Append(backend.Message{Role: "user", Content: content})
+}
+
+// ContextStats returns stats about the current context window.
+func (s *Session) ContextStats() ContextStats {
+	return s.ctx.Stats()
+}
+
+// ContextStatsString returns a one-line human-readable context summary.
+func (s *Session) ContextStatsString() string {
+	return s.ctx.ContextStatsString()
+}
+
+// ContextDebug returns a multi-line breakdown of the bounded history.
+func (s *Session) ContextDebug() string {
+	return s.ctx.FormatContextDebug()
 }
