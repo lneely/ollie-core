@@ -1,5 +1,5 @@
 # Binaries
-ollama-mcp-client
+ollie
 *.exe
 *.exe~
 *.dll

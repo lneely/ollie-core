@@ -3,9 +3,9 @@ INSTALL_PATH=$HOME/bin
 all:V: install
 
 build:V:
-	go build -o $INSTALL_PATH/ollama-mcp-client
+	go build -o $INSTALL_PATH/ollie
 
 install:V: build
 
 clean:V:
-	rm -f $INSTALL_PATH/ollama-mcp-client
+	rm -f $INSTALL_PATH/ollie

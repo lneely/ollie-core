@@ -124,14 +124,6 @@ type model struct {
 }
 
 func main() {
-	modelName := os.Getenv("OLLIE_MODEL")
-	if modelName == "" && len(os.Args) > 1 {
-		modelName = os.Args[1]
-	}
-	if modelName == "" {
-		modelName = "qwen3:8b"
-	}
-
 	var startup []string
 	hooks := make(map[string]string)
 	var cfg *config.Config
@@ -182,6 +174,14 @@ func main() {
 	be, err := backend.New()
 	if err != nil {
 		log.Fatalf("Failed to create backend: %v", err)
+	}
+
+	modelName := os.Getenv("OLLIE_MODEL")
+	if modelName == "" && len(os.Args) > 1 {
+		modelName = os.Args[1]
+	}
+	if modelName == "" {
+		modelName = "qwen3:8b"
 	}
 
 	home, _ := os.UserHomeDir()
