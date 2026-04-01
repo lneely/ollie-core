@@ -29,17 +29,17 @@ func NewOpenAI(baseURL, apiKey string) *OpenAIBackend {
 // -- wire types --
 
 type openAIMessage struct {
-	Role       string             `json:"role"`
-	Content    string             `json:"content,omitempty"`
-	ToolCalls  []openAIToolCall   `json:"tool_calls,omitempty"`
-	ToolCallID string             `json:"tool_call_id,omitempty"`
+	Role       string           `json:"role"`
+	Content    string           `json:"content,omitempty"`
+	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
 type openAIToolCall struct {
-	ID       string               `json:"id"`
-	Index    int                  `json:"index,omitempty"`
-	Type     string               `json:"type"`
-	Function openAIFunctionCall   `json:"function"`
+	ID       string             `json:"id"`
+	Index    int                `json:"index,omitempty"`
+	Type     string             `json:"type"`
+	Function openAIFunctionCall `json:"function"`
 }
 
 type openAIFunctionCall struct {
@@ -58,11 +58,16 @@ type openAIToolFunction struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
+type openAIStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
 type openAIChatRequest struct {
-	Model    string          `json:"model"`
-	Messages []openAIMessage `json:"messages"`
-	Tools    []openAITool    `json:"tools,omitempty"`
-	Stream   bool            `json:"stream"`
+	Model         string              `json:"model"`
+	Messages      []openAIMessage     `json:"messages"`
+	Tools         []openAITool        `json:"tools,omitempty"`
+	Stream        bool                `json:"stream"`
+	StreamOptions *openAIStreamOptions `json:"stream_options,omitempty"`
 }
 
 type openAIUsage struct {
@@ -76,9 +81,9 @@ type openAIChatResponse struct {
 }
 
 type openAIDelta struct {
-	Role       string             `json:"role"`
-	Content    string             `json:"content"`
-	ToolCalls  []openAIToolCall   `json:"tool_calls,omitempty"`
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
 }
 
 type openAIChoice struct {
@@ -88,9 +93,9 @@ type openAIChoice struct {
 }
 
 type openAIStreamChoice struct {
-	Index        int                   `json:"index"`
-	Delta        openAIDelta           `json:"delta"`
-	FinishReason string                `json:"finish_reason"`
+	Index        int         `json:"index"`
+	Delta        openAIDelta `json:"delta"`
+	FinishReason string      `json:"finish_reason"`
 }
 
 type openAIStreamResponse struct {
@@ -137,6 +142,12 @@ func (b *OpenAIBackend) doChat(ctx context.Context, model string, messages []Mes
 		Messages: wireMessages,
 		Tools:    wireTools,
 		Stream:   stream,
+	}
+
+	// Ask OpenAI to include token usage in the stream. Without this flag
+	// the API omits usage entirely from SSE chunks.
+	if stream {
+		req.StreamOptions = &openAIStreamOptions{IncludeUsage: true}
 	}
 
 	data, err := json.Marshal(req)
@@ -222,10 +233,33 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages [
 		}
 		accum := make(map[int]*tcAccum)
 
+		// finishReason and accumulated usage are tracked separately because
+		// OpenAI sends usage in a trailing chunk *after* the finish_reason chunk.
+		var finishReason string
+		var usage Usage
+
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
-			if line == "" || line == "data: [DONE]" {
+			if line == "" {
 				continue
+			}
+			if line == "data: [DONE]" {
+				// Stream finished. Emit the Done event with whatever usage
+				// we have accumulated (may arrive before or after this sentinel).
+				ev := StreamEvent{
+					Done:       true,
+					StopReason: finishReason,
+					Usage:      usage,
+				}
+				for _, a := range accum {
+					ev.ToolCalls = append(ev.ToolCalls, ToolCall{
+						ID:        a.id,
+						Name:      a.name,
+						Arguments: json.RawMessage(a.args),
+					})
+				}
+				ch <- ev
+				return
 			}
 			if !strings.HasPrefix(line, "data: ") {
 				continue
@@ -238,19 +272,33 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages [
 				return
 			}
 
+			// Accumulate usage from every chunk; it will be non-zero only on
+			// the trailing usage chunk that OpenAI sends after finish_reason.
+			if wire.Usage.PromptTokens > 0 {
+				usage.InputTokens = wire.Usage.PromptTokens
+			}
+			if wire.Usage.CompletionTokens > 0 {
+				usage.OutputTokens = wire.Usage.CompletionTokens
+			}
+
 			if len(wire.Choices) == 0 {
+				// Choices-less chunk (e.g. the trailing usage-only chunk).
 				continue
 			}
 
-			ev := StreamEvent{}
 			choice := wire.Choices[0]
+
+			// Record finish reason when it arrives.
+			if choice.FinishReason != "" {
+				finishReason = choice.FinishReason
+			}
 
 			// Text content delta.
 			if choice.Delta.Content != "" {
-				ev.Content = choice.Delta.Content
+				ch <- StreamEvent{Content: choice.Delta.Content}
 			}
 
-			// Tool call fragments.
+			// Tool call fragments — accumulate, do not emit yet.
 			for _, dtc := range choice.Delta.ToolCalls {
 				idx := dtc.Index
 				if _, ok := accum[idx]; !ok {
@@ -264,27 +312,6 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages [
 					a.name = dtc.Function.Name
 				}
 				a.args += dtc.Function.Arguments
-			}
-
-			// If finish_reason is set, flush assembled tool calls.
-			if choice.FinishReason != "" {
-				for _, a := range accum {
-					ev.ToolCalls = append(ev.ToolCalls, ToolCall{
-						ID:        a.id,
-						Name:      a.name,
-						Arguments: json.RawMessage(a.args),
-					})
-				}
-				ev.StopReason = choice.FinishReason
-				ev.Done = true
-				ev.Usage = Usage{
-					InputTokens:  wire.Usage.PromptTokens,
-					OutputTokens: wire.Usage.CompletionTokens,
-				}
-			}
-
-			if ev.Content != "" || len(ev.ToolCalls) > 0 || ev.Done {
-				ch <- ev
 			}
 		}
 		if err := scanner.Err(); err != nil {
