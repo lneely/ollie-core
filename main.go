@@ -121,6 +121,40 @@ const (
 	agentRunningTool
 )
 
+// resolveBackendName returns a short human-readable backend label derived
+// from OLLIE_BACKEND and (for openai-compatible backends) OLLIE_OPENAI_URL.
+// Known provider hostnames are mapped to friendly names so that e.g.
+// openrouter.ai shows up as "openrouter" rather than "openai".
+func resolveBackendName() string {
+	which := os.Getenv("OLLIE_BACKEND")
+	if which == "" {
+		which = "ollama"
+	}
+	if which != "openai" {
+		return which
+	}
+	// For openai-compatible backends, try to identify the provider from the URL.
+	url := strings.ToLower(os.Getenv("OLLIE_OPENAI_URL"))
+	switch {
+	case strings.Contains(url, "openrouter"):
+		return "openrouter"
+	case strings.Contains(url, "together"):
+		return "together"
+	case strings.Contains(url, "groq"):
+		return "groq"
+	case strings.Contains(url, "mistral"):
+		return "mistral"
+	case strings.Contains(url, "anthropic"):
+		return "anthropic"
+	case strings.Contains(url, "localhost") || strings.Contains(url, "127.0.0.1"):
+		return "local"
+	case url == "":
+		return "openai"
+	default:
+		return "openai"
+	}
+}
+
 // NOTE: buf and display lines use plain strings; bubbletea copies the model
 // by value on every Update(), so strings.Builder and other copy-sensitive
 // types will panic.
@@ -137,20 +171,21 @@ type model struct {
 	cancel      context.CancelFunc
 	doneCh      chan struct{}
 	modelName   string
+	backendName string // e.g. "ollama", "openrouter", "openai"
 
 	// status bar state
 	state       agentState
-	currentTool string           // name of tool currently executing
+	currentTool string
 	lastUsage   backend.Usage
 	ctxStats    agent.ContextStats
 }
 
 type agentMsg struct {
-	role    string
-	content string
-	name    string
-	done    bool
-	usage   backend.Usage
+	role     string
+	content  string
+	name     string
+	done     bool
+	usage    backend.Usage
 	ctxStats agent.ContextStats
 }
 
@@ -219,6 +254,10 @@ func main() {
 		modelName = "qwen3:8b"
 	}
 
+	// Resolve after backend.New() so that loadEnvFile has already run and
+	// populated OLLIE_BACKEND / OLLIE_OPENAI_URL from ~/.config/ollie/env.
+	backendName := resolveBackendName()
+
 	home, _ := os.UserHomeDir()
 	builtinExec := execpkg.New(
 		home+"/.local/state/ollie",
@@ -272,13 +311,14 @@ func main() {
 	}
 
 	p := tea.NewProgram(model{
-		textarea:  ta,
-		viewport:  vp,
-		loopcfg:   loopcfg,
-		hooks:     hooks,
-		display:   startup,
-		modelName: modelName,
-		state:     agentIdle,
+		textarea:    ta,
+		viewport:    vp,
+		loopcfg:     loopcfg,
+		hooks:       hooks,
+		display:     startup,
+		modelName:   modelName,
+		backendName: backendName,
+		state:       agentIdle,
 	})
 
 	if hook := hooks["agentSpawn"]; hook != "" {
@@ -346,7 +386,8 @@ func (m model) renderStatusBar() string {
 		}
 	}
 
-	bar := fmt.Sprintf("[%s] %s | %s | %s", m.modelName, stateStr, usageStr, ctxStr)
+	bar := fmt.Sprintf("[%s :: %s] %s | %s | %s",
+		m.backendName, m.modelName, stateStr, usageStr, ctxStr)
 	return statusBarStyle.Width(m.viewport.Width).Render(bar)
 }
 
@@ -495,7 +536,6 @@ func (m model) startAgent(session *agent.Session) (chan tea.Msg, context.CancelF
 			msg.content = em.Content
 			msg.name = em.Name
 
-			// Attach live usage + context stats on every usage event.
 			if em.Role == "usage" {
 				msg.usage = em.Usage
 				msg.ctxStats = session.ContextStats()
