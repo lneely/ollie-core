@@ -107,14 +107,19 @@ func (l *Loop) Run(ctx context.Context, state State) error {
 			l.emit(OutputMsg{Role: "tool", Name: tc.Name, Content: content})
 		}
 
+		// Only emit the full assistant text if we did NOT stream it.
 		if !l.streamed && resp.Message.Content != "" {
 			l.emit(OutputMsg{Role: "assistant", Content: resp.Message.Content})
 		}
 
-		l.emit(OutputMsg{
-			Role:    "usage",
-			Content: fmt.Sprintf("↑%d ↓%d tokens", resp.Usage.InputTokens, resp.Usage.OutputTokens),
-		})
+		// Emit usage only when there are actual token counts (skips
+		// intermediate steps and avoids [↑0 ↓0 tokens] noise).
+		if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
+			l.emit(OutputMsg{
+				Role:    "usage",
+				Content: fmt.Sprintf("↑%d ↓%d tokens", resp.Usage.InputTokens, resp.Usage.OutputTokens),
+			})
+		}
 
 		if err := state.Update(resp.Message, results); err != nil {
 			return fmt.Errorf("step %d update: %w", step, err)
@@ -131,7 +136,6 @@ func (l *Loop) Run(ctx context.Context, state State) error {
 	}
 
 	l.skippedCalls = make(map[string]bool)
-	l.streamed = true
 	return nil
 }
 
