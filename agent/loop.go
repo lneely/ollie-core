@@ -16,6 +16,7 @@ type OutputMsg struct {
 	Role    string
 	Name    string
 	Content string
+	Usage   backend.Usage
 }
 
 type Config struct {
@@ -116,8 +117,8 @@ func (l *Loop) Run(ctx context.Context, state State) error {
 		// intermediate steps and avoids [↑0 ↓0 tokens] noise).
 		if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
 			l.emit(OutputMsg{
-				Role:    "usage",
-				Content: fmt.Sprintf("↑%d ↓%d tokens", resp.Usage.InputTokens, resp.Usage.OutputTokens),
+				Role:  "usage",
+				Usage: resp.Usage,
 			})
 		}
 
