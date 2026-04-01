@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"ollie/agent"
 	"ollie/backend"
@@ -38,7 +39,7 @@ Do not restate the task. Do not hedge. Do not self-congratulate.
 Use execute_code whenever the task requires:
 - running shell commands or scripts
 - reading or writing files
- making network requests
+- making network requests
 - any information you cannot reliably state from memory
 
 Do not answer from memory when you can verify with execute_code.
@@ -111,21 +112,37 @@ var executeCodeTool = backend.Tool{
 	}`),
 }
 
+// agentState represents what the agent is currently doing.
+type agentState int
+
+const (
+	agentIdle agentState = iota
+	agentThinking
+	agentRunningTool
+)
+
 // NOTE: buf and display lines use plain strings; bubbletea copies the model
 // by value on every Update(), so strings.Builder and other copy-sensitive
 // types will panic.
 type model struct {
-	textarea  textarea.Model
-	viewport  viewport.Model
-	session   *agent.Session
-	loopcfg   agent.Config
-	display   []string
-	buf       string // live streaming assistant text
-	hooks     map[string]string
-	ready     bool
-	agentCh   chan tea.Msg
-	cancel    context.CancelFunc
-	doneCh    chan struct{}
+	textarea    textarea.Model
+	viewport    viewport.Model
+	session     *agent.Session
+	loopcfg     agent.Config
+	display     []string
+	buf         string // live streaming assistant text
+	hooks       map[string]string
+	ready       bool
+	agentCh     chan tea.Msg
+	cancel      context.CancelFunc
+	doneCh      chan struct{}
+	modelName   string
+
+	// status bar state
+	state       agentState
+	currentTool string           // name of tool currently executing
+	lastUsage   backend.Usage
+	ctxStats    agent.ContextStats
 }
 
 type agentMsg struct {
@@ -133,7 +150,14 @@ type agentMsg struct {
 	content string
 	name    string
 	done    bool
+	usage   backend.Usage
+	ctxStats agent.ContextStats
 }
+
+// statusBarStyle is a full-width reversed bar.
+var statusBarStyle = lipgloss.NewStyle().
+	Reverse(true).
+	Padding(0, 1)
 
 func main() {
 	var startup []string
@@ -248,11 +272,13 @@ func main() {
 	}
 
 	p := tea.NewProgram(model{
-		textarea: ta,
-		viewport: vp,
-		loopcfg:  loopcfg,
-		hooks:    hooks,
-		display:  startup,
+		textarea:  ta,
+		viewport:  vp,
+		loopcfg:   loopcfg,
+		hooks:     hooks,
+		display:   startup,
+		modelName: modelName,
+		state:     agentIdle,
 	})
 
 	if hook := hooks["agentSpawn"]; hook != "" {
@@ -268,9 +294,7 @@ func (m model) Init() tea.Cmd {
 	return textarea.Blink
 }
 
-// renderDisplay produces the full viewport text. Each element of m.display
-// is considered a single line; the current streaming buffer (m.buf) is the
-// last (incomplete) line.
+// renderDisplay produces the full viewport text.
 func (m model) renderDisplay() string {
 	var b strings.Builder
 	for i, line := range m.display {
@@ -293,6 +317,39 @@ func (m *model) refreshView() {
 	m.viewport.GotoBottom()
 }
 
+// renderStatusBar returns the one-line status bar string.
+func (m model) renderStatusBar() string {
+	// Agent state segment.
+	var stateStr string
+	switch m.state {
+	case agentIdle:
+		stateStr = "idle"
+	case agentThinking:
+		stateStr = "thinking\u2026"
+	case agentRunningTool:
+		stateStr = "tool: " + m.currentTool
+	}
+
+	// Token usage segment.
+	usageStr := "last: -"
+	if m.lastUsage.InputTokens > 0 || m.lastUsage.OutputTokens > 0 {
+		usageStr = fmt.Sprintf("last: \u2191%d \u2193%d", m.lastUsage.InputTokens, m.lastUsage.OutputTokens)
+	}
+
+	// Context stats segment.
+	ctxStr := "ctx: -"
+	if m.ctxStats.StoredMessages > 0 {
+		ktok := float64(m.ctxStats.ApproxTokens) / 1000.0
+		ctxStr = fmt.Sprintf("ctx: ~%.1fk tokens (%d msgs)", ktok, m.ctxStats.BoundedMessages)
+		if m.ctxStats.Evicted > 0 {
+			ctxStr += fmt.Sprintf(", %d evicted", m.ctxStats.Evicted)
+		}
+	}
+
+	bar := fmt.Sprintf("[%s] %s | %s | %s", m.modelName, stateStr, usageStr, ctxStr)
+	return statusBarStyle.Width(m.viewport.Width).Render(bar)
+}
+
 // finalizeBuf commits the in-progress streaming text as a new display line.
 func (m *model) finalizeBuf() {
 	if m.buf != "" {
@@ -305,11 +362,12 @@ func (m *model) finalizeBuf() {
 func (m *model) apply(am agentMsg) {
 	switch am.role {
 	case "assistant":
-		// Streaming text delta — accumulate in the live buffer.
+		m.state = agentThinking
 		m.buf += am.content
 
 	case "call":
-		// Tool call: finalize any pending bot text, then add a new line.
+		m.state = agentRunningTool
+		m.currentTool = am.name
 		m.finalizeBuf()
 		args := squashWhitespace(am.content)
 		if len(args) > 500 {
@@ -318,6 +376,7 @@ func (m *model) apply(am agentMsg) {
 		m.display = append(m.display, fmt.Sprintf("-> %s(%s)", am.name, args))
 
 	case "tool":
+		m.state = agentThinking
 		s := squashWhitespace(am.content)
 		if len(s) > 500 {
 			s = s[:500] + "..."
@@ -329,13 +388,13 @@ func (m *model) apply(am agentMsg) {
 		m.display = append(m.display, "Error: "+am.content)
 
 	case "usage":
-		m.finalizeBuf()
-		m.display = append(m.display, "["+am.content+"]")
+		// Update status bar only; no display line appended.
+		m.lastUsage = am.usage
+		m.ctxStats = am.ctxStats
 	}
 }
 
-// drainAgent cancels the in-flight goroutine and drains remaining events
-// so the display is in a consistent state.
+// drainAgent cancels the in-flight goroutine and drains remaining events.
 func (m *model) drainAgent() {
 	if m.cancel == nil {
 		return
@@ -343,7 +402,7 @@ func (m *model) drainAgent() {
 	m.cancel()
 	m.cancel = nil
 	if m.doneCh != nil {
-		<-m.doneCh // goroutine closed the channel
+		<-m.doneCh
 		m.doneCh = nil
 	}
 	if m.agentCh != nil {
@@ -361,8 +420,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		// Reserve 1 row for the status bar, 5 for the textarea.
 		m.viewport.Width = msg.Width
-		m.viewport.Height = msg.Height - 5
+		m.viewport.Height = msg.Height - 5 - 1
 		m.textarea.SetWidth(msg.Width)
 		m.refreshView()
 		m.ready = true
@@ -371,10 +431,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.apply(msg)
 		m.refreshView()
 		if msg.done {
+			m.state = agentIdle
+			m.currentTool = ""
 			m.agentCh = nil
 			return m, nil
 		}
-		// Chain to the next goroutine message.
 		return m, func() tea.Msg { return <-m.agentCh }
 
 	case tea.KeyMsg:
@@ -386,11 +447,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if input == "" {
 				return m, nil
 			}
-
-			// Cancel any running agent to avoid concurrent session mutation.
 			m.drainAgent()
 			m.finalizeBuf()
-
 			m.display = append(m.display, "You: "+input)
 			m.refreshView()
 			m.textarea.Reset()
@@ -404,6 +462,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.session.AppendUserMessage(input)
 			}
+			m.state = agentThinking
 			ch, cancel, doneCh := m.startAgent(m.session)
 			m.agentCh = ch
 			m.cancel = cancel
@@ -419,7 +478,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // startAgent launches the loop in a goroutine, wiring its output to ch.
-// cancel stops the loop; doneCh is closed when the goroutine exits.
 func (m model) startAgent(session *agent.Session) (chan tea.Msg, context.CancelFunc, chan struct{}) {
 	loopcfg := m.loopcfg
 	hooks := m.hooks
@@ -432,8 +490,19 @@ func (m model) startAgent(session *agent.Session) (chan tea.Msg, context.CancelF
 		defer close(doneCh)
 
 		loopcfg.Output = func(em agent.OutputMsg) {
+			var msg agentMsg
+			msg.role = em.Role
+			msg.content = em.Content
+			msg.name = em.Name
+
+			// Attach live usage + context stats on every usage event.
+			if em.Role == "usage" {
+				msg.usage = em.Usage
+				msg.ctxStats = session.ContextStats()
+			}
+
 			select {
-			case ch <- agentMsg{role: em.Role, content: em.Content, name: em.Name}:
+			case ch <- msg:
 			case <-ctx.Done():
 				return
 			}
@@ -464,7 +533,7 @@ func (m model) View() string {
 	if !m.ready {
 		return "Loading..."
 	}
-	return m.viewport.View() + "\n" + m.textarea.View()
+	return m.viewport.View() + "\n" + m.renderStatusBar() + "\n" + m.textarea.View()
 }
 
 // compactJSON removes whitespace between JSON tokens.
@@ -504,7 +573,7 @@ func wordWrap(s string, width int) string {
 				out.WriteByte('\n')
 				out.WriteString(word)
 				col = wl
-				first = true // next word goes at BOL
+				first = true
 			default:
 				out.WriteByte(' ')
 				out.WriteString(word)
