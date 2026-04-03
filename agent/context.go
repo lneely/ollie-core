@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"ollie/backend"
@@ -22,9 +23,18 @@ type ContextConfig struct {
 	// before being added to history. Defaults to 2000.
 	MaxToolOutputChars int
 
-	// TailMessages: always preserve the most recent N messages verbatim,
-	// even under eviction pressure. Defaults to 6.
+	// TailMessages: always preserve the most recent N conversational turns
+	// (user + plain-assistant messages) verbatim, even under eviction pressure.
+	// Tool-call exchanges between those turns are included, but processed
+	// tool exchanges do not count toward this limit.
+	// Defaults to 6.
 	TailMessages int
+
+	// FixedOverheadChars is the estimated character count of fixed per-request
+	// overhead (system prompt, tool schemas) sent outside the ContextBuilder.
+	// Subtracted from the budget before greedy inclusion.
+	// Defaults to 0.
+	FixedOverheadChars int
 }
 
 func defaultContextConfig() ContextConfig {
@@ -80,14 +90,28 @@ func (cb *ContextBuilder) Messages() []backend.Message {
 }
 
 // BoundedHistory returns a context-window-safe slice of messages.
+func (cb *ContextBuilder) BoundedHistory() []backend.Message {
+	return cb.buildBounded(false)
+}
+
+// BoundedHistoryWithNotice is like BoundedHistory but injects a compaction
+// notice message when older messages were dropped, so the model is aware.
+func (cb *ContextBuilder) BoundedHistoryWithNotice() []backend.Message {
+	return cb.buildBounded(true)
+}
+
+// buildBounded is the shared implementation for BoundedHistory and
+// BoundedHistoryWithNotice.
 //
 // Strategy:
 //  1. System messages are always included at the front.
-//  2. The most recent TailMessages non-system messages are always kept.
-//  3. Older messages are included newest-first until SoftLimit is reached.
+//  2. The most recent TailMessages conversational turns (user + plain-assistant)
+//     are always kept, along with any tool exchanges between or trailing them.
+//  3. Older messages are included newest-first until SoftLimit is reached,
+//     accounting for FixedOverheadChars (system prompt, tool schemas).
 //  4. If total still exceeds HardLimit, oldest non-system/non-tail messages
-//     are dropped entirely.
-func (cb *ContextBuilder) BoundedHistory() []backend.Message {
+//     are dropped atomically (assistant[tool_calls]+tool pairs together).
+func (cb *ContextBuilder) buildBounded(injectNotice bool) []backend.Message {
 	var system []backend.Message
 	var rest []backend.Message
 
@@ -103,16 +127,12 @@ func (cb *ContextBuilder) BoundedHistory() []backend.Message {
 		return system
 	}
 
-	// Always keep the tail.
-	tailStart := len(rest) - cb.cfg.TailMessages
-	if tailStart < 0 {
-		tailStart = 0
-	}
-	tail := rest[tailStart:]
-	older := rest[:tailStart]
+	ts := computeTailStart(rest, cb.cfg.TailMessages)
+	tail := rest[ts:]
+	older := rest[:ts]
 
-	// Budget remaining after system + tail.
-	used := msgSliceChars(system) + msgSliceChars(tail)
+	// Budget: fixed overhead + system + tail chars subtracted up front.
+	used := cb.cfg.FixedOverheadChars + msgSliceChars(system) + msgSliceChars(tail)
 	budget := cb.cfg.SoftLimit - used
 
 	// Greedily include older messages newest-first until budget exhausted.
@@ -123,21 +143,25 @@ func (cb *ContextBuilder) BoundedHistory() []backend.Message {
 			break
 		}
 		budget -= size
-		included = append([]backend.Message{older[i]}, included...)
+		included = append(included, older[i])
 	}
+	slices.Reverse(included)
 
-	result := make([]backend.Message, 0, len(system)+len(included)+len(tail))
+	evicted := len(older) - len(included)
+
+	result := make([]backend.Message, 0, len(system)+len(included)+len(tail)+1)
 	result = append(result, system...)
+	if injectNotice && evicted > 0 {
+		result = append(result, contextSummaryLine(evicted))
+	}
 	result = append(result, included...)
 	result = append(result, tail...)
 
-	// Hard-limit safety: truncate from the front (after system) if still over.
-	// Drop assistant[tool_calls]+tool[result] pairs atomically so we never
-	// leave an orphaned tool message without its preceding assistant.
-	for totalChars(result) > cb.cfg.HardLimit && len(result) > len(system)+1 {
-		drop := len(system) // index of oldest non-system message
-		// If this message has tool calls, also drop the consecutive tool
-		// result messages that follow it.
+	// Hard-limit safety: drop from front (after system) atomically.
+	// Account for fixed overhead in the ceiling check.
+	ceiling := cb.cfg.HardLimit - cb.cfg.FixedOverheadChars
+	for totalChars(result) > ceiling && len(result) > len(system)+1 {
+		drop := len(system)
 		if result[drop].Role == "assistant" && len(result[drop].ToolCalls) > 0 {
 			end := drop + 1
 			for end < len(result) && result[end].Role == "tool" {
@@ -150,6 +174,48 @@ func (cb *ContextBuilder) BoundedHistory() []backend.Message {
 	}
 
 	return sanitizeHistory(result)
+}
+
+// computeTailStart returns the index in rest where the tail begins.
+//
+// Only user and plain-assistant (no tool calls) messages count toward
+// tailCount. Any trailing in-progress exchange (assistant[tool_calls] +
+// consecutive tool results with nothing after) is always included and does
+// not consume quota. This prevents processed tool exchanges from crowding
+// out genuine conversational context.
+func computeTailStart(rest []backend.Message, tailCount int) int {
+	n := len(rest)
+	if n == 0 || tailCount <= 0 {
+		return 0
+	}
+
+	// Identify any trailing in-progress exchange: ends with tool result(s)
+	// that have not yet been followed by an assistant reply.
+	inProgStart := n
+	if rest[n-1].Role == "tool" {
+		j := n - 1
+		for j > 0 && rest[j].Role == "tool" {
+			j--
+		}
+		if rest[j].Role == "assistant" && len(rest[j].ToolCalls) > 0 {
+			inProgStart = j
+		}
+	}
+
+	// Count tailCount conversational messages (user or plain assistant)
+	// from inProgStart-1 backward.
+	counted := 0
+	for i := inProgStart - 1; i >= 0; i-- {
+		m := rest[i]
+		if m.Role == "user" || (m.Role == "assistant" && len(m.ToolCalls) == 0) {
+			counted++
+			if counted >= tailCount {
+				return i
+			}
+		}
+	}
+	// Fewer than tailCount conversational messages: include everything.
+	return 0
 }
 
 // Len returns the number of stored messages.
@@ -190,70 +256,6 @@ func contextSummaryLine(evicted int) backend.Message {
 		Role:    "user",
 		Content: fmt.Sprintf("[context compacted: %d earlier messages omitted to stay within token budget]", evicted),
 	}
-}
-
-// BoundedHistoryWithNotice is like BoundedHistory but injects a compaction
-// notice message when older messages were dropped, so the model is aware.
-func (cb *ContextBuilder) BoundedHistoryWithNotice() []backend.Message {
-	var system []backend.Message
-	var rest []backend.Message
-
-	for _, m := range cb.messages {
-		if m.Role == "system" {
-			system = append(system, m)
-		} else {
-			rest = append(rest, m)
-		}
-	}
-
-	if len(rest) == 0 {
-		return system
-	}
-
-	tailStart := len(rest) - cb.cfg.TailMessages
-	if tailStart < 0 {
-		tailStart = 0
-	}
-	tail := rest[tailStart:]
-	older := rest[:tailStart]
-
-	used := msgSliceChars(system) + msgSliceChars(tail)
-	budget := cb.cfg.SoftLimit - used
-
-	var included []backend.Message
-	for i := len(older) - 1; i >= 0; i-- {
-		size := msgChars(older[i])
-		if budget-size < 0 {
-			break
-		}
-		budget -= size
-		included = append([]backend.Message{older[i]}, included...)
-	}
-
-	evicted := len(older) - len(included)
-
-	result := make([]backend.Message, 0, len(system)+len(included)+len(tail)+1)
-	result = append(result, system...)
-	if evicted > 0 {
-		result = append(result, contextSummaryLine(evicted))
-	}
-	result = append(result, included...)
-	result = append(result, tail...)
-
-	for totalChars(result) > cb.cfg.HardLimit && len(result) > len(system)+1 {
-		drop := len(system)
-		if result[drop].Role == "assistant" && len(result[drop].ToolCalls) > 0 {
-			end := drop + 1
-			for end < len(result) && result[end].Role == "tool" {
-				end++
-			}
-			result = append(result[:drop], result[end:]...)
-		} else {
-			result = append(result[:drop], result[drop+1:]...)
-		}
-	}
-
-	return sanitizeHistory(result)
 }
 
 // sanitizeHistory removes tool messages that are not preceded by an assistant
@@ -297,12 +299,6 @@ type ContextStats struct {
 
 func (cb *ContextBuilder) Stats() ContextStats {
 	bounded := cb.BoundedHistory()
-	var system []backend.Message
-	for _, m := range cb.messages {
-		if m.Role == "system" {
-			system = append(system, m)
-		}
-	}
 	evicted := len(cb.messages) - len(bounded)
 	if evicted < 0 {
 		evicted = 0
@@ -310,7 +306,7 @@ func (cb *ContextBuilder) Stats() ContextStats {
 	return ContextStats{
 		StoredMessages:  len(cb.messages),
 		BoundedMessages: len(bounded),
-		ApproxTokens:    totalChars(bounded) / 4,
+		ApproxTokens:    (totalChars(bounded) + cb.cfg.FixedOverheadChars) / 4,
 		Evicted:         evicted,
 		SoftLimit:       cb.cfg.SoftLimit,
 		HardLimit:       cb.cfg.HardLimit,

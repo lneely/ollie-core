@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +97,8 @@ func BuildPipeline(steps []PipeStep) (string, bool, error) {
 	return strings.Join(parts, " |\n"), true, nil
 }
 
+const defaultMaxOutputChars = 8000
+
 // Executor runs code in a sandboxed environment.
 type Executor struct {
 	// LogDir is the directory for execution and security event logs.
@@ -107,6 +110,11 @@ type Executor struct {
 	// If empty, the current working directory is used directly.
 	WorkspaceBase string
 
+	// MaxOutputChars is the maximum number of characters returned from Execute.
+	// Set via OLLIE_TOOL_OUTPUT_CHARS env var or directly on the struct.
+	// Defaults to 8000.
+	MaxOutputChars int
+
 	// rate limiting state (per-Executor)
 	rateLimitMu        sync.Mutex
 	validationFailures int
@@ -115,8 +123,20 @@ type Executor struct {
 }
 
 // New creates a new Executor with the given log directory and workspace base.
+// MaxOutputChars is initialised from OLLIE_TOOL_OUTPUT_CHARS if set,
+// otherwise defaults to 8000.
 func New(logDir, workspaceBase string) *Executor {
-	return &Executor{LogDir: logDir, WorkspaceBase: workspaceBase}
+	maxOutput := defaultMaxOutputChars
+	if s := os.Getenv("OLLIE_TOOL_OUTPUT_CHARS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			maxOutput = n
+		}
+	}
+	return &Executor{
+		LogDir:         logDir,
+		WorkspaceBase:  workspaceBase,
+		MaxOutputChars: maxOutput,
+	}
 }
 
 func (e *Executor) logDir() string {
@@ -316,7 +336,6 @@ func (e *Executor) Execute(code, language string, timeout int, sandboxName strin
 		return "", fmt.Errorf("unsupported language: %s (supported: bash)", language)
 	}
 
-	const maxToolOutputSize = 8000
 	var outputBuf bytes.Buffer
 	lw := &limitedWriter{w: &outputBuf, limit: 10 * 1024 * 1024}
 	cmd.Stdout = lw
@@ -359,8 +378,12 @@ func (e *Executor) Execute(code, language string, timeout int, sandboxName strin
 
 	logExecution(e.logDir(), execLog)
 	result := string(output)
-	if len(result) > maxToolOutputSize {
-		result = result[:maxToolOutputSize] + "\n... (output truncated)"
+	limit := e.MaxOutputChars
+	if limit <= 0 {
+		limit = defaultMaxOutputChars
+	}
+	if len(result) > limit {
+		result = result[:limit] + "\n... (output truncated)"
 	}
 	return result, nil
 }

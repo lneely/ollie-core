@@ -174,6 +174,7 @@ type model struct {
 	doneCh      chan struct{}
 	modelName   string
 	backendName string // e.g. "ollama", "openrouter", "openai"
+	ctxOverhead int    // fixed per-request char overhead (system prompt + tool schemas)
 
 	// status bar state
 	state       agentState
@@ -267,6 +268,14 @@ func main() {
 	)
 
 	allTools := append(mcpToolsToBackend(mcpTools), executeCodeTool)
+
+	// Compute fixed per-request overhead: system prompt + all tool schemas.
+	// This is subtracted from the context budget so limits mean what they say.
+	ctxOverhead := len(systemPrompt)
+	for _, t := range allTools {
+		ctxOverhead += len(t.Name) + len(t.Description) + len(t.Parameters)
+	}
+
 	serverOf := make(map[string]string, len(mcpTools))
 	for _, t := range mcpTools {
 		serverOf[t.Name] = t.Server
@@ -320,6 +329,7 @@ func main() {
 		display:     startup,
 		modelName:   modelName,
 		backendName: backendName,
+		ctxOverhead: ctxOverhead,
 		state:       agentIdle,
 	})
 
@@ -521,7 +531,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			if m.session == nil {
-				m.session = agent.NewSession(input)
+				m.session = agent.NewSessionWithConfig(input, agent.ContextConfig{
+					FixedOverheadChars: m.ctxOverhead,
+				})
 			} else {
 				m.session.AppendUserMessage(input)
 			}
