@@ -234,7 +234,7 @@ func loadLayeredConfig(name string) (*sandbox.Config, error) {
 	layers := []sandbox.LayeredConfig{baseLayer}
 
 	if name == "" {
-		name = "anvilmcp"
+		name = "default"
 	}
 	sbxLayer, err := sandbox.LoadSandbox(name)
 	if err != nil {
