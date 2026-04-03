@@ -230,15 +230,6 @@ func (e *Executor) ValidateCode(code string) error {
 	return nil
 }
 
-// IsPermissionError returns true if err indicates a permission or missing-file error.
-func IsPermissionError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "permission denied") ||
-		strings.Contains(msg, "no such file or directory")
-}
 
 func loadLayeredConfig(name string) (*sandbox.Config, error) {
 	baseCfg, err := sandbox.Load()
