@@ -570,7 +570,7 @@ func (m model) startAgent(session *agent.Session) (chan tea.Msg, context.CancelF
 			}
 		}
 
-		if err := agent.New(loopcfg).Run(ctx, session); err != nil {
+		if err := agent.Run(ctx, loopcfg, session); err != nil {
 			select {
 			case ch <- agentMsg{role: "error", content: err.Error()}:
 			case <-ctx.Done():
