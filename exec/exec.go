@@ -285,6 +285,8 @@ func (e *Executor) Execute(code, language string, timeout int, sandboxName strin
 	workDir, _ := os.Getwd()
 	var cleanupWorkDir bool
 
+	// TODO: unsure if i want to keep WorkspaceBase by default with execute_code tool...
+	/*
 	if e.WorkspaceBase != "" {
 		if err := os.MkdirAll(e.WorkspaceBase, 0700); err != nil {
 			return "", fmt.Errorf("failed to create workspace base: %v", err)
@@ -295,6 +297,7 @@ func (e *Executor) Execute(code, language string, timeout int, sandboxName strin
 		}
 		cleanupWorkDir = true
 	}
+	*/
 
 	if cleanupWorkDir {
 		defer os.RemoveAll(workDir)
