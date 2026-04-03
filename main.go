@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -304,10 +306,10 @@ func main() {
 	vp.KeyMap = viewport.KeyMap{
 		PageDown:     key.NewBinding(key.WithKeys("pgdown")),
 		PageUp:       key.NewBinding(key.WithKeys("pgup")),
-		HalfPageDown: key.NewBinding(key.WithKeys("ctrl+d")),
-		HalfPageUp:   key.NewBinding(key.WithKeys("ctrl+u")),
-		Down:         key.NewBinding(key.WithKeys()),
-		Up:           key.NewBinding(key.WithKeys()),
+		HalfPageDown: key.NewBinding(key.WithKeys("alt+d")),
+		HalfPageUp:   key.NewBinding(key.WithKeys("alt+u")),
+		Down:         key.NewBinding(key.WithKeys("down", "alt+n")),
+		Up:           key.NewBinding(key.WithKeys("up", "alt+p")),
 	}
 
 	p := tea.NewProgram(model{
@@ -392,6 +394,26 @@ func (m model) renderStatusBar() string {
 }
 
 // finalizeBuf commits the in-progress streaming text as a new display line.
+
+// addStreamingContent concatenates a streaming chunk onto the buffer,
+// inserting a single space when neither side has whitespace at the boundary.
+//
+// Some backends (e.g. DeepInfra) occasionally drop whitespace-only tokens
+// (emitting null or "" for a space token), causing words to fuse.  Since
+// LLM APIs always deliver complete BPE tokens — which never split mid-word —
+// inserting a space whenever two non-space runes meet is safe in practice.
+func addStreamingContent(buf, chunk string) string {
+	if buf == "" || chunk == "" {
+		return buf + chunk
+	}
+	last, _ := utf8.DecodeLastRuneInString(buf)
+	first, _ := utf8.DecodeRuneInString(chunk)
+	if !unicode.IsSpace(last) && !unicode.IsSpace(first) {
+		return buf + " " + chunk
+	}
+	return buf + chunk
+}
+
 func (m *model) finalizeBuf() {
 	if m.buf != "" {
 		m.display = append(m.display, "Bot: "+m.buf)
@@ -404,7 +426,7 @@ func (m *model) apply(am agentMsg) {
 	switch am.role {
 	case "assistant":
 		m.state = agentThinking
-		m.buf += am.content
+		m.buf = addStreamingContent(m.buf, am.content)
 
 	case "call":
 		m.state = agentRunningTool
