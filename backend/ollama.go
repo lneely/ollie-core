@@ -68,7 +68,7 @@ type ollamaChatResponse struct {
 
 // -- implementation --
 
-func (b *OllamaBackend) doChat(ctx context.Context, model string, messages []Message, tools []Tool, stream bool) (*http.Response, error) {
+func (b *OllamaBackend) ChatStream(ctx context.Context, model string, messages []Message, tools []Tool) (<-chan StreamEvent, error) {
 	wireMessages := make([]ollamaMessage, len(messages))
 	for i, m := range messages {
 		wireMessages[i] = ollamaMessage{Role: m.Role, Content: m.Content}
@@ -91,14 +91,12 @@ func (b *OllamaBackend) doChat(ctx context.Context, model string, messages []Mes
 		})
 	}
 
-	req := ollamaChatRequest{
+	data, err := json.Marshal(ollamaChatRequest{
 		Model:    model,
 		Messages: wireMessages,
 		Tools:    wireTools,
-		Stream:   stream,
-	}
-
-	data, err := json.Marshal(req)
+		Stream:   true,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -113,55 +111,10 @@ func (b *OllamaBackend) doChat(ctx context.Context, model string, messages []Mes
 	if err != nil {
 		return nil, err
 	}
-
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		return nil, fmt.Errorf("ollama HTTP %d: %s", resp.StatusCode, body)
-	}
-
-	return resp, nil
-}
-
-func (b *OllamaBackend) Chat(ctx context.Context, model string, messages []Message, tools []Tool) (*Response, error) {
-	resp, err := b.doChat(ctx, model, messages, tools, false)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var wire ollamaChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
-		return nil, err
-	}
-
-	msg := Message{Role: wire.Message.Role, Content: wire.Message.Content}
-	for _, tc := range wire.Message.ToolCalls {
-		msg.ToolCalls = append(msg.ToolCalls, ToolCall{
-			Name:      tc.Function.Name,
-			Arguments: tc.Function.Arguments,
-		})
-	}
-
-	stopReason := "stop"
-	if wire.DoneReason != "" {
-		stopReason = wire.DoneReason
-	}
-	if len(msg.ToolCalls) > 0 {
-		stopReason = "tool_calls"
-	}
-
-	return &Response{
-		Message:    msg,
-		StopReason: stopReason,
-		Usage:      Usage{InputTokens: wire.PromptEvalCount, OutputTokens: wire.EvalCount},
-	}, nil
-}
-
-func (b *OllamaBackend) ChatStream(ctx context.Context, model string, messages []Message, tools []Tool) (<-chan StreamEvent, error) {
-	resp, err := b.doChat(ctx, model, messages, tools, true)
-	if err != nil {
-		return nil, err
 	}
 
 	ch := make(chan StreamEvent, 8)
@@ -198,22 +151,18 @@ func (b *OllamaBackend) ChatStream(ctx context.Context, model string, messages [
 				return
 			}
 
-			event := StreamEvent{}
+			ev := StreamEvent{}
 			if wire.Message.Content != "" {
-				event.Content = wire.Message.Content
+				ev.Content = wire.Message.Content
 			}
-			if len(wire.Message.ToolCalls) > 0 {
-				for _, tc := range wire.Message.ToolCalls {
-					event.ToolCalls = append(event.ToolCalls, ToolCall{
-						Name:      tc.Function.Name,
-						Arguments: tc.Function.Arguments,
-					})
-				}
-				// Ollama puts tool calls alongside content in the same delta.
-				// Emit one event with both content and tool calls.
+			for _, tc := range wire.Message.ToolCalls {
+				ev.ToolCalls = append(ev.ToolCalls, ToolCall{
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				})
 			}
-			if event.Content != "" || len(event.ToolCalls) > 0 {
-				ch <- event
+			if ev.Content != "" || len(ev.ToolCalls) > 0 {
+				ch <- ev
 			}
 		}
 		if err := scanner.Err(); err != nil {

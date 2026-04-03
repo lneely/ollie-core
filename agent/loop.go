@@ -30,14 +30,11 @@ type Config struct {
 }
 
 type Loop struct {
-	cfg          Config
-	lastUsage    backend.Usage
-	streamed     bool
-	skippedCalls map[string]bool
+	cfg Config
 }
 
 func New(cfg Config) *Loop {
-	return &Loop{cfg: cfg, skippedCalls: make(map[string]bool)}
+	return &Loop{cfg: cfg}
 }
 
 func (l *Loop) Run(ctx context.Context, state State) error {
@@ -46,91 +43,83 @@ func (l *Loop) Run(ctx context.Context, state State) error {
 		maxSteps = 1
 	}
 
-	sb, streaming := l.cfg.Backend.(backend.StreamingBackend)
-
 	for step := range maxSteps {
-		l.streamed = false
 		history := state.History()
 		if l.cfg.SystemPrompt != "" {
 			history = append([]backend.Message{{Role: "system", Content: l.cfg.SystemPrompt}}, history...)
 		}
 
-		var resp *backend.Response
+		// Stream the assistant's response.
+		ch, err := l.cfg.Backend.ChatStream(ctx, l.cfg.Model, history, l.cfg.Tools)
+		if err != nil {
+			return fmt.Errorf("step %d: %w", step, err)
+		}
 
-		if streaming {
-			msg, err := l.runStreamStep(ctx, sb, l.cfg.Model, history, l.cfg.Tools)
-			if err != nil {
-				return fmt.Errorf("step %d decide: %w", step, err)
+		var content strings.Builder
+		var toolCalls []backend.ToolCall
+		var usage backend.Usage
+		var done bool
+
+		for ev := range ch {
+			if ev.Content != "" {
+				content.WriteString(ev.Content)
+				l.emit(OutputMsg{Role: "assistant", Content: ev.Content})
 			}
-			resp = &backend.Response{
-				Message:    msg,
-				StopReason: decideStopReason(msg),
-				Usage:      l.lastUsage,
-			}
-		} else {
-			var err error
-			resp, err = l.cfg.Backend.Chat(ctx, l.cfg.Model, history, l.cfg.Tools)
-			if err != nil {
-				return fmt.Errorf("step %d decide: %w", step, err)
+			toolCalls = append(toolCalls, ev.ToolCalls...)
+			if ev.Done {
+				usage = ev.Usage
+				done = true
+				break
 			}
 		}
 
-		// Act: execute tool calls.
+		if !done {
+			return fmt.Errorf("step %d: stream ended without done event", step)
+		}
+
+		// Announce and execute tool calls.
+		msg := backend.Message{Role: "assistant", Content: content.String(), ToolCalls: toolCalls}
 		var results []ToolResult
-		for _, tc := range resp.Message.ToolCalls {
-			// In the non-streaming path, emit the call announcement here.
-			// In the streaming path this was already emitted inside
-			// runStreamStep (once all arguments were accumulated), so skip it.
-			if !l.skippedCalls[tc.Name] {
-				l.emit(OutputMsg{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
-			}
 
-			var content string
+		for _, tc := range toolCalls {
+			l.emit(OutputMsg{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
+
+			var result string
 			var isErr bool
-
 			if l.cfg.Exec != nil {
 				out, err := l.cfg.Exec(tc.Name, tc.Arguments)
 				if err != nil {
-					content = fmt.Sprintf("error: %v", err)
+					result = fmt.Sprintf("error: %v", err)
 					isErr = true
 				} else {
-					content = out
+					result = out
 				}
 			} else {
-				content = "error: no tool executor configured"
+				result = "error: no tool executor configured"
 				isErr = true
 			}
 
 			results = append(results, ToolResult{
 				ToolCallID: tc.ID,
 				Name:       tc.Name,
-				Content:    content,
+				Content:    result,
 				IsError:    isErr,
 			})
-
-			l.emit(OutputMsg{Role: "tool", Name: tc.Name, Content: content})
+			l.emit(OutputMsg{Role: "tool", Name: tc.Name, Content: result})
 		}
 
-		// Only emit the full assistant text if we did NOT stream it.
-		if !l.streamed && resp.Message.Content != "" {
-			l.emit(OutputMsg{Role: "assistant", Content: resp.Message.Content})
+		// Emit usage when we have real token counts.
+		if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+			l.emit(OutputMsg{Role: "usage", Usage: usage})
 		}
 
-		// Emit usage only when there are actual token counts (skips
-		// intermediate steps and avoids [↑0 ↓0 tokens] noise).
-		if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
-			l.emit(OutputMsg{
-				Role:  "usage",
-				Usage: resp.Usage,
-			})
-		}
-
-		if err := state.Update(resp.Message, results); err != nil {
+		if err := state.Update(msg, results); err != nil {
 			return fmt.Errorf("step %d update: %w", step, err)
 		}
 
-		if l.shouldStop(resp, step, maxSteps) {
-			if resp.StopReason == "stop" {
+		// Stop when the model has nothing more to call.
+		if len(toolCalls) == 0 || step >= maxSteps-1 {
+			if len(toolCalls) == 0 {
 				if err := state.MarkComplete(); err != nil {
 					return fmt.Errorf("mark complete: %w", err)
 				}
@@ -139,76 +128,11 @@ func (l *Loop) Run(ctx context.Context, state State) error {
 		}
 	}
 
-	l.skippedCalls = make(map[string]bool)
 	return nil
-}
-
-func (l *Loop) runStreamStep(
-	ctx context.Context,
-	sb backend.StreamingBackend,
-	model string,
-	messages []backend.Message,
-	tools []backend.Tool,
-) (msg backend.Message, err error) {
-	ch, err := sb.ChatStream(ctx, model, messages, tools)
-	if err != nil {
-		return msg, err
-	}
-
-	l.skippedCalls = make(map[string]bool)
-	l.streamed = true
-	var content strings.Builder
-	var accumulatedTcs []backend.ToolCall
-
-	for ev := range ch {
-		if ev.Content != "" {
-			content.WriteString(ev.Content)
-			l.emit(OutputMsg{Role: "assistant", Content: ev.Content})
-		}
-
-		for _, tc := range ev.ToolCalls {
-			accumulatedTcs = append(accumulatedTcs, tc)
-		}
-
-		if ev.Done {
-			l.lastUsage = ev.Usage
-			msg.Content = content.String()
-			msg.Role = "assistant"
-			msg.ToolCalls = accumulatedTcs
-			// Emit 'call' now that arguments are fully accumulated, and
-			// mark each as skipped so the Act loop does not re-emit it.
-			for _, tc := range accumulatedTcs {
-				l.emit(OutputMsg{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
-				l.skippedCalls[tc.Name] = true
-			}
-			return msg, nil
-		}
-	}
-
-	// Stream closed without a done event — treat as a transient error so the
-	// caller does not save partial/corrupt state.  Any tool calls that arrived
-	// before the drop are attached to the message for diagnostic use, but
-	// because we return a non-nil error the outer Run loop will NOT call
-	// state.Update, keeping the session history clean for a retry.
-	msg.Content = content.String()
-	msg.Role = "assistant"
-	msg.ToolCalls = accumulatedTcs
-	return msg, fmt.Errorf("stream ended without done event")
-}
-
-func decideStopReason(m backend.Message) string {
-	if len(m.ToolCalls) > 0 {
-		return "tool_calls"
-	}
-	return "stop"
 }
 
 func (l *Loop) emit(msg OutputMsg) {
 	if l.cfg.Output != nil {
 		l.cfg.Output(msg)
 	}
-}
-
-func (l *Loop) shouldStop(resp *backend.Response, step, maxSteps int) bool {
-	return resp.StopReason == "stop" || step >= maxSteps-1
 }

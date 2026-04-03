@@ -63,10 +63,10 @@ type openAIStreamOptions struct {
 }
 
 type openAIChatRequest struct {
-	Model         string              `json:"model"`
-	Messages      []openAIMessage     `json:"messages"`
-	Tools         []openAITool        `json:"tools,omitempty"`
-	Stream        bool                `json:"stream"`
+	Model         string               `json:"model"`
+	Messages      []openAIMessage      `json:"messages"`
+	Tools         []openAITool         `json:"tools,omitempty"`
+	Stream        bool                 `json:"stream"`
 	StreamOptions *openAIStreamOptions `json:"stream_options,omitempty"`
 }
 
@@ -75,21 +75,10 @@ type openAIUsage struct {
 	CompletionTokens int `json:"completion_tokens"`
 }
 
-type openAIChatResponse struct {
-	Choices []openAIChoice `json:"choices"`
-	Usage   openAIUsage    `json:"usage"`
-}
-
 type openAIDelta struct {
 	Role      string           `json:"role"`
 	Content   string           `json:"content"`
 	ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
-}
-
-type openAIChoice struct {
-	Delta        openAIDelta   `json:"delta,omitempty"`
-	Message      openAIMessage `json:"message,omitempty"`
-	FinishReason string        `json:"finish_reason"`
 }
 
 type openAIStreamChoice struct {
@@ -105,7 +94,7 @@ type openAIStreamResponse struct {
 
 // -- implementation --
 
-func (b *OpenAIBackend) doChat(ctx context.Context, model string, messages []Message, tools []Tool, stream bool) (*http.Response, error) {
+func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages []Message, tools []Tool) (<-chan StreamEvent, error) {
 	wireMessages := make([]openAIMessage, len(messages))
 	for i, m := range messages {
 		wireMessages[i] = openAIMessage{
@@ -138,16 +127,11 @@ func (b *OpenAIBackend) doChat(ctx context.Context, model string, messages []Mes
 	}
 
 	req := openAIChatRequest{
-		Model:    model,
-		Messages: wireMessages,
-		Tools:    wireTools,
-		Stream:   stream,
-	}
-
-	// Ask OpenAI to include token usage in the stream. Without this flag
-	// the API omits usage entirely from SSE chunks.
-	if stream {
-		req.StreamOptions = &openAIStreamOptions{IncludeUsage: true}
+		Model:         model,
+		Messages:      wireMessages,
+		Tools:         wireTools,
+		Stream:        true,
+		StreamOptions: &openAIStreamOptions{IncludeUsage: true},
 	}
 
 	data, err := json.Marshal(req)
@@ -168,54 +152,10 @@ func (b *OpenAIBackend) doChat(ctx context.Context, model string, messages []Mes
 	if err != nil {
 		return nil, err
 	}
-
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		return nil, fmt.Errorf("openai HTTP %d: %s", resp.StatusCode, body)
-	}
-
-	return resp, nil
-}
-
-func (b *OpenAIBackend) Chat(ctx context.Context, model string, messages []Message, tools []Tool) (*Response, error) {
-	resp, err := b.doChat(ctx, model, messages, tools, false)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var wire openAIChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
-		return nil, err
-	}
-
-	if len(wire.Choices) == 0 {
-		return nil, fmt.Errorf("openai: empty choices in response")
-	}
-
-	choice := wire.Choices[0]
-	msg := Message{Role: choice.Message.Role, Content: choice.Message.Content}
-	for _, tc := range choice.Message.ToolCalls {
-		args := json.RawMessage(tc.Function.Arguments)
-		msg.ToolCalls = append(msg.ToolCalls, ToolCall{
-			ID:        tc.ID,
-			Name:      tc.Function.Name,
-			Arguments: args,
-		})
-	}
-
-	return &Response{
-		Message:    msg,
-		StopReason: choice.FinishReason,
-		Usage:      Usage{InputTokens: wire.Usage.PromptTokens, OutputTokens: wire.Usage.CompletionTokens},
-	}, nil
-}
-
-func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages []Message, tools []Tool) (<-chan StreamEvent, error) {
-	resp, err := b.doChat(ctx, model, messages, tools, true)
-	if err != nil {
-		return nil, err
 	}
 
 	ch := make(chan StreamEvent, 8)
@@ -233,8 +173,7 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages [
 		}
 		accum := make(map[int]*tcAccum)
 
-		// finishReason and accumulated usage are tracked separately because
-		// OpenAI sends usage in a trailing chunk *after* the finish_reason chunk.
+		// finishReason and usage arrive in separate trailing chunks.
 		var finishReason string
 		var usage Usage
 
@@ -244,8 +183,6 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages [
 				continue
 			}
 			if line == "data: [DONE]" {
-				// Stream finished. Emit the Done event with whatever usage
-				// we have accumulated (may arrive before or after this sentinel).
 				ev := StreamEvent{
 					Done:       true,
 					StopReason: finishReason,
@@ -264,16 +201,13 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages [
 			if !strings.HasPrefix(line, "data: ") {
 				continue
 			}
-			payload := line[6:] // strip "data: "
 
 			var wire openAIStreamResponse
-			if err := json.Unmarshal([]byte(payload), &wire); err != nil {
+			if err := json.Unmarshal([]byte(line[6:]), &wire); err != nil {
 				ch <- StreamEvent{Done: true, StopReason: fmt.Sprintf("stream decode: %v", err)}
 				return
 			}
 
-			// Accumulate usage from every chunk; it will be non-zero only on
-			// the trailing usage chunk that OpenAI sends after finish_reason.
 			if wire.Usage.PromptTokens > 0 {
 				usage.InputTokens = wire.Usage.PromptTokens
 			}
@@ -282,23 +216,17 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages [
 			}
 
 			if len(wire.Choices) == 0 {
-				// Choices-less chunk (e.g. the trailing usage-only chunk).
 				continue
 			}
 
 			choice := wire.Choices[0]
-
-			// Record finish reason when it arrives.
 			if choice.FinishReason != "" {
 				finishReason = choice.FinishReason
 			}
-
-			// Text content delta.
 			if choice.Delta.Content != "" {
 				ch <- StreamEvent{Content: choice.Delta.Content}
 			}
 
-			// Tool call fragments — accumulate, do not emit yet.
 			for _, dtc := range choice.Delta.ToolCalls {
 				idx := dtc.Index
 				if _, ok := accum[idx]; !ok {

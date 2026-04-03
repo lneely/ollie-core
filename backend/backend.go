@@ -10,9 +10,9 @@ import (
 
 // Message is a single conversation turn.
 type Message struct {
-	Role       string     `json:"role"`                  // "system" | "user" | "assistant" | "tool"
+	Role       string     `json:"role"`                   // "system" | "user" | "assistant" | "tool"
 	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`  // set by assistant when calling tools
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // set by assistant when calling tools
 	ToolCallID string     `json:"tool_call_id,omitempty"` // set on role=tool replies (required by OpenAI)
 }
 
@@ -36,36 +36,21 @@ type Usage struct {
 	OutputTokens int
 }
 
-// Response is the model's reply for one Chat call.
-type Response struct {
-	Message    Message
-	StopReason string // "stop" | "tool_calls" | "length" | ...
-	Usage      Usage
-}
-
-// StreamEvent is a single increment from a streaming Chat call.
+// StreamEvent is a single increment from a streaming chat call.
 // Content is an incremental text delta (append, not replace).
-// ToolCalls are complete calls ready for execution when non-empty.
-// The final event has Done==true and the fully assembled Message.
+// ToolCalls accumulates complete calls; they may arrive on any event.
+// The final event has Done==true.
 type StreamEvent struct {
 	Content    string     // incremental text delta (may be "")
-	ToolCalls  []ToolCall // complete tool calls, if any assembled this tick
+	ToolCalls  []ToolCall // complete tool calls assembled so far
 	Done       bool
-	StopReason string     // meaningful when Done==true
-	Usage      Usage      // meaningful only when Done==true
+	StopReason string // meaningful when Done==true
+	Usage      Usage  // meaningful only when Done==true
 }
 
 // Backend is the interface all LLM providers must implement.
+// Streaming is the only supported mode; backends that wrap blocking APIs
+// should implement ChatStream as a single-event stream.
 type Backend interface {
-	// Chat sends messages to the model and returns its response.
-	// tools may be nil for plain completion requests.
-	Chat(ctx context.Context, model string, messages []Message, tools []Tool) (*Response, error)
-}
-
-// StreamingBackend is an optional interface; backends that support streaming
-// should implement it. Use a type assertion to check.
-type StreamingBackend interface {
-	// ChatStream returns a channel of incremental events. The channel is
-	// closed after the final Done event.
 	ChatStream(ctx context.Context, model string, messages []Message, tools []Tool) (<-chan StreamEvent, error)
 }
