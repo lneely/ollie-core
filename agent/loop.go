@@ -185,10 +185,15 @@ func (l *Loop) runStreamStep(
 		}
 	}
 
-	l.emit(OutputMsg{Role: "error", Content: "stream ended without done event"})
+	// Stream closed without a done event — treat as a transient error so the
+	// caller does not save partial/corrupt state.  Any tool calls that arrived
+	// before the drop are attached to the message for diagnostic use, but
+	// because we return a non-nil error the outer Run loop will NOT call
+	// state.Update, keeping the session history clean for a retry.
 	msg.Content = content.String()
 	msg.Role = "assistant"
-	return msg, nil
+	msg.ToolCalls = accumulatedTcs
+	return msg, fmt.Errorf("stream ended without done event")
 }
 
 func decideStopReason(m backend.Message) string {

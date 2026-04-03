@@ -132,12 +132,24 @@ func (cb *ContextBuilder) BoundedHistory() []backend.Message {
 	result = append(result, tail...)
 
 	// Hard-limit safety: truncate from the front (after system) if still over.
+	// Drop assistant[tool_calls]+tool[result] pairs atomically so we never
+	// leave an orphaned tool message without its preceding assistant.
 	for totalChars(result) > cb.cfg.HardLimit && len(result) > len(system)+1 {
-		// Drop the oldest non-system message.
-		result = append(result[:len(system)], result[len(system)+1:]...)
+		drop := len(system) // index of oldest non-system message
+		// If this message has tool calls, also drop the consecutive tool
+		// result messages that follow it.
+		if result[drop].Role == "assistant" && len(result[drop].ToolCalls) > 0 {
+			end := drop + 1
+			for end < len(result) && result[end].Role == "tool" {
+				end++
+			}
+			result = append(result[:drop], result[end:]...)
+		} else {
+			result = append(result[:drop], result[drop+1:]...)
+		}
 	}
 
-	return result
+	return sanitizeHistory(result)
 }
 
 // Len returns the number of stored messages.
@@ -229,9 +241,47 @@ func (cb *ContextBuilder) BoundedHistoryWithNotice() []backend.Message {
 	result = append(result, tail...)
 
 	for totalChars(result) > cb.cfg.HardLimit && len(result) > len(system)+1 {
-		result = append(result[:len(system)], result[len(system)+1:]...)
+		drop := len(system)
+		if result[drop].Role == "assistant" && len(result[drop].ToolCalls) > 0 {
+			end := drop + 1
+			for end < len(result) && result[end].Role == "tool" {
+				end++
+			}
+			result = append(result[:drop], result[end:]...)
+		} else {
+			result = append(result[:drop], result[drop+1:]...)
+		}
 	}
 
+	return sanitizeHistory(result)
+}
+
+// sanitizeHistory removes tool messages that are not preceded by an assistant
+// message with tool calls.  This prevents 400 errors from backends that
+// reject tool messages not immediately following an assistant[tool_calls]
+// turn.  The situation arises when context compaction evicts an
+// assistant[tool_calls] message while its paired tool[result] messages remain
+// in the tail window, or when the compaction notice (a user message) is
+// injected immediately before such a tail.
+func sanitizeHistory(msgs []backend.Message) []backend.Message {
+	result := make([]backend.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			// Walk backward through already-accepted messages to find the
+			// nearest non-tool predecessor.
+			preceded := false
+			for j := len(result) - 1; j >= 0; j-- {
+				if result[j].Role != "tool" {
+					preceded = result[j].Role == "assistant" && len(result[j].ToolCalls) > 0
+					break
+				}
+			}
+			if !preceded {
+				continue // drop orphaned tool message
+			}
+		}
+		result = append(result, m)
+	}
 	return result
 }
 
