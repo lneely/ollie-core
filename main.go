@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"time"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -176,6 +177,8 @@ type model struct {
 	backendName string // e.g. "ollama", "openrouter", "openai"
 	ctxOverhead int    // fixed per-request char overhead (system prompt + tool schemas)
 
+	quitPending bool     // whether a second Ctrl+C should quit
+	lastCtrlC   time.Time // timestamp of last Ctrl+C press
 	// status bar state
 	state       agentState
 	currentTool string
@@ -196,6 +199,9 @@ type agentMsg struct {
 var statusBarStyle = lipgloss.NewStyle().
 	Reverse(true).
 	Padding(0, 1)
+
+// timeoutMsg is sent when the Ctrl+C double-press window expires
+type timeoutMsg struct{}
 
 func main() {
 	var startup []string
@@ -330,6 +336,7 @@ func main() {
 		modelName:   modelName,
 		backendName: backendName,
 		ctxOverhead: ctxOverhead,
+		quitPending: false,
 		state:       agentIdle,
 	})
 
@@ -500,6 +507,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshView()
 		m.ready = true
 
+	case timeoutMsg:
+		// Clear quitPending flag when timeout expires
+		m.quitPending = false
+		return m, nil
+
+
 	case agentMsg:
 		m.apply(msg)
 		m.refreshView()
@@ -513,8 +526,52 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "esc":
-			return m, tea.Quit
+		case "esc":
+			// ESC always interrupts if agent is running
+			if m.cancel != nil {
+				m.drainAgent()
+			}
+			m.quitPending = false
+			return m, nil
+
+		case "ctrl+c":
+			now := time.Now()
+			
+			// Handle double-press to quit
+			if m.quitPending && now.Sub(m.lastCtrlC) <= 1*time.Second {
+				// Double Ctrl+C within 1 second: quit
+				return m, tea.Quit
+			}
+
+			// First Ctrl+C: interrupt if agent running
+			if m.cancel != nil {
+				m.drainAgent()
+				m.quitPending = false
+				return m, nil
+			}
+
+			// No agent running, track for potential double-press
+			if m.lastCtrlC.IsZero() {
+				// First Ctrl+C with no agent
+				m.lastCtrlC = now
+				m.quitPending = true
+				return m, tea.Cmd(func() tea.Msg {
+					time.Sleep(1 * time.Second)
+					return timeoutMsg{}
+				})
+			} else if now.Sub(m.lastCtrlC) <= 1*time.Second {
+				// Double Ctrl+C within 1 second with no agent: quit
+				return m, tea.Quit
+			} else {
+				// Ctrl+C after timeout, reset and start new timer
+				m.lastCtrlC = now
+				m.quitPending = true
+				return m, tea.Cmd(func() tea.Msg {
+					time.Sleep(1 * time.Second)
+					return timeoutMsg{}
+				})
+			}
+
 		case "enter":
 			input := strings.TrimSpace(m.textarea.Value())
 			if input == "" {
@@ -528,6 +585,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			if hook := m.hooks["userPromptSubmit"]; hook != "" {
 				exec.Command("sh", "-c", hook).Run()
+			}
+
+			if m.handleCommand(input) {
+				m.refreshView()
+				return m, nil
 			}
 
 			if m.session == nil {
@@ -550,6 +612,59 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.viewport, vpCmd = m.viewport.Update(msg)
 	m.textarea, cmd = m.textarea.Update(msg)
 	return m, tea.Batch(cmd, vpCmd)
+}
+
+// handleCommand processes special slash commands and returns true if handled.
+func (m *model) handleCommand(input string) bool {
+	if !strings.HasPrefix(input, "/") {
+		return false
+	}
+
+	parts := strings.Fields(input)
+	if len(parts) == 0 {
+		return false
+	}
+
+	cmd := parts[0]
+	args := parts[1:]
+
+	switch cmd {
+	case "/backend":
+		if len(args) == 0 {
+			m.display = append(m.display, "Error: /backend requires an argument (e.g., /backend ollama)")
+			return true
+		}
+		backendType := args[0]
+		os.Setenv("OLLIE_BACKEND", backendType)
+		be, err := backend.New()
+		if err != nil {
+			m.display = append(m.display, fmt.Sprintf("Error: Failed to switch backend: %v", err))
+			return true
+		}
+		m.loopcfg.Backend = be
+		m.backendName = resolveBackendName()
+		m.display = append(m.display, fmt.Sprintf("Switched backend to: %s", m.backendName))
+		return true
+
+	case "/model":
+		if len(args) == 0 {
+			m.display = append(m.display, "Error: /model requires an argument (e.g., /model qwen3:8b)")
+			return true
+		}
+		m.loopcfg.Model = args[0]
+		m.modelName = args[0]
+		m.display = append(m.display, fmt.Sprintf("Switched model to: %s", args[0]))
+		return true
+
+	case "/help":
+		m.display = append(m.display, "Available commands:")
+		m.display = append(m.display, "  /backend <type>  - Switch backend (ollama, openai)")
+		m.display = append(m.display, "  /model <name>    - Switch model")
+		m.display = append(m.display, "  /help            - Show this help")
+		return true
+	}
+
+	return false
 }
 
 // startAgent launches the loop in a goroutine, wiring its output to ch.
