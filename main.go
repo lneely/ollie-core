@@ -274,7 +274,10 @@ func main() {
 	)
 
 	// Load the default agent config.
-	agentName := "default"
+	agentName := os.Getenv("OLLIE_AGENT")
+	if agentName == "" {
+		agentName = "default"
+	}
 	if len(os.Args) > 2 {
 		agentName = os.Args[2]
 	}
@@ -539,7 +542,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "ctrl+c":
 			now := time.Now()
-			
+
 			// Handle double-press to quit
 			if m.quitPending && now.Sub(m.lastCtrlC) <= 1*time.Second {
 				// Double Ctrl+C within 1 second: quit
