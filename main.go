@@ -31,7 +31,8 @@ Output only errors, ambiguities requiring clarification, and deliverables.
 Do not restate tasks, hedge, or self-congratulate.
 Always use tools to perform actions; never simulate or guess outputs.
 Do not attempt tasks outside your tools.
-Use execute_code for all shell commands and scripts. Use execute_tool only for named scripts in ~/mnt/anvillm/tools. Use execute_pipe to chain steps: use {code: "cmd --flags"} for shell commands, {tool, args} only for named scripts in ~/mnt/anvillm/tools.`
+Use execute_code for all shell commands and scripts. Use execute_tool only for named scripts in ~/mnt/anvillm/tools. Use execute_pipe to chain steps: use {code: "cmd --flags"} for shell commands, {tool, args} only for named scripts in ~/mnt/anvillm/tools.
+Use file_read and file_write for all file read and write operations. Never use shell commands to read or write files.`
 
 func systemPrompt(allTools []backend.Tool) string {
 	cwd, _ := os.Getwd()
@@ -100,7 +101,7 @@ var builtinTools = []backend.Tool{
 	},
 	{
 		Name:        "file_read",
-		Description: "Read a file or a range of lines. Output includes line numbers. Prefer this over shell commands for reading files.",
+		Description: "Read a file or a range of lines. Output includes line numbers. Always use this instead of shell commands for reading files.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"required": ["path"],
@@ -113,7 +114,7 @@ var builtinTools = []backend.Tool{
 	},
 	{
 		Name:        "file_write",
-		Description: "Write content to a file. Omit start_line/end_line to overwrite the whole file. Provide both to replace only that line range. Preserve original formatting and indentation. Prefer this over shell commands for writing files.",
+		Description: "Write content to a file. Omit start_line/end_line to overwrite the whole file. Provide both to replace only that line range. Preserve original formatting and indentation. Always use this instead of shell commands for writing files.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"required": ["path", "content"],
@@ -631,6 +632,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.state = agentRunningTool
 		m.refreshView()
+		if m.agentCh == nil {
+			return m, nil
+		}
 		return m, func() tea.Msg { return <-m.agentCh }
 
 	case agentMsg:
@@ -640,6 +644,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = agentIdle
 			m.currentTool = ""
 			m.agentCh = nil
+			return m, nil
+		}
+		// Stop pumping while waiting for user confirmation.
+		if m.state == agentConfirming {
 			return m, nil
 		}
 		return m, func() tea.Msg { return <-m.agentCh }
