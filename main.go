@@ -663,6 +663,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = agentIdle
 			m.currentTool = ""
 			m.agentCh = nil
+			m.cancel = nil
+			m.doneCh = nil
 			return m, nil
 		}
 		// Stop pumping while waiting for user confirmation.
