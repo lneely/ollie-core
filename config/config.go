@@ -6,9 +6,10 @@ import (
 )
 
 type Config struct {
-	MCPServers map[string]ServerConfig `json:"mcpServers,omitempty"`
-	Hooks      map[string]string       `json:"hooks,omitempty"`
-	Prompt     string                  `json:"prompt,omitempty"`
+	MCPServers   map[string]ServerConfig `json:"mcpServers,omitempty"`
+	Hooks        map[string]string       `json:"hooks,omitempty"`
+	Prompt       string                  `json:"prompt,omitempty"`
+	TrustedTools []string                `json:"trustedTools,omitempty"`
 }
 
 type ServerConfig struct {

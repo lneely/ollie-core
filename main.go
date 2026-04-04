@@ -279,11 +279,15 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 
 	hooks := map[string]string{}
 	agentPrompt := ""
+	trustedTools := map[string]struct{}{}
 	if cfg != nil {
 		if cfg.Hooks != nil {
 			hooks = cfg.Hooks
 		}
 		agentPrompt = cfg.Prompt
+		for _, t := range cfg.TrustedTools {
+			trustedTools[t] = struct{}{}
+		}
 	}
 
 	sp := systemPrompt(allTools)
@@ -313,7 +317,11 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 			return extractMCPText(raw), nil
 		}
 		if _, ok := builtinNames[name]; ok {
-			return dispatchBuiltinExec(ctx, name, builtinExec, *confirmPtr, args)
+			var cfn agent.ConfirmFn
+			if _, trusted := trustedTools[name]; !trusted {
+				cfn = *confirmPtr
+			}
+			return dispatchBuiltinExec(ctx, name, builtinExec, cfn, args)
 		}
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
