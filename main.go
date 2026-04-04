@@ -26,7 +26,8 @@ import (
 	"ollie/tools"
 )
 
-const systemPromptBase = `Be terse. No preamble, narration, or filler ("Let me...", "I'll now...", "Great!").
+const systemPromptBase = `NEVER describe what you are about to do. NEVER list planned steps. Call tools immediately and directly.
+Be terse. No preamble, narration, or filler ("Let me...", "I'll now...", "Great!").
 Output only errors, ambiguities requiring clarification, and deliverables.
 Do not restate tasks, hedge, or self-congratulate.
 Always use tools to perform actions; never simulate or guess outputs.
