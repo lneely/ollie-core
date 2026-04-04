@@ -468,10 +468,6 @@ func (m *model) apply(am agentMsg) {
 		}
 		m.display = append(m.display, "= "+s)
 
-	case "nudge":
-		// Model narrated without acting; loop injected a continuation prompt.
-		m.display = append(m.display, "[nudge: continuing…]")
-
 	case "retry":
 		m.state = agentRetrying
 		if secs, err := strconv.Atoi(am.content); err == nil {
