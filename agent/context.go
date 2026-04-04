@@ -96,6 +96,36 @@ func (cb *ContextBuilder) Truncate(i int) {
 	}
 }
 
+// EvictedMessages returns the messages that would be dropped by buildBounded.
+func (cb *ContextBuilder) EvictedMessages() []backend.Message {
+	var rest []backend.Message
+	for _, m := range cb.messages {
+		if m.Role != "system" {
+			rest = append(rest, m)
+		}
+	}
+	ts := computeTailStart(rest, cb.cfg.TailMessages)
+	older := rest[:ts]
+
+	used := cb.cfg.FixedOverheadChars + msgSliceChars(cb.messages) - msgSliceChars(older)
+	budget := cb.cfg.SoftLimit - used
+
+	var included []backend.Message
+	for i := len(older) - 1; i >= 0; i-- {
+		size := msgChars(older[i])
+		if budget-size < 0 {
+			break
+		}
+		budget -= size
+		included = append(included, older[i])
+	}
+	evictCount := len(older) - len(included)
+	if evictCount == 0 {
+		return nil
+	}
+	return older[:evictCount]
+}
+
 // BoundedHistory returns a context-window-safe slice of messages.
 func (cb *ContextBuilder) BoundedHistory() []backend.Message {
 	return cb.buildBounded(false)

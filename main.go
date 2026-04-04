@@ -854,6 +854,21 @@ func (m *model) handleCommand(input string) bool {
 		m.display = append(m.display, fmt.Sprintf("agent: %s", name))
 		return true
 
+	case "/compact":
+		if m.session == nil {
+			m.display = append(m.display, "nothing to compact")
+			return true
+		}
+		n, err := m.session.Compact(context.Background(), m.loopcfg.Backend, m.loopcfg.Model)
+		if err != nil {
+			m.display = append(m.display, "compact error: "+err.Error())
+		} else if n == 0 {
+			m.display = append(m.display, "nothing to compact")
+		} else {
+			m.display = append(m.display, fmt.Sprintf("compacted %d messages", n))
+		}
+		return true
+
 	case "/clear":
 		m.session = nil
 		m.display = nil
@@ -865,6 +880,7 @@ func (m *model) handleCommand(input string) bool {
 		m.display = append(m.display, "  /agent [name]    - Show or switch active agent")
 		m.display = append(m.display, "  /backend <type>  - Switch backend (ollama, openai)")
 		m.display = append(m.display, "  /model <name>    - Switch model")
+		m.display = append(m.display, "  /compact         - Summarize evicted context messages")
 		m.display = append(m.display, "  /clear           - Clear session and display")
 		m.display = append(m.display, "  /help            - Show this help")
 		return true

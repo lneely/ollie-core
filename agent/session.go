@@ -1,6 +1,12 @@
 package agent
 
-import "ollie/backend"
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"ollie/backend"
+)
 
 // Session is an ephemeral in-memory state backend.
 // It lives only for the duration of the process; nothing is persisted.
@@ -55,6 +61,53 @@ func (s *Session) Update(assistant backend.Message, results []ToolResult) error 
 func (s *Session) MarkComplete() error {
 	s.complete = true
 	return nil
+}
+
+// Compact summarizes messages outside the bounded window via an LLM call,
+// replacing them with a single summary system message.
+// Returns the number of messages replaced, or 0 if nothing to compact.
+func (s *Session) Compact(ctx context.Context, b backend.Backend, model string) (int, error) {
+	evicted := s.ctx.EvictedMessages()
+	if len(evicted) == 0 {
+		return 0, nil
+	}
+
+	// Build a prompt asking the model to summarize the evicted messages.
+	var sb strings.Builder
+	for _, m := range evicted {
+		fmt.Fprintf(&sb, "%s: %s\n", m.Role, m.Content)
+	}
+	prompt := "Summarize the following conversation history concisely, preserving key facts, decisions, and context:\n\n" + sb.String()
+
+	ch, err := b.ChatStream(ctx, model, []backend.Message{
+		{Role: "user", Content: prompt},
+	}, nil)
+	if err != nil {
+		return 0, fmt.Errorf("compact: %w", err)
+	}
+
+	var summary strings.Builder
+	for ev := range ch {
+		if ev.Content != "" {
+			summary.WriteString(ev.Content)
+		}
+		if ev.Done {
+			break
+		}
+	}
+
+	// Replace evicted messages with summary.
+	all := s.ctx.Messages()
+	s.ctx.Truncate(0)
+	s.ctx.Append(backend.Message{
+		Role:    "system",
+		Content: "[conversation summary: " + strings.TrimSpace(summary.String()) + "]",
+	})
+	// Re-append the non-evicted messages.
+	for _, m := range all[len(evicted):] {
+		s.ctx.Append(m)
+	}
+	return len(evicted), nil
 }
 
 // Rollback removes any trailing non-user messages from history, discarding
