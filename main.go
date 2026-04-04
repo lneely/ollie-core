@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -28,25 +26,78 @@ import (
 	"ollie/tools"
 )
 
-const systemPrompt = `Be terse. No preamble, narration, or filler ("Let me...", "I'll now...", "Great!").
+const systemPromptBase = `Be terse. No preamble, narration, or filler ("Let me...", "I'll now...", "Great!").
 Output only errors, ambiguities requiring clarification, and deliverables.
-Do not restate tasks, hedge, or self-congratulate.`
+Do not restate tasks, hedge, or self-congratulate.
+Always use tools to perform actions; never simulate or guess outputs.
+Do not attempt tasks outside your tools.
+Use execute_code for all shell commands and scripts. Use execute_tool only for named scripts in ~/mnt/anvillm/tools. Use execute_pipe to chain steps: use {code: "cmd --flags"} for shell commands, {tool, args} only for named scripts in ~/mnt/anvillm/tools.`
 
-var executeCodeTool = backend.Tool{
-	Name:        "execute_code",
-	Description: "Execute shell code or a named tool script in a sandboxed environment. Use 'code' for inline bash, 'tool'+'args' for a named script, or 'pipe' for a sequence of {tool, args} steps.",
-	Parameters: json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"code":     {"type": "string",  "description": "Inline shell code to run (bash)."},
-			"language": {"type": "string",  "description": "Language interpreter (default: bash)."},
-			"timeout":  {"type": "integer", "description": "Timeout in seconds (default: 30)."},
-			"sandbox":  {"type": "string",  "description": "Sandbox name (default: default)."},
-			"tool":     {"type": "string",  "description": "Named tool script to run instead of inline code."},
-			"args":     {"type": "array",   "items": {"type": "string"}, "description": "Arguments for the tool script."},
-			"pipe":     {"type": "array",   "description": "Pipeline: array of {tool, args} objects run in sequence."}
-		}
-	}`),
+func systemPrompt(allTools []backend.Tool) string {
+	cwd, _ := os.Getwd()
+	now := time.Now().Format("2006-01-02 15:04:05 MST")
+	names := make([]string, len(allTools))
+	for i, t := range allTools {
+		names[i] = t.Name
+	}
+	s := systemPromptBase + "\n\nWorking directory: " + cwd +
+		"\nCurrent time: " + now +
+		"\nAvailable tools: " + strings.Join(names, ", ")
+	return s
+}
+
+var builtinTools = []backend.Tool{
+	{
+		Name:        "execute_code",
+		Description: "Run inline code in a sandboxed environment.",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"required": ["code"],
+			"properties": {
+				"code":     {"type": "string",  "description": "Code to execute."},
+				"language": {"type": "string",  "description": "Language interpreter (default: bash)."},
+				"timeout":  {"type": "integer", "description": "Timeout in seconds (default: 30)."},
+				"sandbox":  {"type": "string",  "description": "Sandbox name (default: default)."}
+			}
+		}`),
+	},
+	{
+		Name:        "execute_tool",
+		Description: "Run a named tool script from ~/mnt/anvillm/tools in a sandboxed environment. Use this only for named scripts, not for inline shell commands.",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"required": ["tool"],
+			"properties": {
+				"tool":     {"type": "string", "description": "Name of the tool script (e.g. discover_skill.sh)."},
+				"args":     {"type": "array",  "items": {"type": "string"}, "description": "Arguments for the tool script."},
+				"timeout":  {"type": "integer", "description": "Timeout in seconds (default: 30)."},
+				"sandbox":  {"type": "string",  "description": "Sandbox name (default: default)."}
+			}
+		}`),
+	},
+	{
+		Name:        "execute_pipe",
+		Description: "Run a pipeline of steps, piping stdout of each into stdin of the next. Use {code: \"cmd --flags\"} for shell commands; use {tool, args} only for named scripts in ~/mnt/anvillm/tools.",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"required": ["pipe"],
+			"properties": {
+				"pipe": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"tool": {"type": "string"},
+							"args": {"type": "array", "items": {"type": "string"}},
+							"code": {"type": "string"}
+						}
+					}
+				},
+				"timeout": {"type": "integer", "description": "Timeout in seconds (default: 30)."},
+				"sandbox": {"type": "string",  "description": "Sandbox name (default: default)."}
+			}
+		}`),
+	},
 }
 
 // agentState represents what the agent is currently doing.
@@ -187,7 +238,7 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 		serverOf[t.Name] = t.Server
 	}
 
-	allTools := append(mcpToolsToBackend(mcpTools), executeCodeTool)
+	allTools := append(mcpToolsToBackend(mcpTools), builtinTools...)
 
 	hooks := map[string]string{}
 	agentPrompt := ""
@@ -198,14 +249,19 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 		agentPrompt = cfg.Prompt
 	}
 
-	sp := systemPrompt
+	sp := systemPrompt(allTools)
 	if agentPrompt != "" {
-		sp = systemPrompt + "\n\n" + agentPrompt
+		sp = systemPrompt(allTools) + "\n\n" + agentPrompt
 	}
 
 	overhead := len(sp)
 	for _, t := range allTools {
 		overhead += len(t.Name) + len(t.Description) + len(t.Parameters)
+	}
+
+	builtinNames := make(map[string]struct{}, len(builtinTools))
+	for _, t := range builtinTools {
+		builtinNames[t.Name] = struct{}{}
 	}
 
 	execFn := func(name string, args json.RawMessage) (string, error) {
@@ -216,8 +272,8 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 			}
 			return extractMCPText(raw), nil
 		}
-		if name == "execute_code" {
-			return dispatchBuiltinExec(builtinExec, args)
+		if _, ok := builtinNames[name]; ok {
+			return dispatchBuiltinExec(name, builtinExec, args)
 		}
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -358,7 +414,7 @@ func (m model) renderDisplay() string {
 	}
 	if m.buf != "" {
 		if len(m.display) > 0 {
-			b.WriteByte('\n')
+			b.WriteString("\n\n")
 		}
 		b.WriteString("Bot: " + m.buf)
 	}
@@ -416,20 +472,19 @@ func (m model) renderStatusBar() string {
 // LLM APIs always deliver complete BPE tokens — which never split mid-word —
 // inserting a space whenever two non-space runes meet is safe in practice.
 func addStreamingContent(buf, chunk string) string {
-	if buf == "" || chunk == "" {
-		return buf + chunk
-	}
-	last, _ := utf8.DecodeLastRuneInString(buf)
-	first, _ := utf8.DecodeRuneInString(chunk)
-	if !unicode.IsSpace(last) && !unicode.IsSpace(first) {
-		return buf + " " + chunk
-	}
 	return buf + chunk
+}
+
+func (m *model) appendDisplay(line string) {
+	if len(m.display) > 0 {
+		m.display = append(m.display, "")
+	}
+	m.display = append(m.display, line)
 }
 
 func (m *model) finalizeBuf() {
 	if m.buf != "" {
-		m.display = append(m.display, "Bot: "+m.buf)
+		m.appendDisplay("Bot: " + m.buf)
 		m.buf = ""
 	}
 }
@@ -449,15 +504,20 @@ func (m *model) apply(am agentMsg) {
 		if len(args) > 500 {
 			args = args[:500] + "..."
 		}
-		m.display = append(m.display, fmt.Sprintf("-> %s(%s)", am.name, args))
+		m.appendDisplay(fmt.Sprintf("-> %s(%s)", am.name, args))
 
 	case "tool":
 		m.state = agentThinking
-		s := squashWhitespace(am.content)
+		lines := strings.Split(strings.TrimRight(am.content, "\n"), "\n")
+		var squashed []string
+		for _, l := range lines {
+			squashed = append(squashed, squashWhitespace(l))
+		}
+		s := strings.Join(squashed, "\n")
 		if len(s) > 500 {
 			s = s[:500] + "..."
 		}
-		m.display = append(m.display, "= "+s)
+		m.appendDisplay("= " + s)
 
 	case "retry":
 		m.state = agentRetrying
@@ -467,7 +527,7 @@ func (m *model) apply(am agentMsg) {
 
 	case "error":
 		m.finalizeBuf()
-		m.display = append(m.display, "Error: "+am.content)
+		m.appendDisplay("Error: " + am.content)
 
 	case "usage":
 		// Update status bar only; no display line appended.
@@ -581,7 +641,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.drainAgent()
 			m.finalizeBuf()
-			m.display = append(m.display, "You: "+input)
+			m.appendDisplay("You: " + input)
 			m.refreshView()
 			m.textarea.Reset()
 
@@ -833,7 +893,7 @@ func extractMCPText(raw json.RawMessage) string {
 	return strings.Join(parts, "\n")
 }
 
-func dispatchBuiltinExec(e *execpkg.Executor, args json.RawMessage) (string, error) {
+func dispatchBuiltinExec(name string, e *execpkg.Executor, args json.RawMessage) (string, error) {
 	var a struct {
 		Code     string             `json:"code"`
 		Language string             `json:"language"`
@@ -844,18 +904,36 @@ func dispatchBuiltinExec(e *execpkg.Executor, args json.RawMessage) (string, err
 		Pipe     []execpkg.PipeStep `json:"pipe"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
-		return "", fmt.Errorf("execute_code: bad args: %w", err)
+		return "", fmt.Errorf("%s: bad args: %w", name, err)
 	}
-	code := a.Code
+
+	if a.Language == "" {
+		a.Language = "bash"
+	}
+	if a.Timeout <= 0 {
+		a.Timeout = 30
+	}
+	if a.Sandbox == "" {
+		a.Sandbox = "default"
+	}
+
+	var code string
 	trusted := false
-	switch {
-	case len(a.Pipe) > 0:
+
+	switch name {
+	case "execute_pipe":
+		if len(a.Pipe) == 0 {
+			return "", fmt.Errorf("execute_pipe: 'pipe' is required")
+		}
 		var err error
 		code, trusted, err = execpkg.BuildPipeline(a.Pipe)
 		if err != nil {
 			return "", err
 		}
-	case a.Tool != "":
+	case "execute_tool":
+		if a.Tool == "" {
+			return "", fmt.Errorf("execute_tool: 'tool' is required")
+		}
 		toolCode, err := execpkg.ReadTool(a.Tool)
 		if err != nil {
 			return "", err
@@ -869,18 +947,12 @@ func dispatchBuiltinExec(e *execpkg.Executor, args json.RawMessage) (string, err
 			}
 			code = fmt.Sprintf("set -- %s\n%s", strings.Join(escaped, " "), code)
 		}
+	default: // execute_code
+		if a.Code == "" {
+			return "", fmt.Errorf("execute_code: 'code' is required")
+		}
+		code = a.Code
 	}
-	if code == "" {
-		return "", fmt.Errorf("execute_code: one of 'code', 'tool', or 'pipe' is required")
-	}
-	if a.Language == "" {
-		a.Language = "bash"
-	}
-	if a.Timeout <= 0 {
-		a.Timeout = 30
-	}
-	if a.Sandbox == "" {
-		a.Sandbox = "default"
-	}
+
 	return e.Execute(code, a.Language, a.Timeout, a.Sandbox, trusted)
 }

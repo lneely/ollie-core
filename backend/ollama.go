@@ -29,6 +29,7 @@ type ollamaMessage struct {
 	Role      string           `json:"role"`
 	Content   string           `json:"content"`
 	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
 }
 
 type ollamaToolCall struct {
@@ -71,7 +72,7 @@ type ollamaChatResponse struct {
 func (b *OllamaBackend) ChatStream(ctx context.Context, model string, messages []Message, tools []Tool) (<-chan StreamEvent, error) {
 	wireMessages := make([]ollamaMessage, len(messages))
 	for i, m := range messages {
-		wireMessages[i] = ollamaMessage{Role: m.Role, Content: m.Content}
+		wireMessages[i] = ollamaMessage{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}
 		for _, tc := range m.ToolCalls {
 			wireMessages[i].ToolCalls = append(wireMessages[i].ToolCalls, ollamaToolCall{
 				Function: ollamaFunction{Name: tc.Name, Arguments: tc.Arguments},
@@ -111,6 +112,12 @@ func (b *OllamaBackend) ChatStream(ctx context.Context, model string, messages [
 	if err != nil {
 		return nil, err
 	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+		return nil, &RateLimitError{RetryAfter: retryAfter, Message: string(body)}
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -126,6 +133,8 @@ func (b *OllamaBackend) ChatStream(ctx context.Context, model string, messages [
 		scanner := bufio.NewScanner(resp.Body)
 		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
+		var accumulated []ToolCall
+
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			if len(line) == 0 {
@@ -138,6 +147,13 @@ func (b *OllamaBackend) ChatStream(ctx context.Context, model string, messages [
 				return
 			}
 
+			for _, tc := range wire.Message.ToolCalls {
+				accumulated = append(accumulated, ToolCall{
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				})
+			}
+
 			if wire.Done {
 				stopReason := "stop"
 				if wire.DoneReason != "" {
@@ -147,6 +163,7 @@ func (b *OllamaBackend) ChatStream(ctx context.Context, model string, messages [
 					Done:       true,
 					StopReason: stopReason,
 					Usage:      Usage{InputTokens: wire.PromptEvalCount, OutputTokens: wire.EvalCount},
+					ToolCalls:  accumulated,
 				}
 				return
 			}
@@ -155,13 +172,7 @@ func (b *OllamaBackend) ChatStream(ctx context.Context, model string, messages [
 			if wire.Message.Content != "" {
 				ev.Content = wire.Message.Content
 			}
-			for _, tc := range wire.Message.ToolCalls {
-				ev.ToolCalls = append(ev.ToolCalls, ToolCall{
-					Name:      tc.Function.Name,
-					Arguments: tc.Function.Arguments,
-				})
-			}
-			if ev.Content != "" || len(ev.ToolCalls) > 0 {
+			if ev.Content != "" {
 				ch <- ev
 			}
 		}
