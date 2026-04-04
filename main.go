@@ -257,9 +257,6 @@ func main() {
 	}
 
 	modelName := os.Getenv("OLLIE_MODEL")
-	if modelName == "" && len(os.Args) > 1 {
-		modelName = os.Args[1]
-	}
 	if modelName == "" {
 		modelName = "qwen3:8b"
 	}
@@ -267,7 +264,6 @@ func main() {
 	// Resolve after backend.New() so that loadEnvFile has already run and
 	// populated OLLIE_BACKEND / OLLIE_OPENAI_URL from ~/.config/ollie/env.
 	backendName := resolveBackendName()
-
 	builtinExec := execpkg.New(
 		home+"/.local/state/ollie",
 		home+"/.cache/ollie/exec",
@@ -278,8 +274,8 @@ func main() {
 	if agentName == "" {
 		agentName = "default"
 	}
-	if len(os.Args) > 2 {
-		agentName = os.Args[2]
+	if len(os.Args) > 1 {
+		agentName = os.Args[1]
 	}
 	cfgPath := agentConfigPath(agentsDir, agentName)
 	cfg, cfgErr := config.Load(cfgPath)

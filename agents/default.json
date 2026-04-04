@@ -1,14 +1,6 @@
 {
 	"prompt": "",
-	"mcpServers": {
-		"superpowers-mcp-server": {
-			"command": "superpowers-mcp-server",
-			"args": [],
-			"env": {
-				"SUPERPOWERD_SESSION_TOKEN": "${SUPERPOWERD_SESSION_TOKEN}"
-			}
-		}
-	},
+	"mcpServers": {},
 	"hooks": {
 		"agentSpawn": "true",
 		"userPromptSubmit": "true",
