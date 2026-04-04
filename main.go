@@ -98,6 +98,33 @@ var builtinTools = []backend.Tool{
 			}
 		}`),
 	},
+	{
+		Name:        "file_read",
+		Description: "Read a file or a range of lines. Prefer this over shell commands for reading files.",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"required": ["path"],
+			"properties": {
+				"path":       {"type": "string",  "description": "Path to the file."},
+				"start_line": {"type": "integer", "description": "First line to read, 1-based (default: 1)."},
+				"end_line":   {"type": "integer", "description": "Last line to read, inclusive (default: EOF)."}
+			}
+		}`),
+	},
+	{
+		Name:        "file_write",
+		Description: "Write content to a file. Omit start_line/end_line to overwrite the whole file. Provide both to replace only that line range. Prefer this over shell commands for writing files.",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"required": ["path", "content"],
+			"properties": {
+				"path":       {"type": "string",  "description": "Path to the file."},
+				"content":    {"type": "string",  "description": "Content to write."},
+				"start_line": {"type": "integer", "description": "First line of range to replace, 1-based."},
+				"end_line":   {"type": "integer", "description": "Last line of range to replace, inclusive."}
+			}
+		}`),
+	},
 }
 
 // agentState represents what the agent is currently doing.
@@ -900,65 +927,204 @@ func extractMCPText(raw json.RawMessage) string {
 }
 
 func dispatchBuiltinExec(ctx context.Context, name string, e *execpkg.Executor, args json.RawMessage) (string, error) {
+	switch name {
+	case "file_read":
+		return dispatchFileRead(args)
+	case "file_write":
+		return dispatchFileWrite(args)
+	case "execute_pipe":
+		return dispatchExecutePipe(ctx, e, args)
+	case "execute_tool":
+		return dispatchExecuteTool(ctx, e, args)
+	default: // execute_code
+		return dispatchExecuteCode(ctx, e, args)
+	}
+}
+
+func execArgs(args json.RawMessage) (code, language, sandbox string, timeout int, err error) {
 	var a struct {
-		Code     string             `json:"code"`
-		Language string             `json:"language"`
-		Timeout  int                `json:"timeout"`
-		Sandbox  string             `json:"sandbox"`
-		Tool     string             `json:"tool"`
-		Args     []string           `json:"args"`
-		Pipe     []execpkg.PipeStep `json:"pipe"`
+		Code     string `json:"code"`
+		Language string `json:"language"`
+		Timeout  int    `json:"timeout"`
+		Sandbox  string `json:"sandbox"`
+	}
+	if err = json.Unmarshal(args, &a); err != nil {
+		return
+	}
+	code = a.Code
+	language = a.Language
+	if language == "" {
+		language = "bash"
+	}
+	timeout = a.Timeout
+	if timeout <= 0 {
+		timeout = 30
+	}
+	sandbox = a.Sandbox
+	if sandbox == "" {
+		sandbox = "default"
+	}
+	return
+}
+
+func dispatchExecuteCode(ctx context.Context, e *execpkg.Executor, args json.RawMessage) (string, error) {
+	code, language, sandbox, timeout, err := execArgs(args)
+	if err != nil {
+		return "", fmt.Errorf("execute_code: bad args: %w", err)
+	}
+	if code == "" {
+		return "", fmt.Errorf("execute_code: 'code' is required")
+	}
+	return e.Execute(ctx, code, language, timeout, sandbox, false)
+}
+
+func dispatchExecuteTool(ctx context.Context, e *execpkg.Executor, args json.RawMessage) (string, error) {
+	var a struct {
+		Tool     string   `json:"tool"`
+		Args     []string `json:"args"`
+		Language string   `json:"language"`
+		Timeout  int      `json:"timeout"`
+		Sandbox  string   `json:"sandbox"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
-		return "", fmt.Errorf("%s: bad args: %w", name, err)
+		return "", fmt.Errorf("execute_tool: bad args: %w", err)
+	}
+	if a.Tool == "" {
+		return "", fmt.Errorf("execute_tool: 'tool' is required")
+	}
+	toolCode, err := execpkg.ReadTool(a.Tool)
+	if err != nil {
+		return "", err
+	}
+	code := toolCode
+	if len(a.Args) > 0 {
+		var escaped []string
+		for _, arg := range a.Args {
+			escaped = append(escaped, "'"+strings.ReplaceAll(arg, "'", "'\\''")+"'")
+		}
+		code = fmt.Sprintf("set -- %s\n%s", strings.Join(escaped, " "), code)
+	}
+	language := a.Language
+	if language == "" {
+		language = "bash"
+	}
+	timeout := a.Timeout
+	if timeout <= 0 {
+		timeout = 30
+	}
+	sandbox := a.Sandbox
+	if sandbox == "" {
+		sandbox = "default"
+	}
+	return e.Execute(ctx, code, language, timeout, sandbox, true)
+}
+
+func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, args json.RawMessage) (string, error) {
+	var a struct {
+		Pipe    []execpkg.PipeStep `json:"pipe"`
+		Timeout int                `json:"timeout"`
+		Sandbox string             `json:"sandbox"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", fmt.Errorf("execute_pipe: bad args: %w", err)
+	}
+	if len(a.Pipe) == 0 {
+		return "", fmt.Errorf("execute_pipe: 'pipe' is required")
+	}
+	code, _, err := execpkg.BuildPipeline(a.Pipe)
+	if err != nil {
+		return "", err
+	}
+	timeout := a.Timeout
+	if timeout <= 0 {
+		timeout = 30
+	}
+	sandbox := a.Sandbox
+	if sandbox == "" {
+		sandbox = "default"
+	}
+	return e.Execute(ctx, code, "bash", timeout, sandbox, true)
+}
+
+func dispatchFileRead(args json.RawMessage) (string, error) {
+	var a struct {
+		Path      string `json:"path"`
+		StartLine int    `json:"start_line"`
+		EndLine   int    `json:"end_line"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", fmt.Errorf("file_read: bad args: %w", err)
+	}
+	if a.Path == "" {
+		return "", fmt.Errorf("file_read: 'path' is required")
+	}
+	data, err := os.ReadFile(a.Path)
+	if err != nil {
+		return "", fmt.Errorf("file_read: %w", err)
+	}
+	lines := strings.Split(string(data), "\n")
+	start := 1
+	end := len(lines)
+	if a.StartLine > 0 {
+		start = a.StartLine
+	}
+	if a.EndLine > 0 {
+		end = a.EndLine
+	}
+	if start < 1 {
+		start = 1
+	}
+	if end > len(lines) {
+		end = len(lines)
+	}
+	if start > end {
+		return "", fmt.Errorf("file_read: start_line %d > end_line %d", start, end)
+	}
+	return strings.Join(lines[start-1:end], "\n"), nil
+}
+
+func dispatchFileWrite(args json.RawMessage) (string, error) {
+	var a struct {
+		Path      string `json:"path"`
+		Content   string `json:"content"`
+		StartLine int    `json:"start_line"`
+		EndLine   int    `json:"end_line"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", fmt.Errorf("file_write: bad args: %w", err)
+	}
+	if a.Path == "" {
+		return "", fmt.Errorf("file_write: 'path' is required")
 	}
 
-	if a.Language == "" {
-		a.Language = "bash"
-	}
-	if a.Timeout <= 0 {
-		a.Timeout = 30
-	}
-	if a.Sandbox == "" {
-		a.Sandbox = "default"
+	// Full overwrite
+	if a.StartLine == 0 && a.EndLine == 0 {
+		if err := os.WriteFile(a.Path, []byte(a.Content), 0644); err != nil {
+			return "", fmt.Errorf("file_write: %w", err)
+		}
+		return fmt.Sprintf("wrote %d bytes to %s", len(a.Content), a.Path), nil
 	}
 
-	var code string
-	trusted := false
-
-	switch name {
-	case "execute_pipe":
-		if len(a.Pipe) == 0 {
-			return "", fmt.Errorf("execute_pipe: 'pipe' is required")
-		}
-		var err error
-		code, trusted, err = execpkg.BuildPipeline(a.Pipe)
-		if err != nil {
-			return "", err
-		}
-	case "execute_tool":
-		if a.Tool == "" {
-			return "", fmt.Errorf("execute_tool: 'tool' is required")
-		}
-		toolCode, err := execpkg.ReadTool(a.Tool)
-		if err != nil {
-			return "", err
-		}
-		code = toolCode
-		trusted = true
-		if len(a.Args) > 0 {
-			var escaped []string
-			for _, arg := range a.Args {
-				escaped = append(escaped, "'"+strings.ReplaceAll(arg, "'", "'\\''")+"'")
-			}
-			code = fmt.Sprintf("set -- %s\n%s", strings.Join(escaped, " "), code)
-		}
-	default: // execute_code
-		if a.Code == "" {
-			return "", fmt.Errorf("execute_code: 'code' is required")
-		}
-		code = a.Code
+	// Range replacement
+	data, err := os.ReadFile(a.Path)
+	if err != nil {
+		return "", fmt.Errorf("file_write: %w", err)
 	}
-
-	return e.Execute(ctx, code, a.Language, a.Timeout, a.Sandbox, trusted)
+	lines := strings.Split(string(data), "\n")
+	start, end := a.StartLine, a.EndLine
+	if start < 1 {
+		start = 1
+	}
+	if end > len(lines) {
+		end = len(lines)
+	}
+	if start > end {
+		return "", fmt.Errorf("file_write: start_line %d > end_line %d", start, end)
+	}
+	newLines := strings.Split(a.Content, "\n")
+	result := append(lines[:start-1], append(newLines, lines[end:]...)...)
+	if err := os.WriteFile(a.Path, []byte(strings.Join(result, "\n")), 0644); err != nil {
+		return "", fmt.Errorf("file_write: %w", err)
+	}
+	return fmt.Sprintf("replaced lines %d-%d in %s", start, end, a.Path), nil
 }
