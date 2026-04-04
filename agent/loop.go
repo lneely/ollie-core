@@ -28,10 +28,14 @@ type Config struct {
 	Model        string
 	Tools        []backend.Tool
 	Exec         ToolExecutor
+	Confirm      ConfirmFn
 	MaxSteps     int
 	Output       OutputFn
 	SystemPrompt string
 }
+
+// ConfirmFn requests user confirmation for an action. Returns true if approved.
+type ConfirmFn func(prompt string) bool
 
 func Run(ctx context.Context, cfg Config, state State) error {
 	maxSteps := cfg.MaxSteps

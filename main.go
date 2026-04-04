@@ -100,7 +100,7 @@ var builtinTools = []backend.Tool{
 	},
 	{
 		Name:        "file_read",
-		Description: "Read a file or a range of lines. Prefer this over shell commands for reading files.",
+		Description: "Read a file or a range of lines. Output includes line numbers. Prefer this over shell commands for reading files.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"required": ["path"],
@@ -135,6 +135,7 @@ const (
 	agentThinking
 	agentRunningTool
 	agentRetrying
+	agentConfirming
 )
 
 // resolveBackendName returns a short human-readable backend label derived
@@ -191,6 +192,7 @@ type model struct {
 	agentName   string // active agent config name, e.g. "default"
 	agentsDir   string // path to ~/.config/ollie/agents/
 	builtinExec *execpkg.Executor
+	confirmPtr  *agent.ConfirmFn // indirection so startAgent can set it per-run
 	ctxOverhead int // fixed per-request char overhead (system prompt + tool schemas)
 
 	quitPending bool     // whether a second Ctrl+C should quit
@@ -201,15 +203,21 @@ type model struct {
 	retrySecsLeft int
 	lastUsage     backend.Usage
 	ctxStats      agent.ContextStats
+	confirmCh     chan bool // non-nil when waiting for user confirmation
 }
 
 type agentMsg struct {
-	role     string
-	content  string
-	name     string
-	done     bool
-	usage    backend.Usage
-	ctxStats agent.ContextStats
+	role      string
+	content   string
+	name      string
+	done      bool
+	usage     backend.Usage
+	ctxStats  agent.ContextStats
+	confirmCh chan bool // set when role=="confirm"
+}
+
+type confirmMsg struct {
+	approved bool
 }
 
 // statusBarStyle is a full-width reversed bar.
@@ -224,6 +232,7 @@ type timeoutMsg struct{}
 type agentEnv struct {
 	tools        []backend.Tool
 	exec         agent.ToolExecutor
+	confirm      *agent.ConfirmFn // pointer filled in by startAgent per-run
 	hooks        map[string]string
 	systemPrompt string
 	ctxOverhead  int
@@ -291,6 +300,9 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 		builtinNames[t.Name] = struct{}{}
 	}
 
+	var confirmFn agent.ConfirmFn // filled in by startAgent
+	confirmPtr := &confirmFn
+
 	execFn := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
 		if server, ok := serverOf[name]; ok {
 			raw, err := mcpExec.Execute(server, name, args)
@@ -300,7 +312,7 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 			return extractMCPText(raw), nil
 		}
 		if _, ok := builtinNames[name]; ok {
-			return dispatchBuiltinExec(ctx, name, builtinExec, args)
+			return dispatchBuiltinExec(ctx, name, builtinExec, *confirmPtr, args)
 		}
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -308,6 +320,7 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 	return agentEnv{
 		tools:        allTools,
 		exec:         execFn,
+		confirm:      confirmPtr,
 		hooks:        hooks,
 		systemPrompt: sp,
 		ctxOverhead:  overhead,
@@ -412,6 +425,7 @@ func main() {
 		agentName:   agentName,
 		agentsDir:   agentsDir,
 		builtinExec: builtinExec,
+		confirmPtr:  env.confirm,
 		ctxOverhead: env.ctxOverhead,
 		quitPending: false,
 		state:       agentIdle,
@@ -466,6 +480,8 @@ func (m model) renderStatusBar() string {
 		stateStr = "tool: " + m.currentTool
 	case agentRetrying:
 		stateStr = fmt.Sprintf("retry %ds", m.retrySecsLeft)
+	case agentConfirming:
+		stateStr = "confirm [y/n]"
 	}
 
 	// Token usage segment.
@@ -551,6 +567,11 @@ func (m *model) apply(am agentMsg) {
 		m.finalizeBuf()
 		m.appendDisplay("Error: " + am.content)
 
+	case "confirm":
+		m.state = agentConfirming
+		m.confirmCh = am.confirmCh
+		m.appendDisplay("Confirm: " + am.content + " [y/n]")
+
 	case "usage":
 		// Update status bar only; no display line appended.
 		m.lastUsage = am.usage
@@ -602,6 +623,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.quitPending = false
 		return m, nil
 
+
+	case confirmMsg:
+		if m.confirmCh != nil {
+			m.confirmCh <- msg.approved
+			m.confirmCh = nil
+		}
+		m.state = agentRunningTool
+		m.refreshView()
+		return m, func() tea.Msg { return <-m.agentCh }
 
 	case agentMsg:
 		m.apply(msg)
@@ -667,6 +697,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if input == "" {
 				return m, nil
 			}
+
+			// Handle confirmation prompt
+			if m.state == agentConfirming && m.confirmCh != nil {
+				m.textarea.Reset()
+				lower := strings.ToLower(input)
+				if lower == "y" || lower == "yes" {
+					m.appendDisplay("You: " + input)
+					m.refreshView()
+					return m, func() tea.Msg { return confirmMsg{approved: true} }
+				} else if lower == "n" || lower == "no" {
+					m.appendDisplay("You: " + input)
+					m.refreshView()
+					return m, func() tea.Msg { return confirmMsg{approved: false} }
+				}
+				// Anything else: deny and fall through to normal prompt handling
+				ch := m.confirmCh
+				m.confirmCh = nil
+				m.state = agentIdle
+				ch <- false
+			}
+
 			m.drainAgent()
 			m.finalizeBuf()
 			m.appendDisplay("You: " + input)
@@ -778,6 +829,7 @@ func (m *model) handleCommand(input string) bool {
 		m.loopcfg.Tools = env.tools
 		m.loopcfg.Exec = env.exec
 		m.ctxOverhead = env.ctxOverhead
+		m.confirmPtr = env.confirm
 		m.agentName = name
 		m.session = nil // new agent, new session
 		for _, msg := range env.messages {
@@ -826,6 +878,24 @@ func (m model) startAgent(session *agent.Session) (chan tea.Msg, context.CancelF
 			case <-ctx.Done():
 				return
 			}
+		}
+
+		loopcfg.Confirm = func(prompt string) bool {
+			replyCh := make(chan bool, 1)
+			select {
+			case ch <- agentMsg{role: "confirm", content: prompt, confirmCh: replyCh}:
+			case <-ctx.Done():
+				return false
+			}
+			select {
+			case approved := <-replyCh:
+				return approved
+			case <-ctx.Done():
+				return false
+			}
+		}
+		if m.confirmPtr != nil {
+			*m.confirmPtr = loopcfg.Confirm
 		}
 
 		if err := agent.Run(ctx, loopcfg, session); err != nil {
@@ -935,12 +1005,12 @@ func extractMCPText(raw json.RawMessage) string {
 	return strings.Join(parts, "\n")
 }
 
-func dispatchBuiltinExec(ctx context.Context, name string, e *execpkg.Executor, args json.RawMessage) (string, error) {
+func dispatchBuiltinExec(ctx context.Context, name string, e *execpkg.Executor, confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
 	switch name {
 	case "file_read":
-		return dispatchFileRead(args)
+		return dispatchFileRead(confirm, args)
 	case "file_write":
-		return dispatchFileWrite(args)
+		return dispatchFileWrite(confirm, args)
 	case "execute_pipe":
 		return dispatchExecutePipe(ctx, e, args)
 	case "execute_tool":
@@ -1055,7 +1125,7 @@ func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, args json.Raw
 	return e.Execute(ctx, code, "bash", timeout, sandbox, true)
 }
 
-func dispatchFileRead(args json.RawMessage) (string, error) {
+func dispatchFileRead(confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
 	var a struct {
 		Path      string `json:"path"`
 		StartLine int    `json:"start_line"`
@@ -1066,6 +1136,9 @@ func dispatchFileRead(args json.RawMessage) (string, error) {
 	}
 	if a.Path == "" {
 		return "", fmt.Errorf("file_read: 'path' is required")
+	}
+	if confirm != nil && !confirm(fmt.Sprintf("read %s", a.Path)) {
+		return "", fmt.Errorf("file_read: denied by user")
 	}
 	data, err := os.ReadFile(a.Path)
 	if err != nil {
@@ -1089,10 +1162,14 @@ func dispatchFileRead(args json.RawMessage) (string, error) {
 	if start > end {
 		return "", fmt.Errorf("file_read: start_line %d > end_line %d", start, end)
 	}
-	return strings.Join(lines[start-1:end], "\n"), nil
+	var out strings.Builder
+	for i, line := range lines[start-1 : end] {
+		fmt.Fprintf(&out, "%d\t%s\n", start+i, line)
+	}
+	return strings.TrimRight(out.String(), "\n"), nil
 }
 
-func dispatchFileWrite(args json.RawMessage) (string, error) {
+func dispatchFileWrite(confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
 	var a struct {
 		Path      string `json:"path"`
 		Content   string `json:"content"`
@@ -1104,6 +1181,13 @@ func dispatchFileWrite(args json.RawMessage) (string, error) {
 	}
 	if a.Path == "" {
 		return "", fmt.Errorf("file_write: 'path' is required")
+	}
+	prompt := fmt.Sprintf("write %s", a.Path)
+	if a.StartLine > 0 {
+		prompt = fmt.Sprintf("write %s lines %d-%d", a.Path, a.StartLine, a.EndLine)
+	}
+	if confirm != nil && !confirm(prompt) {
+		return "", fmt.Errorf("file_write: denied by user")
 	}
 
 	// Full overwrite
