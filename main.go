@@ -110,7 +110,10 @@ type model struct {
 	doneCh      chan struct{}
 	modelName   string
 	backendName string // e.g. "ollama", "openrouter", "openai"
-	ctxOverhead int    // fixed per-request char overhead (system prompt + tool schemas)
+	agentName   string // active agent config name, e.g. "default"
+	agentsDir   string // path to ~/.config/ollie/agents/
+	builtinExec *execpkg.Executor
+	ctxOverhead int // fixed per-request char overhead (system prompt + tool schemas)
 
 	quitPending bool     // whether a second Ctrl+C should quit
 	lastCtrlC   time.Time // timestamp of last Ctrl+C press
@@ -139,29 +142,23 @@ var statusBarStyle = lipgloss.NewStyle().
 // timeoutMsg is sent when the Ctrl+C double-press window expires
 type timeoutMsg struct{}
 
-func main() {
-	var startup []string
-	hooks := make(map[string]string)
-	var cfg *config.Config
-	cfgPath := ""
-	if len(os.Args) > 2 {
-		cfgPath = os.Args[2]
-	} else {
-		home, _ := os.UserHomeDir()
-		cfgPath = home + "/.config/ollie/config.json"
-	}
-	if c, err := config.Load(cfgPath); err == nil {
-		cfg = c
-		if cfg.Hooks != nil {
-			hooks = cfg.Hooks
-		}
-	} else if len(os.Args) > 2 {
-		log.Fatalf("Failed to load config: %v", err)
-	} else {
-		startup = append(startup, fmt.Sprintf("config: %v", err))
-	}
+// agentEnv holds the runtime state derived from an agent config file.
+type agentEnv struct {
+	tools        []backend.Tool
+	exec         agent.ToolExecutor
+	hooks        map[string]string
+	systemPrompt string
+	ctxOverhead  int
+	messages     []string // startup / status messages to display
+}
 
+// buildAgentEnv constructs the runtime environment for a given agent config.
+// cfg may be nil (no agent file found), in which case only the builtin tool
+// is available and no hooks or agent prompt are set.
+func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
+	var messages []string
 	mcpExec := tools.NewExecutor()
+
 	if cfg != nil {
 		for name, serverCfg := range cfg.MCPServers {
 			if serverCfg.Disabled || serverCfg.Command == "" {
@@ -170,21 +167,89 @@ func main() {
 			transport := mcp.NewSTDIOTransport(serverCfg.Command, serverCfg.Args, serverCfg.Env)
 			client, err := transport.Connect()
 			if err != nil {
-				startup = append(startup, fmt.Sprintf("MCP %s: failed to connect: %v", name, err))
+				messages = append(messages, fmt.Sprintf("MCP %s: failed to connect: %v", name, err))
 				continue
 			}
 			mcpExec.AddServer(name, client)
-			startup = append(startup, fmt.Sprintf("MCP %s: connected", name))
+			messages = append(messages, fmt.Sprintf("MCP %s: connected", name))
 		}
 	}
 
 	mcpTools, err := mcpExec.ListTools()
 	if err != nil {
-		log.Fatalf("Failed to list MCP tools: %v", err)
+		messages = append(messages, fmt.Sprintf("MCP list tools: %v", err))
+	} else if len(mcpTools) > 0 {
+		messages = append(messages, fmt.Sprintf("MCP tools loaded: %d", len(mcpTools)))
 	}
-	if len(mcpTools) > 0 {
-		startup = append(startup, fmt.Sprintf("MCP tools loaded: %d", len(mcpTools)))
+
+	serverOf := make(map[string]string, len(mcpTools))
+	for _, t := range mcpTools {
+		serverOf[t.Name] = t.Server
 	}
+
+	allTools := append(mcpToolsToBackend(mcpTools), executeCodeTool)
+
+	hooks := map[string]string{}
+	agentPrompt := ""
+	if cfg != nil {
+		if cfg.Hooks != nil {
+			hooks = cfg.Hooks
+		}
+		agentPrompt = cfg.Prompt
+	}
+
+	sp := systemPrompt
+	if agentPrompt != "" {
+		sp = systemPrompt + "\n\n" + agentPrompt
+	}
+
+	overhead := len(sp)
+	for _, t := range allTools {
+		overhead += len(t.Name) + len(t.Description) + len(t.Parameters)
+	}
+
+	execFn := func(name string, args json.RawMessage) (string, error) {
+		if server, ok := serverOf[name]; ok {
+			raw, err := mcpExec.Execute(server, name, args)
+			if err != nil {
+				return "", err
+			}
+			return extractMCPText(raw), nil
+		}
+		if name == "execute_code" {
+			return dispatchBuiltinExec(builtinExec, args)
+		}
+		return "", fmt.Errorf("unknown tool: %s", name)
+	}
+
+	return agentEnv{
+		tools:        allTools,
+		exec:         execFn,
+		hooks:        hooks,
+		systemPrompt: sp,
+		ctxOverhead:  overhead,
+		messages:     messages,
+	}
+}
+
+// agentConfigPath returns the path for a named agent config, falling back to
+// the legacy config.json if the agents/ directory file does not exist.
+func agentConfigPath(agentsDir, name string) string {
+	p := agentsDir + "/" + name + ".json"
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	// Legacy fallback: only for "default"
+	if name == "default" {
+		home, _ := os.UserHomeDir()
+		return home + "/.config/ollie/config.json"
+	}
+	return p // will produce a load error, which is the right behaviour
+}
+
+func main() {
+	home, _ := os.UserHomeDir()
+	agentsDir := home + "/.config/ollie/agents"
 
 	be, err := backend.New()
 	if err != nil {
@@ -203,45 +268,36 @@ func main() {
 	// populated OLLIE_BACKEND / OLLIE_OPENAI_URL from ~/.config/ollie/env.
 	backendName := resolveBackendName()
 
-	home, _ := os.UserHomeDir()
 	builtinExec := execpkg.New(
 		home+"/.local/state/ollie",
 		home+"/.cache/ollie/exec",
 	)
 
-	allTools := append(mcpToolsToBackend(mcpTools), executeCodeTool)
+	// Load the default agent config.
+	agentName := "default"
+	if len(os.Args) > 2 {
+		agentName = os.Args[2]
+	}
+	cfgPath := agentConfigPath(agentsDir, agentName)
+	cfg, cfgErr := config.Load(cfgPath)
 
-	// Compute fixed per-request overhead: system prompt + all tool schemas.
-	// This is subtracted from the context budget so limits mean what they say.
-	ctxOverhead := len(systemPrompt)
-	for _, t := range allTools {
-		ctxOverhead += len(t.Name) + len(t.Description) + len(t.Parameters)
+	var startup []string
+	if cfgErr != nil && len(os.Args) > 2 {
+		log.Fatalf("Failed to load agent config: %v", cfgErr)
+	} else if cfgErr != nil {
+		startup = append(startup, fmt.Sprintf("agent config: %v", cfgErr))
 	}
 
-	serverOf := make(map[string]string, len(mcpTools))
-	for _, t := range mcpTools {
-		serverOf[t.Name] = t.Server
-	}
+	env := buildAgentEnv(cfg, builtinExec)
+	startup = append(startup, env.messages...)
 
 	loopcfg := agent.Config{
 		Backend:      be,
 		Model:        modelName,
-		SystemPrompt: systemPrompt,
-		Tools:        allTools,
-		Exec: func(name string, args json.RawMessage) (string, error) {
-			if server, ok := serverOf[name]; ok {
-				raw, err := mcpExec.Execute(server, name, args)
-				if err != nil {
-					return "", err
-				}
-				return extractMCPText(raw), nil
-			}
-			if name == "execute_code" {
-				return dispatchBuiltinExec(builtinExec, args)
-			}
-			return "", fmt.Errorf("unknown tool: %s", name)
-		},
-		MaxSteps: 20,
+		SystemPrompt: env.systemPrompt,
+		Tools:        env.tools,
+		Exec:         env.exec,
+		MaxSteps:     20,
 	}
 
 	ta := textarea.New()
@@ -267,16 +323,19 @@ func main() {
 		textarea:    ta,
 		viewport:    vp,
 		loopcfg:     loopcfg,
-		hooks:       hooks,
+		hooks:       env.hooks,
 		display:     startup,
 		modelName:   modelName,
 		backendName: backendName,
-		ctxOverhead: ctxOverhead,
+		agentName:   agentName,
+		agentsDir:   agentsDir,
+		builtinExec: builtinExec,
+		ctxOverhead: env.ctxOverhead,
 		quitPending: false,
 		state:       agentIdle,
 	})
 
-	if hook := hooks["agentSpawn"]; hook != "" {
+	if hook := env.hooks["agentSpawn"]; hook != "" {
 		exec.Command("sh", "-c", hook).Run()
 	}
 
@@ -343,8 +402,8 @@ func (m model) renderStatusBar() string {
 		}
 	}
 
-	bar := fmt.Sprintf("[%s :: %s] %s | %s | %s",
-		m.backendName, m.modelName, stateStr, usageStr, ctxStr)
+	bar := fmt.Sprintf("[%s :: %s :: %s] %s | %s | %s",
+		m.backendName, m.modelName, m.agentName, stateStr, usageStr, ctxStr)
 	return statusBarStyle.Width(m.viewport.Width).Render(bar)
 }
 
@@ -600,8 +659,35 @@ func (m *model) handleCommand(input string) bool {
 		m.display = append(m.display, fmt.Sprintf("Switched model to: %s", args[0]))
 		return true
 
+	case "/agent":
+		if len(args) == 0 {
+			m.display = append(m.display, fmt.Sprintf("active agent: %s", m.agentName))
+			return true
+		}
+		name := args[0]
+		cfgPath := agentConfigPath(m.agentsDir, name)
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			m.display = append(m.display, fmt.Sprintf("Error: agent %q: %v", name, err))
+			return true
+		}
+		env := buildAgentEnv(cfg, m.builtinExec)
+		m.hooks = env.hooks
+		m.loopcfg.SystemPrompt = env.systemPrompt
+		m.loopcfg.Tools = env.tools
+		m.loopcfg.Exec = env.exec
+		m.ctxOverhead = env.ctxOverhead
+		m.agentName = name
+		m.session = nil // new agent, new session
+		for _, msg := range env.messages {
+			m.display = append(m.display, msg)
+		}
+		m.display = append(m.display, fmt.Sprintf("agent: %s", name))
+		return true
+
 	case "/help":
 		m.display = append(m.display, "Available commands:")
+		m.display = append(m.display, "  /agent [name]    - Show or switch active agent")
 		m.display = append(m.display, "  /backend <type>  - Switch backend (ollama, openai)")
 		m.display = append(m.display, "  /model <name>    - Switch model")
 		m.display = append(m.display, "  /help            - Show this help")
