@@ -19,10 +19,6 @@ type ContextConfig struct {
 	// Defaults to 96000 (~24k tokens).
 	HardLimit int
 
-	// MaxToolOutputChars: tool result messages longer than this are truncated
-	// before being added to history. Defaults to 2000.
-	MaxToolOutputChars int
-
 	// TailMessages: always preserve the most recent N conversational turns
 	// (user + plain-assistant messages) verbatim, even under eviction pressure.
 	// Tool-call exchanges between those turns are included, but processed
@@ -41,23 +37,19 @@ func defaultContextConfig() ContextConfig {
 	return ContextConfig{
 		SoftLimit:          120_000,
 		HardLimit:          400_000,
-		MaxToolOutputChars: 8_000,
 		TailMessages:       10,
 	}
 }
 
 func (c *ContextConfig) setDefaults() {
 	if c.SoftLimit <= 0 {
-		c.SoftLimit = 24_000
+		c.SoftLimit = 120_000
 	}
 	if c.HardLimit <= 0 {
-		c.HardLimit = 96_000
-	}
-	if c.MaxToolOutputChars <= 0 {
-		c.MaxToolOutputChars = 2_000
+		c.HardLimit = 400_000
 	}
 	if c.TailMessages <= 0 {
-		c.TailMessages = 6
+		c.TailMessages = 10
 	}
 }
 
@@ -75,16 +67,7 @@ func NewContextBuilder(cfg ContextConfig) *ContextBuilder {
 }
 
 // Append adds a message to the full history.
-// Tool result messages exceeding MaxToolOutputChars are replaced with a
-// retry hint so the model knows to narrow its output rather than reasoning
-// from partial data.
 func (cb *ContextBuilder) Append(m backend.Message) {
-	if m.Role == "tool" && len(m.Content) > cb.cfg.MaxToolOutputChars {
-		m.Content = fmt.Sprintf(
-			"[output truncated: %d chars exceeded limit of %d. Re-run with narrower output (e.g., pipe through grep, head, or tail).]",
-			len(m.Content), cb.cfg.MaxToolOutputChars,
-		)
-	}
 	cb.messages = append(cb.messages, m)
 }
 
