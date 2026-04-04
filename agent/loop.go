@@ -13,7 +13,7 @@ import (
 
 const maxRateLimitRetries = 3
 
-type ToolExecutor func(name string, args json.RawMessage) (string, error)
+type ToolExecutor func(ctx context.Context, name string, args json.RawMessage) (string, error)
 type OutputFn func(msg OutputMsg)
 
 type OutputMsg struct {
@@ -99,7 +99,7 @@ func Run(ctx context.Context, cfg Config, state State) error {
 			var result string
 			var isErr bool
 			if cfg.Exec != nil {
-				out, err := cfg.Exec(tc.Name, tc.Arguments)
+				out, err := cfg.Exec(ctx, tc.Name, tc.Arguments)
 				if err != nil {
 					result = fmt.Sprintf("error: %v", err)
 					isErr = true

@@ -89,6 +89,13 @@ func (cb *ContextBuilder) Messages() []backend.Message {
 	return cb.messages
 }
 
+// Truncate discards all messages after index i.
+func (cb *ContextBuilder) Truncate(i int) {
+	if i < len(cb.messages) {
+		cb.messages = cb.messages[:i]
+	}
+}
+
 // BoundedHistory returns a context-window-safe slice of messages.
 func (cb *ContextBuilder) BoundedHistory() []backend.Message {
 	return cb.buildBounded(false)

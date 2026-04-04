@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"9fans.net/go/plan9/client"
@@ -266,7 +267,7 @@ func loadLayeredConfig(name string) (*sandbox.Config, error) {
 }
 
 // Execute runs code in a sandbox and returns combined stdout+stderr.
-func (e *Executor) Execute(code, language string, timeout int, sandboxName string, trusted bool) (string, error) {
+func (e *Executor) Execute(ctx context.Context, code, language string, timeout int, sandboxName string, trusted bool) (string, error) {
 	start := time.Now()
 
 	if timeout <= 0 {
@@ -314,7 +315,7 @@ func (e *Executor) Execute(code, language string, timeout int, sandboxName strin
 		defer os.RemoveAll(workDir)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
 	var cmd *exec.Cmd
@@ -323,6 +324,13 @@ func (e *Executor) Execute(code, language string, timeout int, sandboxName strin
 		wrapped := sandbox.WrapCommand(cfg, []string{"bash", "-c", code}, workDir)
 		cmd = exec.CommandContext(ctx, wrapped[0], wrapped[1:]...)
 		cmd.Dir = workDir
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.Cancel = func() error {
+			if cmd.Process != nil {
+				syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
+			return nil
+		}
 	default:
 		return "", fmt.Errorf("unsupported language: %s (supported: bash)", language)
 	}

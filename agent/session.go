@@ -57,7 +57,17 @@ func (s *Session) MarkComplete() error {
 	return nil
 }
 
-// AppendUserMessage adds a follow-up user message and resets the complete
+// Rollback removes any trailing non-user messages from history, discarding
+// an incomplete assistant turn caused by an interruption.
+func (s *Session) Rollback() {
+	s.complete = false
+	msgs := s.ctx.Messages()
+	i := len(msgs)
+	for i > 0 && msgs[i-1].Role != "user" {
+		i--
+	}
+	s.ctx.Truncate(i)
+}
 // flag so the loop will run again on the next call to Loop.Run.
 func (s *Session) AppendUserMessage(content string) {
 	s.complete = false

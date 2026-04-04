@@ -264,7 +264,7 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 		builtinNames[t.Name] = struct{}{}
 	}
 
-	execFn := func(name string, args json.RawMessage) (string, error) {
+	execFn := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
 		if server, ok := serverOf[name]; ok {
 			raw, err := mcpExec.Execute(server, name, args)
 			if err != nil {
@@ -273,7 +273,7 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 			return extractMCPText(raw), nil
 		}
 		if _, ok := builtinNames[name]; ok {
-			return dispatchBuiltinExec(name, builtinExec, args)
+			return dispatchBuiltinExec(ctx, name, builtinExec, args)
 		}
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -537,6 +537,7 @@ func (m *model) apply(am agentMsg) {
 }
 
 // drainAgent cancels the in-flight goroutine and drains remaining events.
+// It also rolls back any incomplete assistant turn from the session history.
 func (m *model) drainAgent() {
 	if m.cancel == nil {
 		return
@@ -555,6 +556,11 @@ func (m *model) drainAgent() {
 		}
 		m.agentCh = nil
 	}
+	if m.session != nil {
+		m.session.Rollback()
+	}
+	m.state = agentIdle
+	m.currentTool = ""
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -893,7 +899,7 @@ func extractMCPText(raw json.RawMessage) string {
 	return strings.Join(parts, "\n")
 }
 
-func dispatchBuiltinExec(name string, e *execpkg.Executor, args json.RawMessage) (string, error) {
+func dispatchBuiltinExec(ctx context.Context, name string, e *execpkg.Executor, args json.RawMessage) (string, error) {
 	var a struct {
 		Code     string             `json:"code"`
 		Language string             `json:"language"`
@@ -954,5 +960,5 @@ func dispatchBuiltinExec(name string, e *execpkg.Executor, args json.RawMessage)
 		code = a.Code
 	}
 
-	return e.Execute(code, a.Language, a.Timeout, a.Sandbox, trusted)
+	return e.Execute(ctx, code, a.Language, a.Timeout, a.Sandbox, trusted)
 }
