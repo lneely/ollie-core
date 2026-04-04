@@ -32,8 +32,7 @@ Do not restate tasks, hedge, or self-congratulate.
 Always use tools to perform actions; never simulate or guess outputs.
 Do not attempt tasks outside your tools.
 Use execute_code for all shell commands and scripts. Use execute_tool only for named scripts in ~/mnt/anvillm/tools. Use execute_pipe to chain steps: use {code: "cmd --flags"} for shell commands, {tool, args} only for named scripts in ~/mnt/anvillm/tools.
-Use file_read and file_write for all file read and write operations. Never use shell commands to read or write files.
-Before file_read or file_write, use execute_code with grep -n to find relevant line numbers, then read/write only that range.`
+Use file_read and file_write for all file read and write operations. Never use shell commands to read or write files.`
 
 func systemPrompt(allTools []backend.Tool) string {
 	cwd, _ := os.Getwd()
@@ -1142,6 +1141,8 @@ func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, args json.Raw
 	return e.Execute(ctx, code, "bash", timeout, sandbox, true)
 }
 
+const fileReadMaxLines = 200
+
 func dispatchFileRead(confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
 	var a struct {
 		Path      string `json:"path"`
@@ -1179,11 +1180,20 @@ func dispatchFileRead(confirm agent.ConfirmFn, args json.RawMessage) (string, er
 	if start > end {
 		return "", fmt.Errorf("file_read: start_line %d > end_line %d", start, end)
 	}
+	truncated := false
+	if end-start+1 > fileReadMaxLines {
+		end = start + fileReadMaxLines - 1
+		truncated = true
+	}
 	var out strings.Builder
 	for i, line := range lines[start-1 : end] {
 		fmt.Fprintf(&out, "%d\t%s\n", start+i, line)
 	}
-	return strings.TrimRight(out.String(), "\n"), nil
+	result := strings.TrimRight(out.String(), "\n")
+	if truncated {
+		result += fmt.Sprintf("\n[truncated: showing lines %d-%d of %d; use start_line/end_line or grep -n to narrow range]", start, end, len(lines))
+	}
+	return result, nil
 }
 
 func dispatchFileWrite(confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
