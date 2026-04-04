@@ -114,7 +114,7 @@ var builtinTools = []backend.Tool{
 	},
 	{
 		Name:        "file_write",
-		Description: "Write content to a file. Omit start_line/end_line to overwrite the whole file. Provide both to replace only that line range. Preserve original formatting and indentation. Always use this instead of shell commands for writing files.",
+		Description: "Write content to a file. Omit start_line/end_line to overwrite the whole file. Provide both to replace only that line range. Always use file_read or grep -n to identify the exact line range before writing. Never guess line numbers. Preserve original formatting and indentation. Always use this instead of shell commands for writing files.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"required": ["path", "content"],
