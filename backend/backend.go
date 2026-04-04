@@ -6,6 +6,8 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"time"
 )
 
 // Message is a single conversation turn.
@@ -46,6 +48,20 @@ type StreamEvent struct {
 	Done       bool
 	StopReason string // meaningful when Done==true
 	Usage      Usage  // meaningful only when Done==true
+}
+
+// RateLimitError is returned when the backend responds with HTTP 429.
+// RetryAfter is the suggested wait duration; zero means no hint was given.
+type RateLimitError struct {
+	RetryAfter time.Duration
+	Message    string
+}
+
+func (e *RateLimitError) Error() string {
+	if e.RetryAfter > 0 {
+		return fmt.Sprintf("rate limited (retry after %v): %s", e.RetryAfter, e.Message)
+	}
+	return fmt.Sprintf("rate limited: %s", e.Message)
 }
 
 // Backend is the interface all LLM providers must implement.

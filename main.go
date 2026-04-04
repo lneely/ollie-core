@@ -8,8 +8,9 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"time"
+	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -122,6 +123,7 @@ const (
 	agentIdle agentState = iota
 	agentThinking
 	agentRunningTool
+	agentRetrying
 )
 
 // resolveBackendName returns a short human-readable backend label derived
@@ -180,10 +182,11 @@ type model struct {
 	quitPending bool     // whether a second Ctrl+C should quit
 	lastCtrlC   time.Time // timestamp of last Ctrl+C press
 	// status bar state
-	state       agentState
-	currentTool string
-	lastUsage   backend.Usage
-	ctxStats    agent.ContextStats
+	state         agentState
+	currentTool   string
+	retrySecsLeft int
+	lastUsage     backend.Usage
+	ctxStats      agent.ContextStats
 }
 
 type agentMsg struct {
@@ -387,6 +390,8 @@ func (m model) renderStatusBar() string {
 		stateStr = "thinking\u2026"
 	case agentRunningTool:
 		stateStr = "tool: " + m.currentTool
+	case agentRetrying:
+		stateStr = fmt.Sprintf("retry %ds", m.retrySecsLeft)
 	}
 
 	// Token usage segment.
@@ -462,6 +467,12 @@ func (m *model) apply(am agentMsg) {
 			s = s[:500] + "..."
 		}
 		m.display = append(m.display, "= "+s)
+
+	case "retry":
+		m.state = agentRetrying
+		if secs, err := strconv.Atoi(am.content); err == nil {
+			m.retrySecsLeft = secs
+		}
 
 	case "error":
 		m.finalizeBuf()

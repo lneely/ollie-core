@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // OpenAIBackend speaks the OpenAI /v1/chat/completions wire format.
@@ -152,6 +154,12 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages [
 	if err != nil {
 		return nil, err
 	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+		return nil, &RateLimitError{RetryAfter: retryAfter, Message: string(body)}
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -248,4 +256,23 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages [
 	}()
 
 	return ch, nil
+}
+
+// parseRetryAfter parses the Retry-After header value, which may be an integer
+// number of seconds or an HTTP-date. Returns zero if the header is absent or
+// unparseable.
+func parseRetryAfter(header string) time.Duration {
+	if header == "" {
+		return 0
+	}
+	header = strings.TrimSpace(header)
+	if secs, err := strconv.Atoi(header); err == nil {
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }

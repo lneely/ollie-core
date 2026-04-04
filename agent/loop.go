@@ -3,11 +3,15 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"ollie/backend"
 )
+
+const maxRateLimitRetries = 3
 
 type ToolExecutor func(name string, args json.RawMessage) (string, error)
 type OutputFn func(msg OutputMsg)
@@ -41,10 +45,26 @@ func Run(ctx context.Context, cfg Config, state State) error {
 			history = append([]backend.Message{{Role: "system", Content: cfg.SystemPrompt}}, history...)
 		}
 
-		// Stream the assistant's response.
-		ch, err := cfg.Backend.ChatStream(ctx, cfg.Model, history, cfg.Tools)
-		if err != nil {
-			return fmt.Errorf("step %d: %w", step, err)
+		// Stream the assistant's response, retrying on HTTP 429.
+		var ch <-chan backend.StreamEvent
+		for attempt := range maxRateLimitRetries + 1 {
+			var err error
+			ch, err = cfg.Backend.ChatStream(ctx, cfg.Model, history, cfg.Tools)
+			if err == nil {
+				break
+			}
+			var rlErr *backend.RateLimitError
+			if !errors.As(err, &rlErr) || attempt >= maxRateLimitRetries {
+				return fmt.Errorf("step %d: %w", step, err)
+			}
+			// Exponential backoff: 5s, 10s, 20s — unless the server told us exactly.
+			wait := rlErr.RetryAfter
+			if wait == 0 {
+				wait = time.Duration(5<<attempt) * time.Second
+			}
+			if err := retryCountdown(ctx, cfg, wait); err != nil {
+				return fmt.Errorf("step %d: %w", step, err)
+			}
 		}
 
 		var content strings.Builder
@@ -126,5 +146,25 @@ func Run(ctx context.Context, cfg Config, state State) error {
 func emit(cfg Config, msg OutputMsg) {
 	if cfg.Output != nil {
 		cfg.Output(msg)
+	}
+}
+
+// retryCountdown emits one "retry" OutputMsg per second, counting down from
+// wait, so the UI can display a live countdown. Returns ctx.Err() if the
+// context is cancelled before the wait elapses.
+func retryCountdown(ctx context.Context, cfg Config, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil
+		}
+		secs := int(remaining.Seconds()) + 1
+		emit(cfg, OutputMsg{Role: "retry", Content: fmt.Sprintf("%d", secs)})
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(min(remaining, time.Second)):
+		}
 	}
 }
