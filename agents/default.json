@@ -1,5 +1,6 @@
 {
 	"prompt": "To discover skills, use discover_skill.sh <keyword> to search skill descriptions. Once a skill is identified, load it using load_skill.sh <skill_name>.",
+	"trustedTools": ["execute_code", "execute_tool", "execute_pipe"],
 	"mcpServers": {},
 	"hooks": {
 		"agentSpawn": "true",

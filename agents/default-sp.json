@@ -9,6 +9,7 @@
 			}
 		}
 	},
+	"trustedTools": ["execute_code", "execute_tool", "execute_pipe"],
 	"hooks": {
 		"agentSpawn": "true",
 		"userPromptSubmit": "true",

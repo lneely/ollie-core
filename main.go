@@ -32,7 +32,15 @@ Do not restate tasks, hedge, or self-congratulate.
 Always use tools to perform actions; never simulate or guess outputs.
 Do not attempt tasks outside your tools.
 Use execute_code for all shell commands and scripts. Use execute_tool only for named scripts in ~/mnt/anvillm/tools. Use execute_pipe to chain steps: use {code: "cmd --flags"} for shell commands, {tool, args} only for named scripts in ~/mnt/anvillm/tools.
-Use file_read and file_write for all file read and write operations. Never use shell commands to read or write files.`
+Use file_read and file_write for all file read and write operations. Never use shell commands to read or write files.
+
+Tool call examples:
+  Read a file:      {"path": "/home/user/foo.go"}
+  Read lines 10-20: {"path": "/home/user/foo.go", "start_line": 10, "end_line": 20}
+  Run shell code:   {"code": "ls -la", "language": "bash"}
+  List directory:   {"code": "find . -maxdepth 2 -type f", "language": "bash"}
+  Run named tool:   {"tool": "discover_skill.sh", "args": ["keyword"]}
+  Pipeline:         {"pipe": [{"code": "cat file.txt"}, {"code": "grep foo"}]}`
 
 func systemPrompt(allTools []backend.Tool) string {
 	cwd, _ := os.Getwd()
@@ -869,6 +877,30 @@ func (m *model) handleCommand(input string) bool {
 		}
 		return true
 
+	case "/context":
+		if m.session == nil {
+			m.display = append(m.display, "no active session")
+			return true
+		}
+		for _, line := range strings.Split(m.session.ContextDebug(), "\n") {
+			m.display = append(m.display, line)
+		}
+		return true
+
+	case "/history":
+		if m.session == nil {
+			m.display = append(m.display, "no active session")
+			return true
+		}
+		for _, msg := range m.session.History() {
+			preview := msg.Content
+			if len(preview) > 200 {
+				preview = preview[:200] + "..."
+			}
+			m.display = append(m.display, fmt.Sprintf("[%s] %s", msg.Role, preview))
+		}
+		return true
+
 	case "/clear":
 		m.session = nil
 		m.display = nil
@@ -881,6 +913,8 @@ func (m *model) handleCommand(input string) bool {
 		m.display = append(m.display, "  /backend <type>  - Switch backend (ollama, openai)")
 		m.display = append(m.display, "  /model <name>    - Switch model")
 		m.display = append(m.display, "  /compact         - Summarize evicted context messages")
+		m.display = append(m.display, "  /context         - Show context window debug info")
+		m.display = append(m.display, "  /history         - Dump bounded message history")
 		m.display = append(m.display, "  /clear           - Clear session and display")
 		m.display = append(m.display, "  /help            - Show this help")
 		return true
@@ -1051,11 +1085,11 @@ func dispatchBuiltinExec(ctx context.Context, name string, e *execpkg.Executor, 
 	case "file_write":
 		return dispatchFileWrite(confirm, args)
 	case "execute_pipe":
-		return dispatchExecutePipe(ctx, e, args)
+		return dispatchExecutePipe(ctx, e, confirm, args)
 	case "execute_tool":
-		return dispatchExecuteTool(ctx, e, args)
+		return dispatchExecuteTool(ctx, e, confirm, args)
 	default: // execute_code
-		return dispatchExecuteCode(ctx, e, args)
+		return dispatchExecuteCode(ctx, e, confirm, args)
 	}
 }
 
@@ -1085,7 +1119,7 @@ func execArgs(args json.RawMessage) (code, language, sandbox string, timeout int
 	return
 }
 
-func dispatchExecuteCode(ctx context.Context, e *execpkg.Executor, args json.RawMessage) (string, error) {
+func dispatchExecuteCode(ctx context.Context, e *execpkg.Executor, confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
 	code, language, sandbox, timeout, err := execArgs(args)
 	if err != nil {
 		return "", fmt.Errorf("execute_code: bad args: %w", err)
@@ -1093,10 +1127,13 @@ func dispatchExecuteCode(ctx context.Context, e *execpkg.Executor, args json.Raw
 	if code == "" {
 		return "", fmt.Errorf("execute_code: 'code' is required")
 	}
+	if confirm != nil && !confirm(fmt.Sprintf("execute_code: %s", squashWhitespace(code))) {
+		return "", fmt.Errorf("execute_code: denied by user")
+	}
 	return e.Execute(ctx, code, language, timeout, sandbox, false)
 }
 
-func dispatchExecuteTool(ctx context.Context, e *execpkg.Executor, args json.RawMessage) (string, error) {
+func dispatchExecuteTool(ctx context.Context, e *execpkg.Executor, confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
 	var a struct {
 		Tool     string   `json:"tool"`
 		Args     []string `json:"args"`
@@ -1109,6 +1146,9 @@ func dispatchExecuteTool(ctx context.Context, e *execpkg.Executor, args json.Raw
 	}
 	if a.Tool == "" {
 		return "", fmt.Errorf("execute_tool: 'tool' is required")
+	}
+	if confirm != nil && !confirm(fmt.Sprintf("execute_tool: %s %s", a.Tool, strings.Join(a.Args, " "))) {
+		return "", fmt.Errorf("execute_tool: denied by user")
 	}
 	toolCode, err := execpkg.ReadTool(a.Tool)
 	if err != nil {
@@ -1137,7 +1177,7 @@ func dispatchExecuteTool(ctx context.Context, e *execpkg.Executor, args json.Raw
 	return e.Execute(ctx, code, language, timeout, sandbox, true)
 }
 
-func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, args json.RawMessage) (string, error) {
+func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
 	var a struct {
 		Pipe    []execpkg.PipeStep `json:"pipe"`
 		Timeout int                `json:"timeout"`
@@ -1153,6 +1193,9 @@ func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, args json.Raw
 	if err != nil {
 		return "", err
 	}
+	if confirm != nil && !confirm(fmt.Sprintf("execute_pipe: %s", squashWhitespace(code))) {
+		return "", fmt.Errorf("execute_pipe: denied by user")
+	}
 	timeout := a.Timeout
 	if timeout <= 0 {
 		timeout = 30
@@ -1164,7 +1207,7 @@ func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, args json.Raw
 	return e.Execute(ctx, code, "bash", timeout, sandbox, true)
 }
 
-const fileReadMaxLines = 200
+const fileReadMaxLines = 500
 
 func dispatchFileRead(confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
 	var a struct {
