@@ -601,8 +601,8 @@ func (m *model) apply(am agentMsg) {
 }
 
 // drainAgent cancels the in-flight goroutine and drains remaining events.
-// It also rolls back any incomplete assistant turn from the session history.
-func (m *model) drainAgent() {
+// If interrupted is true, rolls back any incomplete assistant turn.
+func (m *model) drainAgent(interrupted bool) {
 	if m.cancel == nil {
 		return
 	}
@@ -620,7 +620,7 @@ func (m *model) drainAgent() {
 		}
 		m.agentCh = nil
 	}
-	if m.session != nil {
+	if interrupted && m.session != nil {
 		m.session.Rollback()
 	}
 	m.state = agentIdle
@@ -679,7 +679,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			// ESC always interrupts if agent is running
 			if m.cancel != nil {
-				m.drainAgent()
+				m.drainAgent(true)
 			}
 			m.quitPending = false
 			return m, nil
@@ -695,7 +695,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// First Ctrl+C: interrupt if agent running
 			if m.cancel != nil {
-				m.drainAgent()
+				m.drainAgent(true)
 				m.quitPending = false
 				return m, nil
 			}
@@ -748,7 +748,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				ch <- false
 			}
 
-			m.drainAgent()
+			m.drainAgent(false)
 			m.finalizeBuf()
 			m.appendDisplay("You: " + input)
 			m.refreshView()
