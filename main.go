@@ -113,7 +113,7 @@ var builtinTools = []backend.Tool{
 	},
 	{
 		Name:        "file_write",
-		Description: "Write content to a file. Omit start_line/end_line to overwrite the whole file. Provide both to replace only that line range. Prefer this over shell commands for writing files.",
+		Description: "Write content to a file. Omit start_line/end_line to overwrite the whole file. Provide both to replace only that line range. Preserve original formatting and indentation. Prefer this over shell commands for writing files.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"required": ["path", "content"],
@@ -535,12 +535,7 @@ func (m *model) apply(am agentMsg) {
 
 	case "tool":
 		m.state = agentThinking
-		lines := strings.Split(strings.TrimRight(am.content, "\n"), "\n")
-		var squashed []string
-		for _, l := range lines {
-			squashed = append(squashed, squashWhitespace(l))
-		}
-		s := strings.Join(squashed, "\n")
+		s := strings.TrimRight(am.content, "\n")
 		if len(s) > 500 {
 			s = s[:500] + "..."
 		}
@@ -711,6 +706,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleCommand processes special slash commands and returns true if handled.
 func (m *model) handleCommand(input string) bool {
+	if strings.HasPrefix(input, "!") {
+		cmdStr := strings.TrimSpace(input[1:])
+		if cmdStr == "" {
+			return true
+		}
+		out, err := exec.Command("sh", "-c", cmdStr).CombinedOutput()
+		if err != nil {
+			m.appendDisplay("Error: " + err.Error())
+		}
+		if len(out) > 0 {
+			m.appendDisplay(strings.TrimRight(string(out), "\n"))
+		}
+		return true
+	}
 	if !strings.HasPrefix(input, "/") {
 		return false
 	}
