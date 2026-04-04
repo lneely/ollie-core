@@ -854,11 +854,18 @@ func (m *model) handleCommand(input string) bool {
 		m.display = append(m.display, fmt.Sprintf("agent: %s", name))
 		return true
 
+	case "/clear":
+		m.session = nil
+		m.display = nil
+		m.buf = ""
+		return true
+
 	case "/help":
 		m.display = append(m.display, "Available commands:")
 		m.display = append(m.display, "  /agent [name]    - Show or switch active agent")
 		m.display = append(m.display, "  /backend <type>  - Switch backend (ollama, openai)")
 		m.display = append(m.display, "  /model <name>    - Switch model")
+		m.display = append(m.display, "  /clear           - Clear session and display")
 		m.display = append(m.display, "  /help            - Show this help")
 		return true
 	}
