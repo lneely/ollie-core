@@ -98,6 +98,15 @@ func Run(ctx context.Context, cfg Config, state State) error {
 		var results []ToolResult
 
 		for _, tc := range toolCalls {
+			if tc.Name == "" {
+				results = append(results, ToolResult{
+					ToolCallID: tc.ID,
+					Name:       tc.Name,
+					Content:    "error: empty tool name",
+					IsError:    true,
+				})
+				continue
+			}
 			emit(cfg, OutputMsg{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
 
 			var result string

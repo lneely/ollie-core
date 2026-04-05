@@ -32,7 +32,7 @@ func NewOpenAI(baseURL, apiKey string) *OpenAIBackend {
 
 type openAIMessage struct {
 	Role       string           `json:"role"`
-	Content    string           `json:"content,omitempty"`
+	Content    *string          `json:"content"`
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
@@ -99,13 +99,12 @@ type openAIStreamResponse struct {
 func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages []Message, tools []Tool) (<-chan StreamEvent, error) {
 	wireMessages := make([]openAIMessage, len(messages))
 	for i, m := range messages {
-		wireMessages[i] = openAIMessage{
+		wm := openAIMessage{
 			Role:       m.Role,
-			Content:    m.Content,
 			ToolCallID: m.ToolCallID,
 		}
 		for _, tc := range m.ToolCalls {
-			wireMessages[i].ToolCalls = append(wireMessages[i].ToolCalls, openAIToolCall{
+			wm.ToolCalls = append(wm.ToolCalls, openAIToolCall{
 				ID:   tc.ID,
 				Type: "function",
 				Function: openAIFunctionCall{
@@ -114,6 +113,11 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages [
 				},
 			})
 		}
+		// OpenAI spec: content must be null (not "") when tool_calls is present.
+		if len(wm.ToolCalls) == 0 {
+			wm.Content = &m.Content
+		}
+		wireMessages[i] = wm
 	}
 
 	var wireTools []openAITool

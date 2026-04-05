@@ -587,6 +587,9 @@ func (m *model) apply(am agentMsg) {
 	case "error":
 		m.finalizeBuf()
 		m.appendDisplay("Error: " + am.content)
+		if m.session != nil {
+			m.session.Rollback()
+		}
 
 	case "confirm":
 		m.state = agentConfirming
