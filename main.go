@@ -632,10 +632,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		// Reserve 1 row for the status bar, 5 for the textarea.
 		m.viewport.Width = msg.Width
-		m.viewport.Height = msg.Height - 5 - 1
 		m.textarea.SetWidth(msg.Width)
+		barHeight := lipgloss.Height(m.renderStatusBar())
+		m.viewport.Height = msg.Height - m.textarea.Height() - barHeight
 		m.refreshView()
 		m.ready = true
 
