@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,12 +27,11 @@ import (
 	"ollie/tools"
 )
 
-const systemPromptBase = `NEVER describe what you are about to do. NEVER list planned steps. Call tools immediately and directly.
-Be terse. No preamble, narration, or filler ("Let me...", "I'll now...", "Great!").
-Output only errors, ambiguities requiring clarification, and deliverables.
+const systemPromptBase = `Use the fewest words possible. No preamble, filler, or narration ("Let me...", "I'll now...", "Great!"). No explanations of actions taken. No summaries of completed work. No reasoning unless asked. If the answer is one word, write one word.
+Call tools immediately and directly. Never describe what you are about to do — act.
+Complete tasks fully before stopping. Do not pause mid-task to narrate progress or request confirmation.
+Do not ask clarifying questions unless the task is genuinely ambiguous. Attempt the task; correct based on feedback.
 Do not restate tasks, hedge, or self-congratulate.
-Always use tools to perform actions; never simulate or guess outputs.
-Do not describe what you are about to do. Just do it — emit the tool call immediately.
 Do not attempt tasks outside your tools.
 Do not use hedging language ("it looks like", "it appears", "it seems", "likely", "probably"). If you are uncertain, use tools to find out. Give definite answers based on evidence.
 Do not re-read or re-fetch any file or resource that already has a result in the conversation history. Use the existing result.
@@ -149,6 +149,7 @@ const (
 	agentRunningTool
 	agentRetrying
 	agentConfirming
+	agentStalled
 )
 
 // resolveBackendName returns a short human-readable backend label derived
@@ -204,10 +205,11 @@ type model struct {
 	backendName string // e.g. "ollama", "openrouter", "openai"
 	agentName   string // active agent config name, e.g. "default"
 	agentsDir   string // path to ~/.config/ollie/agents/
-	mcpExec     *tools.Executor   // current agent's MCP executor; closed on agent switch
-	builtinExec *execpkg.Executor
-	confirmPtr  *agent.ConfirmFn // indirection so startAgent can set it per-run
-	ctxOverhead int // fixed per-request char overhead (system prompt + tool schemas)
+	mcpExec          *tools.Executor   // current agent's MCP executor; closed on agent switch
+	builtinExec      *execpkg.Executor
+	confirmPtr       *agent.ConfirmFn // indirection so startAgent can set it per-run
+	ctxOverhead      int              // fixed per-request char overhead (system prompt + tool schemas)
+	invalidateCaches func()           // clears tool-call dedup caches; set from agentEnv
 
 	quitPending bool     // whether a second Ctrl+C should quit
 	lastCtrlC   time.Time // timestamp of last Ctrl+C press
@@ -244,14 +246,16 @@ type timeoutMsg struct{}
 
 // agentEnv holds the runtime state derived from an agent config file.
 type agentEnv struct {
-	mcpExec      *tools.Executor  // kept so it can be closed on agent switch
-	tools        []backend.Tool
-	exec         agent.ToolExecutor
-	confirm      *agent.ConfirmFn // pointer filled in by startAgent per-run
-	hooks        map[string]string
-	systemPrompt string
-	ctxOverhead  int
-	messages     []string // startup / status messages to display
+	mcpExec          *tools.Executor  // kept so it can be closed on agent switch
+	tools            []backend.Tool
+	exec             agent.ToolExecutor
+	confirm          *agent.ConfirmFn // pointer filled in by startAgent per-run
+	hooks            map[string]string
+	systemPrompt     string
+	genParams        backend.GenerationParams
+	ctxOverhead      int
+	messages         []string // startup / status messages to display
+	invalidateCaches func()   // clears per-session tool-call dedup caches on compact/clear
 }
 
 // buildAgentEnv constructs the runtime environment for a given agent config.
@@ -294,6 +298,7 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 	hooks := map[string]string{}
 	agentPrompt := ""
 	trustedTools := map[string]struct{}{}
+	var genParams backend.GenerationParams
 	if cfg != nil {
 		if cfg.Hooks != nil {
 			hooks = cfg.Hooks
@@ -301,6 +306,12 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 		agentPrompt = cfg.Prompt
 		for _, t := range cfg.TrustedTools {
 			trustedTools[t] = struct{}{}
+		}
+		genParams = backend.GenerationParams{
+			MaxTokens:        cfg.MaxTokens,
+			Temperature:      cfg.Temperature,
+			FrequencyPenalty: cfg.FrequencyPenalty,
+			PresencePenalty:  cfg.PresencePenalty,
 		}
 	}
 
@@ -322,7 +333,19 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 	var confirmFn agent.ConfirmFn // filled in by startAgent
 	confirmPtr := &confirmFn
 
-	execFn := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	// fileRanges tracks which line ranges of each file have been read this session.
+	// Used to warn on overlapping re-reads and to guard file_write against blind overwrites.
+	// Cleared on /compact and /clear; individual entries deleted when a file is written.
+	type fileReadState struct {
+		ranges     []lineRange
+		totalLines int // total lines when last read; used for whole-file write coverage check
+	}
+	fileRanges := make(map[string]*fileReadState)
+
+	// toolCallSeen tracks all non-file tool calls by exact (name, args) to warn on repeats.
+	toolCallSeen := make(map[string]bool)
+
+	rawExec := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
 		if server, ok := serverOf[name]; ok {
 			raw, err := mcpExec.Execute(server, name, args)
 			if err != nil {
@@ -335,9 +358,82 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 			if _, trusted := trustedTools[name]; !trusted {
 				cfn = *confirmPtr
 			}
+
+			if name == "file_read" {
+				var a struct {
+					Path string `json:"path"`
+				}
+				json.Unmarshal(args, &a) //nolint:errcheck
+				meta, err := dispatchFileRead(cfn, args)
+				if err != nil {
+					return "", err
+				}
+				content := meta.content
+				if a.Path != "" {
+					st := fileRanges[a.Path]
+					if st != nil && rangesOverlap(st.ranges, meta.start, meta.end) {
+						content = fmt.Sprintf("[WARNING: Lines %d-%d of this file were already read this session. Do not re-read ranges already in your context.]\n", meta.start, meta.end) + content
+					}
+					if st == nil {
+						st = &fileReadState{}
+						fileRanges[a.Path] = st
+					}
+					st.ranges = append(st.ranges, lineRange{meta.start, meta.end})
+					st.totalLines = meta.totalLines
+				}
+				return content, nil
+			}
+
+			if name == "file_write" {
+				var a struct {
+					Path      string `json:"path"`
+					StartLine int    `json:"start_line"`
+					EndLine   int    `json:"end_line"`
+				}
+				json.Unmarshal(args, &a) //nolint:errcheck
+				if a.Path != "" {
+					st := fileRanges[a.Path]
+					if st == nil {
+						return "", fmt.Errorf("file_write: %s has not been read this session; read it first to avoid overwriting unknown changes", a.Path)
+					}
+					ws, we := a.StartLine, a.EndLine
+					if ws == 0 && we == 0 {
+						// Whole-file write: verify full coverage.
+						totalLines := st.totalLines
+						if totalLines == 0 {
+							data, err := os.ReadFile(a.Path)
+							if err != nil {
+								return "", fmt.Errorf("file_write: cannot verify read coverage: %w", err)
+							}
+							totalLines = len(strings.Split(string(data), "\n"))
+						}
+						ws, we = 1, totalLines
+					}
+					if !rangesCover(st.ranges, ws, we) {
+						return "", fmt.Errorf("file_write: lines %d-%d of %s have not been read this session; read them first to avoid overwriting unknown changes", ws, we, a.Path)
+					}
+					// Invalidate: file content has changed, any cached ranges are stale.
+					delete(fileRanges, a.Path)
+				}
+			}
+
 			return dispatchBuiltinExec(ctx, name, builtinExec, cfn, args)
 		}
 		return "", fmt.Errorf("unknown tool: %s", name)
+	}
+
+	execFn := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+		result, err := rawExec(ctx, name, args)
+		// Warn on repeated identical tool calls (excluding file_read/file_write which
+		// are handled separately above).
+		if err == nil && name != "file_read" && name != "file_write" {
+			key := name + "\x00" + string(args)
+			if toolCallSeen[key] {
+				result = "[WARNING: This exact tool call was already made this session. Result may be unchanged. Do not repeat unless something has changed.]\n" + result
+			}
+			toolCallSeen[key] = true
+		}
+		return result, err
 	}
 
 	return agentEnv{
@@ -347,8 +443,13 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 		confirm:      confirmPtr,
 		hooks:        hooks,
 		systemPrompt: sp,
+		genParams:    genParams,
 		ctxOverhead:  overhead,
 		messages:     messages,
+		invalidateCaches: func() {
+			clear(fileRanges)
+			clear(toolCallSeen)
+		},
 	}
 }
 
@@ -411,12 +512,13 @@ func main() {
 	startup = append(startup, env.messages...)
 
 	loopcfg := agent.Config{
-		Backend:      be,
-		Model:        modelName,
-		SystemPrompt: env.systemPrompt,
-		Tools:        env.tools,
-		Exec:         env.exec,
-		MaxSteps:     20,
+		Backend:          be,
+		Model:            modelName,
+		SystemPrompt:     env.systemPrompt,
+		Tools:            env.tools,
+		Exec:             env.exec,
+		MaxSteps:         20,
+		GenerationParams: env.genParams,
 	}
 
 	ta := textarea.New()
@@ -439,21 +541,22 @@ func main() {
 	}
 
 	p := tea.NewProgram(model{
-		textarea:    ta,
-		viewport:    vp,
-		loopcfg:     loopcfg,
-		hooks:       env.hooks,
-		display:     startup,
-		modelName:   modelName,
-		backendName: backendName,
-		agentName:   agentName,
-		agentsDir:   agentsDir,
-		mcpExec:     env.mcpExec,
-		builtinExec: builtinExec,
-		confirmPtr:  env.confirm,
-		ctxOverhead: env.ctxOverhead,
-		quitPending: false,
-		state:       agentIdle,
+		textarea:         ta,
+		viewport:         vp,
+		loopcfg:          loopcfg,
+		hooks:            env.hooks,
+		display:          startup,
+		modelName:        modelName,
+		backendName:      backendName,
+		agentName:        agentName,
+		agentsDir:        agentsDir,
+		mcpExec:          env.mcpExec,
+		builtinExec:      builtinExec,
+		confirmPtr:       env.confirm,
+		ctxOverhead:      env.ctxOverhead,
+		invalidateCaches: env.invalidateCaches,
+		quitPending:      false,
+		state:            agentIdle,
 	})
 
 	if hook := env.hooks["agentSpawn"]; hook != "" {
@@ -507,6 +610,8 @@ func (m model) renderStatusBar() string {
 		stateStr = fmt.Sprintf("retry %ds", m.retrySecsLeft)
 	case agentConfirming:
 		stateStr = "confirm [y/n]"
+	case agentStalled:
+		stateStr = "stalled"
 	}
 
 	// Token usage segment.
@@ -600,6 +705,9 @@ func (m *model) apply(am agentMsg) {
 		m.confirmCh = am.confirmCh
 		m.appendDisplay("Confirm: " + am.content + " [y/n]")
 
+	case "stalled":
+		m.state = agentStalled
+
 	case "usage":
 		// Update status bar only; no display line appended.
 		m.lastUsage = am.usage
@@ -668,7 +776,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.apply(msg)
 		m.refreshView()
 		if msg.done {
-			m.state = agentIdle
+			if m.state != agentStalled {
+				m.state = agentIdle
+			}
 			m.currentTool = ""
 			m.agentCh = nil
 			m.cancel = nil
@@ -869,8 +979,10 @@ func (m *model) handleCommand(input string) bool {
 		m.loopcfg.SystemPrompt = env.systemPrompt
 		m.loopcfg.Tools = env.tools
 		m.loopcfg.Exec = env.exec
+		m.loopcfg.GenerationParams = env.genParams
 		m.ctxOverhead = env.ctxOverhead
 		m.confirmPtr = env.confirm
+		m.invalidateCaches = env.invalidateCaches
 		m.agentName = name
 		m.session = nil // new agent, new session
 		for _, msg := range env.messages {
@@ -891,6 +1003,9 @@ func (m *model) handleCommand(input string) bool {
 			m.display = append(m.display, "nothing to compact")
 		} else {
 			m.display = append(m.display, fmt.Sprintf("compacted %d messages", n))
+			if m.invalidateCaches != nil {
+				m.invalidateCaches()
+			}
 		}
 		return true
 
@@ -922,6 +1037,9 @@ func (m *model) handleCommand(input string) bool {
 		m.session = nil
 		m.display = nil
 		m.buf = ""
+		if m.invalidateCaches != nil {
+			m.invalidateCaches()
+		}
 		return true
 
 	case "/help":
@@ -1098,7 +1216,8 @@ func extractMCPText(raw json.RawMessage) string {
 func dispatchBuiltinExec(ctx context.Context, name string, e *execpkg.Executor, confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
 	switch name {
 	case "file_read":
-		return dispatchFileRead(confirm, args)
+		r, err := dispatchFileRead(confirm, args)
+		return r.content, err
 	case "file_write":
 		return dispatchFileWrite(confirm, args)
 	case "execute_pipe":
@@ -1226,28 +1345,68 @@ func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, confirm agent
 
 const fileReadMaxLines = 500
 
-func dispatchFileRead(confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
+// lineRange is an inclusive [start, end] line range (1-based).
+type lineRange struct{ start, end int }
+
+// fileReadResult carries the output of dispatchFileRead plus the range metadata
+// needed for per-session coverage tracking.
+type fileReadResult struct {
+	content    string
+	start      int // actual first line returned (1-based)
+	end        int // actual last line returned (1-based)
+	totalLines int // total lines in the file before any truncation
+}
+
+// rangesOverlap reports whether [ws, we] overlaps any interval in ranges.
+func rangesOverlap(ranges []lineRange, ws, we int) bool {
+	for _, r := range ranges {
+		if r.start <= we && r.end >= ws {
+			return true
+		}
+	}
+	return false
+}
+
+// rangesCover reports whether the union of ranges fully contains [ws, we].
+func rangesCover(ranges []lineRange, ws, we int) bool {
+	sorted := make([]lineRange, len(ranges))
+	copy(sorted, ranges)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].start < sorted[j].start })
+	cur := 0
+	for _, r := range sorted {
+		if r.start > cur+1 {
+			break
+		}
+		if r.end > cur {
+			cur = r.end
+		}
+	}
+	return cur >= we
+}
+
+func dispatchFileRead(confirm agent.ConfirmFn, args json.RawMessage) (fileReadResult, error) {
 	var a struct {
 		Path      string `json:"path"`
 		StartLine int    `json:"start_line"`
 		EndLine   int    `json:"end_line"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
-		return "", fmt.Errorf("file_read: bad args: %w", err)
+		return fileReadResult{}, fmt.Errorf("file_read: bad args: %w", err)
 	}
 	if a.Path == "" {
-		return "", fmt.Errorf("file_read: 'path' is required")
+		return fileReadResult{}, fmt.Errorf("file_read: 'path' is required")
 	}
 	if confirm != nil && !confirm(fmt.Sprintf("read %s", a.Path)) {
-		return "", fmt.Errorf("file_read: denied by user")
+		return fileReadResult{}, fmt.Errorf("file_read: denied by user")
 	}
 	data, err := os.ReadFile(a.Path)
 	if err != nil {
-		return "", fmt.Errorf("file_read: %w", err)
+		return fileReadResult{}, fmt.Errorf("file_read: %w", err)
 	}
 	lines := strings.Split(string(data), "\n")
+	totalLines := len(lines)
 	start := 1
-	end := len(lines)
+	end := totalLines
 	if a.StartLine > 0 {
 		start = a.StartLine
 	}
@@ -1257,11 +1416,11 @@ func dispatchFileRead(confirm agent.ConfirmFn, args json.RawMessage) (string, er
 	if start < 1 {
 		start = 1
 	}
-	if end > len(lines) {
-		end = len(lines)
+	if end > totalLines {
+		end = totalLines
 	}
 	if start > end {
-		return "", fmt.Errorf("file_read: start_line %d > end_line %d", start, end)
+		return fileReadResult{}, fmt.Errorf("file_read: start_line %d > end_line %d", start, end)
 	}
 	truncated := false
 	if end-start+1 > fileReadMaxLines {
@@ -1272,11 +1431,11 @@ func dispatchFileRead(confirm agent.ConfirmFn, args json.RawMessage) (string, er
 	for i, line := range lines[start-1 : end] {
 		fmt.Fprintf(&out, "%d\t%s\n", start+i, line)
 	}
-	result := strings.TrimRight(out.String(), "\n")
+	content := strings.TrimRight(out.String(), "\n")
 	if truncated {
-		result += fmt.Sprintf("\n[truncated: showing lines %d-%d of %d; use start_line/end_line or grep -n to narrow range]", start, end, len(lines))
+		content += fmt.Sprintf("\n[truncated: showing lines %d-%d of %d; use start_line/end_line or grep -n to narrow range]", start, end, totalLines)
 	}
-	return result, nil
+	return fileReadResult{content: content, start: start, end: end, totalLines: totalLines}, nil
 }
 
 func dispatchFileWrite(confirm agent.ConfirmFn, args json.RawMessage) (string, error) {

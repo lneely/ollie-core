@@ -69,7 +69,7 @@ type ollamaChatResponse struct {
 
 // -- implementation --
 
-func (b *OllamaBackend) ChatStream(ctx context.Context, model string, messages []Message, tools []Tool) (<-chan StreamEvent, error) {
+func (b *OllamaBackend) ChatStream(ctx context.Context, model string, messages []Message, tools []Tool, _ GenerationParams) (<-chan StreamEvent, error) {
 	wireMessages := make([]ollamaMessage, len(messages))
 	for i, m := range messages {
 		wireMessages[i] = ollamaMessage{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}

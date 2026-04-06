@@ -6,10 +6,14 @@ import (
 )
 
 type Config struct {
-	MCPServers   map[string]ServerConfig `json:"mcpServers,omitempty"`
-	Hooks        map[string]string       `json:"hooks,omitempty"`
-	Prompt       string                  `json:"prompt,omitempty"`
-	TrustedTools []string                `json:"trustedTools,omitempty"`
+	MCPServers       map[string]ServerConfig `json:"mcpServers,omitempty"`
+	Hooks            map[string]string       `json:"hooks,omitempty"`
+	Prompt           string                  `json:"prompt,omitempty"`
+	TrustedTools     []string                `json:"trustedTools,omitempty"`
+	MaxTokens        int                     `json:"maxTokens,omitempty"`
+	Temperature      *float64                `json:"temperature,omitempty"`
+	FrequencyPenalty *float64                `json:"frequencyPenalty,omitempty"`
+	PresencePenalty  *float64                `json:"presencePenalty,omitempty"`
 }
 
 type ServerConfig struct {

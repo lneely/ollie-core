@@ -64,9 +64,18 @@ func (e *RateLimitError) Error() string {
 	return fmt.Sprintf("rate limited: %s", e.Message)
 }
 
+// GenerationParams controls sampling behaviour for a single ChatStream call.
+// Zero values mean "use the API default".
+type GenerationParams struct {
+	MaxTokens        int      // 0 = no limit
+	Temperature      *float64 // nil = API default
+	FrequencyPenalty *float64 // nil = API default
+	PresencePenalty  *float64 // nil = API default
+}
+
 // Backend is the interface all LLM providers must implement.
 // Streaming is the only supported mode; backends that wrap blocking APIs
 // should implement ChatStream as a single-event stream.
 type Backend interface {
-	ChatStream(ctx context.Context, model string, messages []Message, tools []Tool) (<-chan StreamEvent, error)
+	ChatStream(ctx context.Context, model string, messages []Message, tools []Tool, params GenerationParams) (<-chan StreamEvent, error)
 }

@@ -65,11 +65,15 @@ type openAIStreamOptions struct {
 }
 
 type openAIChatRequest struct {
-	Model         string               `json:"model"`
-	Messages      []openAIMessage      `json:"messages"`
-	Tools         []openAITool         `json:"tools,omitempty"`
-	Stream        bool                 `json:"stream"`
-	StreamOptions *openAIStreamOptions `json:"stream_options,omitempty"`
+	Model            string               `json:"model"`
+	Messages         []openAIMessage      `json:"messages"`
+	Tools            []openAITool         `json:"tools,omitempty"`
+	Stream           bool                 `json:"stream"`
+	StreamOptions    *openAIStreamOptions `json:"stream_options,omitempty"`
+	MaxTokens        int                  `json:"max_tokens,omitempty"`
+	Temperature      *float64             `json:"temperature,omitempty"`
+	FrequencyPenalty *float64             `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64             `json:"presence_penalty,omitempty"`
 }
 
 type openAIUsage struct {
@@ -96,7 +100,7 @@ type openAIStreamResponse struct {
 
 // -- implementation --
 
-func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages []Message, tools []Tool) (<-chan StreamEvent, error) {
+func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages []Message, tools []Tool, params GenerationParams) (<-chan StreamEvent, error) {
 	wireMessages := make([]openAIMessage, len(messages))
 	for i, m := range messages {
 		wm := openAIMessage{
@@ -133,11 +137,15 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages [
 	}
 
 	req := openAIChatRequest{
-		Model:         model,
-		Messages:      wireMessages,
-		Tools:         wireTools,
-		Stream:        true,
-		StreamOptions: &openAIStreamOptions{IncludeUsage: true},
+		Model:            model,
+		Messages:         wireMessages,
+		Tools:            wireTools,
+		Stream:           true,
+		StreamOptions:    &openAIStreamOptions{IncludeUsage: true},
+		MaxTokens:        params.MaxTokens,
+		Temperature:      params.Temperature,
+		FrequencyPenalty: params.FrequencyPenalty,
+		PresencePenalty:  params.PresencePenalty,
 	}
 
 	data, err := json.Marshal(req)

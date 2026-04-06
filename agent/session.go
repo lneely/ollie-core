@@ -81,7 +81,7 @@ func (s *Session) Compact(ctx context.Context, b backend.Backend, model string) 
 
 	ch, err := b.ChatStream(ctx, model, []backend.Message{
 		{Role: "user", Content: prompt},
-	}, nil)
+	}, nil, backend.GenerationParams{})
 	if err != nil {
 		return 0, fmt.Errorf("compact: %w", err)
 	}

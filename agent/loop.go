@@ -24,14 +24,15 @@ type OutputMsg struct {
 }
 
 type Config struct {
-	Backend      backend.Backend
-	Model        string
-	Tools        []backend.Tool
-	Exec         ToolExecutor
-	Confirm      ConfirmFn
-	MaxSteps     int
-	Output       OutputFn
-	SystemPrompt string
+	Backend          backend.Backend
+	Model            string
+	Tools            []backend.Tool
+	Exec             ToolExecutor
+	Confirm          ConfirmFn
+	MaxSteps         int
+	Output           OutputFn
+	SystemPrompt     string
+	GenerationParams backend.GenerationParams
 }
 
 // ConfirmFn requests user confirmation for an action. Returns true if approved.
@@ -43,6 +44,10 @@ func Run(ctx context.Context, cfg Config, state State) error {
 		maxSteps = 1
 	}
 
+	var totalToolCalls int
+	var hadContent bool
+	hitLimit := false
+
 	for step := range maxSteps {
 		history := state.History()
 		if cfg.SystemPrompt != "" {
@@ -53,7 +58,7 @@ func Run(ctx context.Context, cfg Config, state State) error {
 		var ch <-chan backend.StreamEvent
 		for attempt := range maxRateLimitRetries + 1 {
 			var err error
-			ch, err = cfg.Backend.ChatStream(ctx, cfg.Model, history, cfg.Tools)
+			ch, err = cfg.Backend.ChatStream(ctx, cfg.Model, history, cfg.Tools, cfg.GenerationParams)
 			if err == nil {
 				break
 			}
@@ -92,6 +97,10 @@ func Run(ctx context.Context, cfg Config, state State) error {
 		if !done {
 			return fmt.Errorf("step %d: stream ended without done event", step)
 		}
+		if content.Len() > 0 {
+			hadContent = true
+		}
+		totalToolCalls += len(toolCalls)
 
 		// Announce and execute tool calls.
 		msg := backend.Message{Role: "assistant", Content: content.String(), ToolCalls: toolCalls}
@@ -149,8 +158,16 @@ func Run(ctx context.Context, cfg Config, state State) error {
 			break
 		}
 		if step >= maxSteps-1 {
+			hitLimit = true
 			break
 		}
+	}
+
+	// Surface stall conditions so the UI can indicate them.
+	if hitLimit {
+		emit(cfg, OutputMsg{Role: "stalled", Content: "max steps"})
+	} else if totalToolCalls == 0 && hadContent {
+		emit(cfg, OutputMsg{Role: "stalled", Content: "no tools"})
 	}
 
 	return nil
