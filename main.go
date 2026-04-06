@@ -1038,6 +1038,8 @@ func (m *model) handleCommand(input string) bool {
 		m.session = nil
 		m.display = nil
 		m.buf = ""
+		m.ctxStats = agent.ContextStats{}
+		m.lastUsage = backend.Usage{}
 		if m.invalidateCaches != nil {
 			m.invalidateCaches()
 		}
