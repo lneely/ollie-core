@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os/exec"
 	"sync"
 )
 
@@ -32,14 +33,36 @@ func (e *RPCError) Error() string {
 // of a subprocess).
 type Client struct {
 	mu     sync.Mutex
+	wc     io.WriteCloser
 	w      io.Writer
 	sc     *bufio.Scanner
 	nextID int
+	cmd    *exec.Cmd
 }
 
 // NewClient creates a Client from a reader and writer.
 func NewClient(r io.Reader, w io.Writer) *Client {
 	return &Client{w: w, sc: bufio.NewScanner(r)}
+}
+
+// newClientWithProcess creates a Client that owns the given subprocess.
+// Close() will shut it down.
+func newClientWithProcess(r io.Reader, wc io.WriteCloser, cmd *exec.Cmd) *Client {
+	return &Client{wc: wc, w: wc, sc: bufio.NewScanner(r), cmd: cmd}
+}
+
+// Close shuts down the underlying subprocess: closes its stdin so it receives
+// EOF, then kills the process if it is still running.
+func (c *Client) Close() error {
+	var err error
+	if c.wc != nil {
+		err = c.wc.Close()
+	}
+	if c.cmd != nil && c.cmd.Process != nil {
+		c.cmd.Process.Kill()
+		c.cmd.Wait() // reap the process; ignore errors
+	}
+	return err
 }
 
 // Call sends a JSON-RPC request and returns the result.

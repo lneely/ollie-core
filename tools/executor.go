@@ -29,6 +29,13 @@ func (e *Executor) AddServer(name string, client *mcp.Client) {
 	e.servers[name] = client
 }
 
+// Close shuts down all connected MCP servers.
+func (e *Executor) Close() {
+	for _, client := range e.servers {
+		client.Close()
+	}
+}
+
 // ListTools returns all tools advertised by all connected servers.
 func (e *Executor) ListTools() ([]ToolInfo, error) {
 	var all []ToolInfo

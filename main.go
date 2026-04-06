@@ -204,6 +204,7 @@ type model struct {
 	backendName string // e.g. "ollama", "openrouter", "openai"
 	agentName   string // active agent config name, e.g. "default"
 	agentsDir   string // path to ~/.config/ollie/agents/
+	mcpExec     *tools.Executor   // current agent's MCP executor; closed on agent switch
 	builtinExec *execpkg.Executor
 	confirmPtr  *agent.ConfirmFn // indirection so startAgent can set it per-run
 	ctxOverhead int // fixed per-request char overhead (system prompt + tool schemas)
@@ -243,6 +244,7 @@ type timeoutMsg struct{}
 
 // agentEnv holds the runtime state derived from an agent config file.
 type agentEnv struct {
+	mcpExec      *tools.Executor  // kept so it can be closed on agent switch
 	tools        []backend.Tool
 	exec         agent.ToolExecutor
 	confirm      *agent.ConfirmFn // pointer filled in by startAgent per-run
@@ -339,6 +341,7 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 	}
 
 	return agentEnv{
+		mcpExec:      mcpExec,
 		tools:        allTools,
 		exec:         execFn,
 		confirm:      confirmPtr,
@@ -445,6 +448,7 @@ func main() {
 		backendName: backendName,
 		agentName:   agentName,
 		agentsDir:   agentsDir,
+		mcpExec:     env.mcpExec,
 		builtinExec: builtinExec,
 		confirmPtr:  env.confirm,
 		ctxOverhead: env.ctxOverhead,
@@ -856,7 +860,11 @@ func (m *model) handleCommand(input string) bool {
 			m.display = append(m.display, fmt.Sprintf("Error: agent %q: %v", name, err))
 			return true
 		}
+		if m.mcpExec != nil {
+			m.mcpExec.Close()
+		}
 		env := buildAgentEnv(cfg, m.builtinExec)
+		m.mcpExec = env.mcpExec
 		m.hooks = env.hooks
 		m.loopcfg.SystemPrompt = env.systemPrompt
 		m.loopcfg.Tools = env.tools

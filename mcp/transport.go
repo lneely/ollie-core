@@ -37,7 +37,7 @@ func (t *STDIOTransport) Connect() (*Client, error) {
 		return nil, err
 	}
 
-	client := NewClient(stdout, stdin)
+	client := newClientWithProcess(stdout, stdin, cmd)
 
 	// MCP initialization handshake.
 	if _, err := client.Call("initialize", map[string]interface{}{
