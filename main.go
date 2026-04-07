@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -211,6 +213,8 @@ type model struct {
 	confirmPtr       *agent.ConfirmFn // indirection so startAgent can set it per-run
 	ctxOverhead      int              // fixed per-request char overhead (system prompt + tool schemas)
 	invalidateCaches func()           // clears tool-call dedup caches; set from agentEnv
+	sessionsDir      string
+	sessionID        string
 
 	quitPending bool     // whether a second Ctrl+C should quit
 	lastCtrlC   time.Time // timestamp of last Ctrl+C press
@@ -365,16 +369,32 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 					Path string `json:"path"`
 				}
 				json.Unmarshal(args, &a) //nolint:errcheck
+				if a.Path != "" {
+					if st := fileRanges[a.Path]; st != nil {
+						var reqStart, reqEnd int
+						var tmp struct {
+							Start int `json:"start_line"`
+							End   int `json:"end_line"`
+						}
+						json.Unmarshal(args, &tmp) //nolint:errcheck
+						reqStart, reqEnd = tmp.Start, tmp.End
+						if reqStart <= 0 {
+							reqStart = 1
+						}
+						if reqEnd <= 0 {
+							reqEnd = st.totalLines
+						}
+						if reqEnd > 0 && rangesOverlap(st.ranges, reqStart, reqEnd) {
+							return "", fmt.Errorf("file_read: lines %d-%d of %s are already in context this session; use existing content instead of re-reading", reqStart, reqEnd, a.Path)
+						}
+					}
+				}
 				meta, err := dispatchFileRead(cfn, args)
 				if err != nil {
 					return "", err
 				}
-				content := meta.content
 				if a.Path != "" {
 					st := fileRanges[a.Path]
-					if st != nil && rangesOverlap(st.ranges, meta.start, meta.end) {
-						content = fmt.Sprintf("[WARNING: Lines %d-%d of this file were already read this session. Do not re-read ranges already in your context.]\n", meta.start, meta.end) + content
-					}
 					if st == nil {
 						st = &fileReadState{}
 						fileRanges[a.Path] = st
@@ -382,12 +402,13 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 					st.ranges = append(st.ranges, lineRange{meta.start, meta.end})
 					st.totalLines = meta.totalLines
 				}
-				return content, nil
+				return meta.content, nil
 			}
 
 			if name == "file_write" {
 				var a struct {
 					Path      string `json:"path"`
+					Content   string `json:"content"`
 					StartLine int    `json:"start_line"`
 					EndLine   int    `json:"end_line"`
 				}
@@ -416,10 +437,28 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 						if !rangesCover(st.ranges, ws, we) {
 							return "", fmt.Errorf("file_write: lines %d-%d of %s have not been read this session; read them first to avoid overwriting unknown changes", ws, we, a.Path)
 						}
-						// Invalidate: file content has changed, any cached ranges are stale.
-						delete(fileRanges, a.Path)
 					}
 				}
+				result, err := dispatchBuiltinExec(ctx, name, builtinExec, cfn, args)
+				if err != nil {
+					return "", err
+				}
+				// Repopulate fileRanges so follow-up writes to the same range
+				// don't require a re-read.
+				if a.Path != "" {
+					ws, we := a.StartLine, a.EndLine
+					totalLines := 0
+					if ws == 0 && we == 0 {
+						// Whole-file: we know the exact new line count.
+						totalLines = len(strings.Split(a.Content, "\n"))
+						ws, we = 1, totalLines
+					}
+					fileRanges[a.Path] = &fileReadState{
+						ranges:     []lineRange{{ws, we}},
+						totalLines: totalLines,
+					}
+				}
+				return result, nil
 			}
 
 			return dispatchBuiltinExec(ctx, name, builtinExec, cfn, args)
@@ -428,17 +467,19 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 	}
 
 	execFn := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
-		result, err := rawExec(ctx, name, args)
-		// Warn on repeated identical tool calls (excluding file_read/file_write which
-		// are handled separately above).
-		if err == nil && name != "file_read" && name != "file_write" {
+		// Hard-error on duplicate tool calls (file_read/file_write handled above).
+		if name != "file_read" && name != "file_write" {
 			key := name + "\x00" + string(args)
 			if toolCallSeen[key] {
-				result = "[WARNING: This exact tool call was already made this session. Result may be unchanged. Do not repeat unless something has changed.]\n" + result
+				return "", fmt.Errorf("duplicate tool call: %s with these exact arguments was already called this session; the result is already in your context", name)
 			}
-			toolCallSeen[key] = true
+			result, err := rawExec(ctx, name, args)
+			if err == nil {
+				toolCallSeen[key] = true
+			}
+			return result, err
 		}
-		return result, err
+		return rawExec(ctx, name, args)
 	}
 
 	return agentEnv{
@@ -473,9 +514,36 @@ func agentConfigPath(agentsDir, name string) string {
 	return p // will produce a load error, which is the right behaviour
 }
 
+// newSessionID returns a unique session identifier embedding the current timestamp.
+func newSessionID() string {
+	b := make([]byte, 3)
+	rand.Read(b) //nolint:errcheck
+	return time.Now().Format("20060102-150405") + "-" + fmt.Sprintf("%06x", b)
+}
+
+// saveSession persists the current session to disk; silently no-ops if no
+// active session or session ID is set.
+func (m *model) saveSession() {
+	if m.session == nil || m.sessionID == "" || m.sessionsDir == "" {
+		return
+	}
+	path := m.sessionsDir + "/" + m.sessionID + ".json"
+	if err := m.session.SaveTo(path, m.sessionID, m.agentName); err != nil {
+		m.appendDisplay("session save: " + err.Error())
+	}
+}
+
 func main() {
+	sessionFlag := flag.String("session", "", "resume a session by ID")
+	flag.Parse()
+	extraArgs := flag.Args()
+
 	home, _ := os.UserHomeDir()
 	agentsDir := home + "/.config/ollie/agents"
+	sessionsDir := home + "/.config/ollie/sessions"
+	if err := os.MkdirAll(sessionsDir, 0700); err != nil {
+		log.Fatalf("sessions dir: %v", err)
+	}
 
 	be, err := backend.New()
 	if err != nil {
@@ -495,26 +563,57 @@ func main() {
 		home+"/.cache/ollie/exec",
 	)
 
-	// Load the default agent config.
+	// Determine agent name: explicit arg > session file > env > "default".
 	agentName := os.Getenv("OLLIE_AGENT")
 	if agentName == "" {
 		agentName = "default"
 	}
-	if len(os.Args) > 1 {
-		agentName = os.Args[1]
+
+	// If resuming a session, peek at the file to get the stored agent name
+	// (used only when no agent is specified on the command line).
+	sessionID := newSessionID()
+	var resumeMessages []backend.Message
+	if *sessionFlag != "" {
+		sessionPath := sessionsDir + "/" + *sessionFlag + ".json"
+		data, readErr := os.ReadFile(sessionPath)
+		if readErr != nil {
+			log.Fatalf("--session: %v", readErr)
+		}
+		var ps agent.PersistedSession
+		if jsonErr := json.Unmarshal(data, &ps); jsonErr != nil {
+			log.Fatalf("--session: bad JSON: %v", jsonErr)
+		}
+		sessionID = ps.ID
+		resumeMessages = ps.Messages
+		if ps.Agent != "" && len(extraArgs) == 0 {
+			agentName = ps.Agent
+		}
 	}
+	if len(extraArgs) > 0 {
+		agentName = extraArgs[0]
+	}
+
 	cfgPath := agentConfigPath(agentsDir, agentName)
 	cfg, cfgErr := config.Load(cfgPath)
 
 	var startup []string
-	if cfgErr != nil && len(os.Args) > 2 {
-		log.Fatalf("Failed to load agent config: %v", cfgErr)
-	} else if cfgErr != nil {
+	if cfgErr != nil {
 		startup = append(startup, fmt.Sprintf("agent config: %v", cfgErr))
 	}
 
 	env := buildAgentEnv(cfg, builtinExec)
 	startup = append(startup, env.messages...)
+
+	// Restore or record session info.
+	var initialSession *agent.Session
+	if len(resumeMessages) > 0 {
+		initialSession = agent.RestoreSession(resumeMessages, agent.ContextConfig{
+			FixedOverheadChars: env.ctxOverhead,
+		})
+		startup = append(startup, fmt.Sprintf("session: %s (resumed)", sessionID))
+	} else {
+		startup = append(startup, fmt.Sprintf("session: %s", sessionID))
+	}
 
 	loopcfg := agent.Config{
 		Backend:          be,
@@ -548,6 +647,7 @@ func main() {
 	p := tea.NewProgram(model{
 		textarea:         ta,
 		viewport:         vp,
+		session:          initialSession,
 		loopcfg:          loopcfg,
 		hooks:            env.hooks,
 		display:          startup,
@@ -555,6 +655,8 @@ func main() {
 		backendName:      backendName,
 		agentName:        agentName,
 		agentsDir:        agentsDir,
+		sessionsDir:      sessionsDir,
+		sessionID:        sessionID,
 		mcpExec:          env.mcpExec,
 		builtinExec:      builtinExec,
 		confirmPtr:       env.confirm,
@@ -788,6 +890,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agentCh = nil
 			m.cancel = nil
 			m.doneCh = nil
+			m.saveSession()
 			return m, nil
 		}
 		// Stop pumping while waiting for user confirmation.
@@ -1014,6 +1117,7 @@ func (m *model) handleCommand(input string) bool {
 		m.invalidateCaches = env.invalidateCaches
 		m.agentName = name
 		m.session = nil // new agent, new session
+		m.sessionID = newSessionID()
 		for _, msg := range env.messages {
 			m.display = append(m.display, msg)
 		}
@@ -1025,13 +1129,20 @@ func (m *model) handleCommand(input string) bool {
 			m.display = append(m.display, "nothing to compact")
 			return true
 		}
-		n, err := m.session.Compact(context.Background(), m.loopcfg.Backend, m.loopcfg.Model)
+		n, summary, err := m.session.Compact(context.Background(), m.loopcfg.Backend, m.loopcfg.Model)
 		if err != nil {
 			m.display = append(m.display, "compact error: "+err.Error())
 		} else if n == 0 {
 			m.display = append(m.display, "nothing to compact")
 		} else {
 			m.display = append(m.display, fmt.Sprintf("compacted %d messages", n))
+			if summary != "" {
+				m.display = append(m.display, "")
+				for _, line := range strings.Split(summary, "\n") {
+					m.display = append(m.display, line)
+				}
+			}
+			m.saveSession()
 			if m.invalidateCaches != nil {
 				m.invalidateCaches()
 			}
@@ -1068,14 +1179,62 @@ func (m *model) handleCommand(input string) bool {
 		m.buf = ""
 		m.ctxStats = agent.ContextStats{}
 		m.lastUsage = backend.Usage{}
+		m.sessionID = newSessionID()
 		if m.invalidateCaches != nil {
 			m.invalidateCaches()
+		}
+		return true
+
+	case "/sessions":
+		entries, err := os.ReadDir(m.sessionsDir)
+		if err != nil {
+			m.display = append(m.display, fmt.Sprintf("sessions: %v", err))
+			return true
+		}
+		found := false
+		// ReadDir returns sorted by name (date-prefixed IDs → chronological).
+		// Show most recent first.
+		for i := len(entries) - 1; i >= 0; i-- {
+			e := entries[i]
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue
+			}
+			id := strings.TrimSuffix(e.Name(), ".json")
+			marker := "  "
+			if id == m.sessionID {
+				marker = "* "
+			}
+			// Quick-read agent name and first user message for context.
+			label := id
+			if data, readErr := os.ReadFile(m.sessionsDir + "/" + e.Name()); readErr == nil {
+				var ps agent.PersistedSession
+				if json.Unmarshal(data, &ps) == nil {
+					agentLabel := ps.Agent
+					goal := ""
+					for _, msg := range ps.Messages {
+						if msg.Role == "user" {
+							goal = msg.Content
+							break
+						}
+					}
+					if len(goal) > 60 {
+						goal = goal[:60] + "..."
+					}
+					label = fmt.Sprintf("%-24s  [%s] %q", id, agentLabel, goal)
+				}
+			}
+			m.display = append(m.display, marker+label)
+			found = true
+		}
+		if !found {
+			m.display = append(m.display, "no sessions found in "+m.sessionsDir)
 		}
 		return true
 
 	case "/help":
 		m.display = append(m.display, "Available commands:")
 		m.display = append(m.display, "  /agents          - List available agent configs")
+		m.display = append(m.display, "  /sessions        - List saved sessions")
 		m.display = append(m.display, "  /agent [name]    - Show or switch active agent")
 		m.display = append(m.display, "  /backend <type>  - Switch backend (ollama, openai)")
 		m.display = append(m.display, "  /model <name>    - Switch model")

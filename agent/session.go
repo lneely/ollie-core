@@ -2,11 +2,50 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"ollie/backend"
 )
+
+// PersistedSession is the on-disk format for a saved session.
+type PersistedSession struct {
+	ID       string            `json:"id"`
+	Agent    string            `json:"agent,omitempty"`
+	Messages []backend.Message `json:"messages"`
+}
+
+// SaveTo writes the full message history to path as JSON.
+func (s *Session) SaveTo(path, id, agentName string) error {
+	ps := PersistedSession{
+		ID:       id,
+		Agent:    agentName,
+		Messages: s.ctx.Messages(),
+	}
+	data, err := json.Marshal(ps)
+	if err != nil {
+		return fmt.Errorf("session save: %w", err)
+	}
+	return os.WriteFile(path, data, 0600)
+}
+
+// RestoreSession reconstructs a Session from a persisted message list,
+// applying cfg to the ContextBuilder.
+func RestoreSession(messages []backend.Message, cfg ContextConfig) *Session {
+	s := &Session{ctx: NewContextBuilder(cfg)}
+	for _, m := range messages {
+		s.ctx.Append(m)
+	}
+	for _, m := range messages {
+		if m.Role == "user" {
+			s.goal = m.Content
+			break
+		}
+	}
+	return s
+}
 
 // Session is an ephemeral in-memory state backend.
 // It lives only for the duration of the process; nothing is persisted.
@@ -65,11 +104,11 @@ func (s *Session) MarkComplete() error {
 
 // Compact summarizes messages outside the bounded window via an LLM call,
 // replacing them with a single summary system message.
-// Returns the number of messages replaced, or 0 if nothing to compact.
-func (s *Session) Compact(ctx context.Context, b backend.Backend, model string) (int, error) {
+// Returns (n evicted, summary text, error); n==0 means nothing to compact.
+func (s *Session) Compact(ctx context.Context, b backend.Backend, model string) (int, string, error) {
 	evicted := s.ctx.EvictedMessages()
 	if len(evicted) == 0 {
-		return 0, nil
+		return 0, "", nil
 	}
 
 	// Build a prompt asking the model to summarize the evicted messages.
@@ -83,7 +122,7 @@ func (s *Session) Compact(ctx context.Context, b backend.Backend, model string) 
 		{Role: "user", Content: prompt},
 	}, nil, backend.GenerationParams{})
 	if err != nil {
-		return 0, fmt.Errorf("compact: %w", err)
+		return 0, "", fmt.Errorf("compact: %w", err)
 	}
 
 	var summary strings.Builder
@@ -96,18 +135,20 @@ func (s *Session) Compact(ctx context.Context, b backend.Backend, model string) 
 		}
 	}
 
+	summaryText := strings.TrimSpace(summary.String())
+
 	// Replace evicted messages with summary.
 	all := s.ctx.Messages()
 	s.ctx.Truncate(0)
 	s.ctx.Append(backend.Message{
 		Role:    "system",
-		Content: "[conversation summary: " + strings.TrimSpace(summary.String()) + "]",
+		Content: "[conversation summary: " + summaryText + "]",
 	})
 	// Re-append the non-evicted messages.
 	for _, m := range all[len(evicted):] {
 		s.ctx.Append(m)
 	}
-	return len(evicted), nil
+	return len(evicted), summaryText, nil
 }
 
 // Rollback removes any trailing non-user messages from history, discarding
