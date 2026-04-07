@@ -60,10 +60,21 @@ func buildFirstPrompt(input string) string {
 	var sb strings.Builder
 	sb.WriteString(input)
 
+	const maxListingBytes = 16 * 1024  // 16 KB
+	const maxReadmeBytes = 8 * 1024    // 8 KB
+
 	// Append file listing: prefer git ls-files (respects .gitignore), fall back
 	// to a simple recursive walk skipping hidden files and directories.
 	lsOut, err := exec.Command("git", "-C", cwd, "ls-files").Output()
 	if err == nil && len(lsOut) > 0 {
+		if len(lsOut) > maxListingBytes {
+			lsOut = lsOut[:maxListingBytes]
+			// trim to last newline to avoid a partial path
+			if i := bytes.LastIndexByte(lsOut, '\n'); i >= 0 {
+				lsOut = lsOut[:i+1]
+			}
+			lsOut = append(lsOut, []byte("...(truncated)\n")...)
+		}
 		sb.WriteString("\n\n--- files (git ls-files) ---\n")
 		sb.Write(lsOut)
 	} else {
@@ -89,15 +100,29 @@ func buildFirstPrompt(input string) string {
 		})
 		if len(files) > 0 {
 			sb.WriteString("\n\n--- files ---\n")
+			written := 0
 			for _, f := range files {
-				sb.WriteString(f + "\n")
+				line := f + "\n"
+				if written+len(line) > maxListingBytes {
+					sb.WriteString("...(truncated)\n")
+					break
+				}
+				sb.WriteString(line)
+				written += len(line)
 			}
 		}
 	}
 
-	// Append README.md if present.
+	// Append README.md if present, capped to avoid blowing context.
 	readmeData, err := os.ReadFile(cwd + "/README.md")
 	if err == nil && len(readmeData) > 0 {
+		if len(readmeData) > maxReadmeBytes {
+			readmeData = readmeData[:maxReadmeBytes]
+			if i := bytes.LastIndexByte(readmeData, '\n'); i >= 0 {
+				readmeData = readmeData[:i+1]
+			}
+			readmeData = append(readmeData, []byte("...(truncated)\n")...)
+		}
 		sb.WriteString("\n--- README.md ---\n")
 		sb.Write(readmeData)
 	}
