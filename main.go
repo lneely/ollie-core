@@ -129,7 +129,7 @@ var builtinTools = []backend.Tool{
 	},
 	{
 		Name:        "file_write",
-		Description: "Write content to a file. Omit start_line/end_line to overwrite the whole file. Provide both to replace only that line range. Always use file_read or grep -n to identify the exact line range before writing. Never guess line numbers. Preserve original formatting and indentation. Always use this instead of shell commands for writing files.",
+		Description: "Write content to a file. For existing files, start_line and end_line are required — whole-file overwrites are not permitted. For new files (not yet on disk), omit start_line/end_line to write the full content. Always use file_read or grep -n to identify the exact line range before writing. Never guess line numbers. Preserve original formatting and indentation.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"required": ["path", "content"],
@@ -414,42 +414,37 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 				}
 				json.Unmarshal(args, &a) //nolint:errcheck
 				if a.Path != "" {
-					st := fileRanges[a.Path]
-					if st == nil {
-						// New files (not yet on disk) need no prior read.
-						if _, statErr := os.Stat(a.Path); !os.IsNotExist(statErr) {
-							return "", fmt.Errorf("file_write: %s has not been read this session; read it first to avoid overwriting unknown changes", a.Path)
+					_, statErr := os.Stat(a.Path)
+					fileExists := !os.IsNotExist(statErr)
+
+					if fileExists {
+						// Existing files: whole-file overwrites are forbidden.
+						// The bot must use start_line/end_line range writes to
+						// prevent accidental full-file corruption from partial context.
+						if a.StartLine == 0 && a.EndLine == 0 {
+							return "", fmt.Errorf("file_write: whole-file overwrite of existing file %s is not allowed; use start_line/end_line to write specific line ranges", a.Path)
 						}
-					} else {
-						ws, we := a.StartLine, a.EndLine
-						if ws == 0 && we == 0 {
-							// Whole-file write: verify full coverage.
-							totalLines := st.totalLines
-							if totalLines == 0 {
-								data, err := os.ReadFile(a.Path)
-								if err != nil {
-									return "", fmt.Errorf("file_write: cannot verify read coverage: %w", err)
-								}
-								totalLines = len(strings.Split(string(data), "\n"))
-							}
-							ws, we = 1, totalLines
+						st := fileRanges[a.Path]
+						if st == nil {
+							return "", fmt.Errorf("file_write: %s has not been read this session; read the target range first", a.Path)
 						}
-						if !rangesCover(st.ranges, ws, we) {
-							return "", fmt.Errorf("file_write: lines %d-%d of %s have not been read this session; read them first to avoid overwriting unknown changes", ws, we, a.Path)
+						if !rangesCover(st.ranges, a.StartLine, a.EndLine) {
+							return "", fmt.Errorf("file_write: lines %d-%d of %s have not been read this session; read them first", a.StartLine, a.EndLine, a.Path)
 						}
 					}
+					// New files: whole-file write is the only option and is safe.
 				}
 				result, err := dispatchBuiltinExec(ctx, name, builtinExec, cfn, args)
 				if err != nil {
 					return "", err
 				}
-				// Repopulate fileRanges so follow-up writes to the same range
-				// don't require a re-read.
+				// Repopulate fileRanges so follow-up writes to the same
+				// range don't require a re-read.
 				if a.Path != "" {
 					ws, we := a.StartLine, a.EndLine
 					totalLines := 0
 					if ws == 0 && we == 0 {
-						// Whole-file: we know the exact new line count.
+						// New file: record full coverage of the written content.
 						totalLines = len(strings.Split(a.Content, "\n"))
 						ws, we = 1, totalLines
 					}
