@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,6 +50,62 @@ Tool call examples:
   List directory:   {"code": "find . -maxdepth 2 -type f", "language": "bash"}
   Run named tool:   {"tool": "discover_skill.sh", "args": ["keyword"]}
   Pipeline:         {"pipe": [{"code": "cat file.txt"}, {"code": "grep foo"}]}`
+
+// buildFirstPrompt augments the initial user message with a directory listing
+// and README.md contents so the agent starts with real context instead of guessing.
+func buildFirstPrompt(input string) string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return input
+	}
+
+	var sb strings.Builder
+	sb.WriteString(input)
+
+	// Append file listing: prefer git ls-files (respects .gitignore), fall back
+	// to a simple recursive walk skipping hidden files and directories.
+	lsOut, err := exec.Command("git", "-C", cwd, "ls-files").Output()
+	if err == nil && len(lsOut) > 0 {
+		sb.WriteString("\n\n--- files (git ls-files) ---\n")
+		sb.Write(lsOut)
+	} else {
+		var files []string
+		filepath.WalkDir(cwd, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			rel := strings.TrimPrefix(path, cwd+"/")
+			if rel == "" {
+				return nil
+			}
+			if strings.HasPrefix(d.Name(), ".") {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !d.IsDir() {
+				files = append(files, rel)
+			}
+			return nil
+		})
+		if len(files) > 0 {
+			sb.WriteString("\n\n--- files ---\n")
+			for _, f := range files {
+				sb.WriteString(f + "\n")
+			}
+		}
+	}
+
+	// Append README.md if present.
+	readmeData, err := os.ReadFile(cwd + "/README.md")
+	if err == nil && len(readmeData) > 0 {
+		sb.WriteString("\n--- README.md ---\n")
+		sb.Write(readmeData)
+	}
+
+	return sb.String()
+}
 
 func systemPrompt(allTools []backend.Tool) string {
 	cwd, _ := os.Getwd()
@@ -984,7 +1042,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			if m.session == nil {
-				m.session = agent.NewSessionWithConfig(input, agent.ContextConfig{
+				m.session = agent.NewSessionWithConfig(buildFirstPrompt(input), agent.ContextConfig{
 					FixedOverheadChars: m.ctxOverhead,
 				})
 			} else {
