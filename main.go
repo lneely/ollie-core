@@ -395,26 +395,30 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 				if a.Path != "" {
 					st := fileRanges[a.Path]
 					if st == nil {
-						return "", fmt.Errorf("file_write: %s has not been read this session; read it first to avoid overwriting unknown changes", a.Path)
-					}
-					ws, we := a.StartLine, a.EndLine
-					if ws == 0 && we == 0 {
-						// Whole-file write: verify full coverage.
-						totalLines := st.totalLines
-						if totalLines == 0 {
-							data, err := os.ReadFile(a.Path)
-							if err != nil {
-								return "", fmt.Errorf("file_write: cannot verify read coverage: %w", err)
-							}
-							totalLines = len(strings.Split(string(data), "\n"))
+						// New files (not yet on disk) need no prior read.
+						if _, statErr := os.Stat(a.Path); !os.IsNotExist(statErr) {
+							return "", fmt.Errorf("file_write: %s has not been read this session; read it first to avoid overwriting unknown changes", a.Path)
 						}
-						ws, we = 1, totalLines
+					} else {
+						ws, we := a.StartLine, a.EndLine
+						if ws == 0 && we == 0 {
+							// Whole-file write: verify full coverage.
+							totalLines := st.totalLines
+							if totalLines == 0 {
+								data, err := os.ReadFile(a.Path)
+								if err != nil {
+									return "", fmt.Errorf("file_write: cannot verify read coverage: %w", err)
+								}
+								totalLines = len(strings.Split(string(data), "\n"))
+							}
+							ws, we = 1, totalLines
+						}
+						if !rangesCover(st.ranges, ws, we) {
+							return "", fmt.Errorf("file_write: lines %d-%d of %s have not been read this session; read them first to avoid overwriting unknown changes", ws, we, a.Path)
+						}
+						// Invalidate: file content has changed, any cached ranges are stale.
+						delete(fileRanges, a.Path)
 					}
-					if !rangesCover(st.ranges, ws, we) {
-						return "", fmt.Errorf("file_write: lines %d-%d of %s have not been read this session; read them first to avoid overwriting unknown changes", ws, we, a.Path)
-					}
-					// Invalidate: file content has changed, any cached ranges are stale.
-					delete(fileRanges, a.Path)
 				}
 			}
 
@@ -959,6 +963,30 @@ func (m *model) handleCommand(input string) bool {
 		m.display = append(m.display, fmt.Sprintf("Switched model to: %s", args[0]))
 		return true
 
+	case "/agents":
+		entries, err := os.ReadDir(m.agentsDir)
+		if err != nil {
+			m.display = append(m.display, fmt.Sprintf("agents: %v", err))
+			return true
+		}
+		found := false
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), ".json")
+			marker := "  "
+			if name == m.agentName {
+				marker = "* "
+			}
+			m.display = append(m.display, marker+name)
+			found = true
+		}
+		if !found {
+			m.display = append(m.display, "no agents found in "+m.agentsDir)
+		}
+		return true
+
 	case "/agent":
 		if len(args) == 0 {
 			m.display = append(m.display, fmt.Sprintf("active agent: %s", m.agentName))
@@ -1047,6 +1075,7 @@ func (m *model) handleCommand(input string) bool {
 
 	case "/help":
 		m.display = append(m.display, "Available commands:")
+		m.display = append(m.display, "  /agents          - List available agent configs")
 		m.display = append(m.display, "  /agent [name]    - Show or switch active agent")
 		m.display = append(m.display, "  /backend <type>  - Switch backend (ollama, openai)")
 		m.display = append(m.display, "  /model <name>    - Switch model")
@@ -1346,8 +1375,6 @@ func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, confirm agent
 	return e.Execute(ctx, code, "bash", timeout, sandbox, true)
 }
 
-const fileReadMaxLines = 500
-
 // lineRange is an inclusive [start, end] line range (1-based).
 type lineRange struct{ start, end int }
 
@@ -1375,7 +1402,7 @@ func rangesCover(ranges []lineRange, ws, we int) bool {
 	sorted := make([]lineRange, len(ranges))
 	copy(sorted, ranges)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].start < sorted[j].start })
-	cur := 0
+	cur := ws - 1 // coverage must start at ws; anything before is irrelevant
 	for _, r := range sorted {
 		if r.start > cur+1 {
 			break
@@ -1425,19 +1452,11 @@ func dispatchFileRead(confirm agent.ConfirmFn, args json.RawMessage) (fileReadRe
 	if start > end {
 		return fileReadResult{}, fmt.Errorf("file_read: start_line %d > end_line %d", start, end)
 	}
-	truncated := false
-	if end-start+1 > fileReadMaxLines {
-		end = start + fileReadMaxLines - 1
-		truncated = true
-	}
 	var out strings.Builder
 	for i, line := range lines[start-1 : end] {
 		fmt.Fprintf(&out, "%d\t%s\n", start+i, line)
 	}
 	content := strings.TrimRight(out.String(), "\n")
-	if truncated {
-		content += fmt.Sprintf("\n[truncated: showing lines %d-%d of %d; use start_line/end_line or grep -n to narrow range]", start, end, totalLines)
-	}
 	return fileReadResult{content: content, start: start, end: end, totalLines: totalLines}, nil
 }
 
