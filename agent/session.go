@@ -102,18 +102,19 @@ func (s *Session) MarkComplete() error {
 	return nil
 }
 
-// Compact summarizes messages outside the bounded window via an LLM call,
-// replacing them with a single summary system message.
-// Returns (n evicted, summary text, error); n==0 means nothing to compact.
+// Compact proactively summarizes all messages older than the tail window via
+// an LLM call, replacing them with a single summary system message.
+// Unlike the previous eviction-based approach, this works for any session size.
+// Returns (n compacted, summary text, error); n==0 means nothing to compact.
 func (s *Session) Compact(ctx context.Context, b backend.Backend, model string) (int, string, error) {
-	evicted := s.ctx.EvictedMessages()
-	if len(evicted) == 0 {
+	older := s.ctx.OlderMessages()
+	if len(older) == 0 {
 		return 0, "", nil
 	}
 
-	// Build a prompt asking the model to summarize the evicted messages.
+	// Build a prompt asking the model to summarize the older messages.
 	var sb strings.Builder
-	for _, m := range evicted {
+	for _, m := range older {
 		fmt.Fprintf(&sb, "%s: %s\n", m.Role, m.Content)
 	}
 	prompt := "Summarize the following conversation history concisely, preserving key facts, decisions, and context:\n\n" + sb.String()
@@ -137,18 +138,21 @@ func (s *Session) Compact(ctx context.Context, b backend.Backend, model string) 
 
 	summaryText := strings.TrimSpace(summary.String())
 
-	// Replace evicted messages with summary.
-	all := s.ctx.Messages()
+	// Rebuild: system messages + summary + tail.
+	system := s.ctx.SystemMessages()
+	tail := s.ctx.TailWindow()
 	s.ctx.Truncate(0)
+	for _, m := range system {
+		s.ctx.Append(m)
+	}
 	s.ctx.Append(backend.Message{
 		Role:    "system",
 		Content: "[conversation summary: " + summaryText + "]",
 	})
-	// Re-append the non-evicted messages.
-	for _, m := range all[len(evicted):] {
+	for _, m := range tail {
 		s.ctx.Append(m)
 	}
-	return len(evicted), summaryText, nil
+	return len(older), summaryText, nil
 }
 
 // Rollback removes any trailing non-user messages from history, discarding

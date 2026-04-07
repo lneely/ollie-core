@@ -245,6 +245,42 @@ func computeTailStart(rest []backend.Message, tailCount int) int {
 // Len returns the number of stored messages.
 func (cb *ContextBuilder) Len() int { return len(cb.messages) }
 
+// SystemMessages returns all system-role messages.
+func (cb *ContextBuilder) SystemMessages() []backend.Message {
+	var out []backend.Message
+	for _, m := range cb.messages {
+		if m.Role == "system" {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// OlderMessages returns non-system messages that fall before the tail window.
+// These are the candidates for compaction.
+func (cb *ContextBuilder) OlderMessages() []backend.Message {
+	var rest []backend.Message
+	for _, m := range cb.messages {
+		if m.Role != "system" {
+			rest = append(rest, m)
+		}
+	}
+	ts := computeTailStart(rest, cb.cfg.TailMessages)
+	return rest[:ts]
+}
+
+// TailWindow returns non-system messages within the protected tail window.
+func (cb *ContextBuilder) TailWindow() []backend.Message {
+	var rest []backend.Message
+	for _, m := range cb.messages {
+		if m.Role != "system" {
+			rest = append(rest, m)
+		}
+	}
+	ts := computeTailStart(rest, cb.cfg.TailMessages)
+	return rest[ts:]
+}
+
 // ApproxTokens returns a rough token estimate for the bounded history
 // using the 4-chars-per-token heuristic.
 func (cb *ContextBuilder) ApproxTokens() int {
