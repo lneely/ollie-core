@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -41,11 +40,10 @@ Do not use hedging language ("it looks like", "it appears", "it seems", "likely"
 Do not re-read or re-fetch any file or resource that already has a result in the conversation history. Use the existing result.
 Use tools to gather information before asking the user for clarification. Explore files, run commands, and investigate the environment first. Only ask when you have exhausted what you can discover on your own.
 Use execute_code for all shell commands and scripts. Use execute_tool only for named scripts in ~/mnt/anvillm/tools. Use execute_pipe to chain steps: use {code: "cmd --flags"} for shell commands, {tool, args} only for named scripts in ~/mnt/anvillm/tools.
-Use file_read and file_write for all file read and write operations. Never use shell commands to read or write files.
+Use grep or execute_code to search and explore files. Use file_read only when you need to write — it reads the full file and is required before file_write. Never use shell commands to read or write files.
 
 Tool call examples:
   Read a file:      {"path": "/home/user/foo.go"}
-  Read lines 10-20: {"path": "/home/user/foo.go", "start_line": 10, "end_line": 20}
   Run shell code:   {"code": "ls -la", "language": "bash"}
   List directory:   {"code": "find . -maxdepth 2 -type f", "language": "bash"}
   Run named tool:   {"tool": "discover_skill.sh", "args": ["keyword"]}
@@ -174,14 +172,12 @@ var builtinTools = []backend.Tool{
 	},
 	{
 		Name:        "file_read",
-		Description: "Read a file or a range of lines. Output includes line numbers. Always use this instead of shell commands for reading files.",
+		Description: "Read a file in full. Output includes line numbers. Use grep/execute_code to search before reading. Prefer file_read only when you need to write — use grep or execute_code for exploration.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"required": ["path"],
 			"properties": {
-				"path":       {"type": "string",  "description": "Path to the file."},
-				"start_line": {"type": "integer", "description": "First line to read, 1-based (default: 1)."},
-				"end_line":   {"type": "integer", "description": "Last line to read, inclusive (default: EOF)."}
+				"path": {"type": "string", "description": "Path to the file."}
 			}
 		}`),
 	},
@@ -396,14 +392,10 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 	var confirmFn agent.ConfirmFn // filled in by startAgent
 	confirmPtr := &confirmFn
 
-	// fileRanges tracks which line ranges of each file have been read this session.
-	// Used to warn on overlapping re-reads and to guard file_write against blind overwrites.
-	// Cleared on /compact and /clear; individual entries deleted when a file is written.
-	type fileReadState struct {
-		ranges     []lineRange
-		totalLines int // total lines when last read; used for whole-file write coverage check
-	}
-	fileRanges := make(map[string]*fileReadState)
+	// fileReadCache tracks which files have been read this session (by path).
+	// Used to guard file_write against blind overwrites and to block redundant re-reads.
+	// Cleared on /compact and /clear.
+	fileReadCache := make(map[string]bool)
 
 	// toolCallSeen tracks all non-file tool calls by exact (name, args) to warn on repeats.
 	toolCallSeen := make(map[string]bool)
@@ -427,40 +419,17 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 					Path string `json:"path"`
 				}
 				json.Unmarshal(args, &a) //nolint:errcheck
-				if a.Path != "" {
-					if st := fileRanges[a.Path]; st != nil {
-						var reqStart, reqEnd int
-						var tmp struct {
-							Start int `json:"start_line"`
-							End   int `json:"end_line"`
-						}
-						json.Unmarshal(args, &tmp) //nolint:errcheck
-						reqStart, reqEnd = tmp.Start, tmp.End
-						if reqStart <= 0 {
-							reqStart = 1
-						}
-						if reqEnd <= 0 {
-							reqEnd = st.totalLines
-						}
-						if reqEnd > 0 && rangesOverlap(st.ranges, reqStart, reqEnd) {
-							return "", fmt.Errorf("file_read: lines %d-%d of %s are already in context this session; use existing content instead of re-reading", reqStart, reqEnd, a.Path)
-						}
-					}
+				if a.Path != "" && fileReadCache[a.Path] {
+					return "", fmt.Errorf("file_read: %s is already in context this session; use existing content instead of re-reading", a.Path)
 				}
-				meta, err := dispatchFileRead(cfn, args)
+				content, err := dispatchFileRead(cfn, args)
 				if err != nil {
 					return "", err
 				}
 				if a.Path != "" {
-					st := fileRanges[a.Path]
-					if st == nil {
-						st = &fileReadState{}
-						fileRanges[a.Path] = st
-					}
-					st.ranges = append(st.ranges, lineRange{meta.start, meta.end})
-					st.totalLines = meta.totalLines
+					fileReadCache[a.Path] = true
 				}
-				return meta.content, nil
+				return content, nil
 			}
 
 			if name == "file_write" {
@@ -477,17 +446,11 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 
 					if fileExists {
 						// Existing files: whole-file overwrites are forbidden.
-						// The bot must use start_line/end_line range writes to
-						// prevent accidental full-file corruption from partial context.
 						if a.StartLine == 0 && a.EndLine == 0 {
 							return "", fmt.Errorf("file_write: whole-file overwrite of existing file %s is not allowed; use start_line/end_line to write specific line ranges", a.Path)
 						}
-						st := fileRanges[a.Path]
-						if st == nil {
-							return "", fmt.Errorf("file_write: %s has not been read this session; read the target range first", a.Path)
-						}
-						if !rangesCover(st.ranges, a.StartLine, a.EndLine) {
-							return "", fmt.Errorf("file_write: lines %d-%d of %s have not been read this session; read them first", a.StartLine, a.EndLine, a.Path)
+						if !fileReadCache[a.Path] {
+							return "", fmt.Errorf("file_write: %s has not been read this session; read it first", a.Path)
 						}
 					}
 					// New files: whole-file write is the only option and is safe.
@@ -496,20 +459,8 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 				if err != nil {
 					return "", err
 				}
-				// Repopulate fileRanges so follow-up writes to the same
-				// range don't require a re-read.
 				if a.Path != "" {
-					ws, we := a.StartLine, a.EndLine
-					totalLines := 0
-					if ws == 0 && we == 0 {
-						// New file: record full coverage of the written content.
-						totalLines = len(strings.Split(a.Content, "\n"))
-						ws, we = 1, totalLines
-					}
-					fileRanges[a.Path] = &fileReadState{
-						ranges:     []lineRange{{ws, we}},
-						totalLines: totalLines,
-					}
+					fileReadCache[a.Path] = true
 				}
 				return result, nil
 			}
@@ -546,7 +497,7 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 		ctxOverhead:  overhead,
 		messages:     messages,
 		invalidateCaches: func() {
-			clear(fileRanges)
+			clear(fileReadCache)
 			clear(toolCallSeen)
 		},
 	}
@@ -1460,8 +1411,7 @@ func extractMCPText(raw json.RawMessage) string {
 func dispatchBuiltinExec(ctx context.Context, name string, e *execpkg.Executor, confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
 	switch name {
 	case "file_read":
-		r, err := dispatchFileRead(confirm, args)
-		return r.content, err
+		return dispatchFileRead(confirm, args)
 	case "file_write":
 		return dispatchFileWrite(confirm, args)
 	case "execute_pipe":
@@ -1587,89 +1537,29 @@ func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, confirm agent
 	return e.Execute(ctx, code, "bash", timeout, sandbox, true)
 }
 
-// lineRange is an inclusive [start, end] line range (1-based).
-type lineRange struct{ start, end int }
-
-// fileReadResult carries the output of dispatchFileRead plus the range metadata
-// needed for per-session coverage tracking.
-type fileReadResult struct {
-	content    string
-	start      int // actual first line returned (1-based)
-	end        int // actual last line returned (1-based)
-	totalLines int // total lines in the file before any truncation
-}
-
-// rangesOverlap reports whether [ws, we] overlaps any interval in ranges.
-func rangesOverlap(ranges []lineRange, ws, we int) bool {
-	for _, r := range ranges {
-		if r.start <= we && r.end >= ws {
-			return true
-		}
-	}
-	return false
-}
-
-// rangesCover reports whether the union of ranges fully contains [ws, we].
-func rangesCover(ranges []lineRange, ws, we int) bool {
-	sorted := make([]lineRange, len(ranges))
-	copy(sorted, ranges)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].start < sorted[j].start })
-	cur := ws - 1 // coverage must start at ws; anything before is irrelevant
-	for _, r := range sorted {
-		if r.start > cur+1 {
-			break
-		}
-		if r.end > cur {
-			cur = r.end
-		}
-	}
-	return cur >= we
-}
-
-func dispatchFileRead(confirm agent.ConfirmFn, args json.RawMessage) (fileReadResult, error) {
+func dispatchFileRead(confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
 	var a struct {
-		Path      string `json:"path"`
-		StartLine int    `json:"start_line"`
-		EndLine   int    `json:"end_line"`
+		Path string `json:"path"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
-		return fileReadResult{}, fmt.Errorf("file_read: bad args: %w", err)
+		return "", fmt.Errorf("file_read: bad args: %w", err)
 	}
 	if a.Path == "" {
-		return fileReadResult{}, fmt.Errorf("file_read: 'path' is required")
+		return "", fmt.Errorf("file_read: 'path' is required")
 	}
 	if confirm != nil && !confirm(fmt.Sprintf("read %s", a.Path)) {
-		return fileReadResult{}, fmt.Errorf("file_read: denied by user")
+		return "", fmt.Errorf("file_read: denied by user")
 	}
 	data, err := os.ReadFile(a.Path)
 	if err != nil {
-		return fileReadResult{}, fmt.Errorf("file_read: %w", err)
+		return "", fmt.Errorf("file_read: %w", err)
 	}
 	lines := strings.Split(string(data), "\n")
-	totalLines := len(lines)
-	start := 1
-	end := totalLines
-	if a.StartLine > 0 {
-		start = a.StartLine
-	}
-	if a.EndLine > 0 {
-		end = a.EndLine
-	}
-	if start < 1 {
-		start = 1
-	}
-	if end > totalLines {
-		end = totalLines
-	}
-	if start > end {
-		return fileReadResult{}, fmt.Errorf("file_read: start_line %d > end_line %d", start, end)
-	}
 	var out strings.Builder
-	for i, line := range lines[start-1 : end] {
-		fmt.Fprintf(&out, "%d\t%s\n", start+i, line)
+	for i, line := range lines {
+		fmt.Fprintf(&out, "%d\t%s\n", i+1, line)
 	}
-	content := strings.TrimRight(out.String(), "\n")
-	return fileReadResult{content: content, start: start, end: end, totalLines: totalLines}, nil
+	return strings.TrimRight(out.String(), "\n"), nil
 }
 
 func dispatchFileWrite(confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
