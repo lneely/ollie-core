@@ -45,7 +45,6 @@ func Run(ctx context.Context, cfg Config, state State) error {
 	}
 
 	var totalToolCalls int
-	var hadContent bool
 	hitLimit := false
 
 	for step := range maxSteps {
@@ -96,9 +95,6 @@ func Run(ctx context.Context, cfg Config, state State) error {
 
 		if !done {
 			return fmt.Errorf("step %d: stream ended without done event", step)
-		}
-		if content.Len() > 0 {
-			hadContent = true
 		}
 		totalToolCalls += len(toolCalls)
 
@@ -163,11 +159,9 @@ func Run(ctx context.Context, cfg Config, state State) error {
 		}
 	}
 
-	// Surface stall conditions so the UI can indicate them.
+	// Surface stall: only when the step limit was hit without completing.
 	if hitLimit {
 		emit(cfg, OutputMsg{Role: "stalled", Content: "max steps"})
-	} else if totalToolCalls == 0 && hadContent {
-		emit(cfg, OutputMsg{Role: "stalled", Content: "no tools"})
 	}
 
 	return nil
