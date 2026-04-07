@@ -552,7 +552,7 @@ func main() {
 
 	modelName := os.Getenv("OLLIE_MODEL")
 	if modelName == "" {
-		modelName = "qwen3:8b"
+		modelName = "qwen3.5:9b"
 	}
 
 	// Resolve after backend.New() so that loadEnvFile has already run and
