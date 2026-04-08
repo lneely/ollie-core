@@ -5,22 +5,21 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	multiline "github.com/hymkor/go-multiline-ny"
+	gotty "github.com/mattn/go-tty"
+	readline "github.com/nyaosorg/go-readline-ny"
 
 	"ollie/agent"
 	"ollie/backend"
@@ -49,8 +48,6 @@ Tool call examples:
   Run named tool:   {"tool": "discover_skill.sh", "args": ["keyword"]}
   Pipeline:         {"pipe": [{"code": "cat file.txt"}, {"code": "grep foo"}]}`
 
-// buildFirstPrompt augments the initial user message with a directory listing
-// and README.md contents so the agent starts with real context instead of guessing.
 func buildFirstPrompt(input string) string {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -60,16 +57,13 @@ func buildFirstPrompt(input string) string {
 	var sb strings.Builder
 	sb.WriteString(input)
 
-	const maxListingBytes = 16 * 1024  // 16 KB
-	const maxReadmeBytes = 8 * 1024    // 8 KB
+	const maxListingBytes = 16 * 1024
+	const maxReadmeBytes = 8 * 1024
 
-	// Append file listing: prefer git ls-files (respects .gitignore), fall back
-	// to a simple recursive walk skipping hidden files and directories.
 	lsOut, err := exec.Command("git", "-C", cwd, "ls-files").Output()
 	if err == nil && len(lsOut) > 0 {
 		if len(lsOut) > maxListingBytes {
 			lsOut = lsOut[:maxListingBytes]
-			// trim to last newline to avoid a partial path
 			if i := bytes.LastIndexByte(lsOut, '\n'); i >= 0 {
 				lsOut = lsOut[:i+1]
 			}
@@ -113,7 +107,6 @@ func buildFirstPrompt(input string) string {
 		}
 	}
 
-	// Append README.md if present, capped to avoid blowing context.
 	readmeData, err := os.ReadFile(cwd + "/README.md")
 	if err == nil && len(readmeData) > 0 {
 		if len(readmeData) > maxReadmeBytes {
@@ -137,10 +130,9 @@ func systemPrompt(allTools []backend.Tool) string {
 	for i, t := range allTools {
 		names[i] = t.Name
 	}
-	s := systemPromptBase + "\n\nWorking directory: " + cwd +
+	return systemPromptBase + "\n\nWorking directory: " + cwd +
 		"\nCurrent time: " + now +
 		"\nAvailable tools: " + strings.Join(names, ", ")
-	return s
 }
 
 var builtinTools = []backend.Tool{
@@ -222,129 +214,20 @@ var builtinTools = []backend.Tool{
 	},
 }
 
-// agentState represents what the agent is currently doing.
-type agentState int
-
-const (
-	agentIdle agentState = iota
-	agentThinking
-	agentRunningTool
-	agentRetrying
-	agentConfirming
-	agentStalled
-)
-
-// resolveBackendName returns a short human-readable backend label derived
-// from OLLIE_BACKEND and (for openai-compatible backends) OLLIE_OPENAI_URL.
-// Known provider hostnames are mapped to friendly names so that e.g.
-// openrouter.ai shows up as "openrouter" rather than "openai".
-func resolveBackendName() string {
-	which := os.Getenv("OLLIE_BACKEND")
-	if which == "" {
-		which = "ollama"
-	}
-	if which != "openai" {
-		return which
-	}
-	// For openai-compatible backends, try to identify the provider from the URL.
-	url := strings.ToLower(os.Getenv("OLLIE_OPENAI_URL"))
-	switch {
-	case strings.Contains(url, "openrouter"):
-		return "openrouter"
-	case strings.Contains(url, "together"):
-		return "together"
-	case strings.Contains(url, "groq"):
-		return "groq"
-	case strings.Contains(url, "mistral"):
-		return "mistral"
-	case strings.Contains(url, "anthropic"):
-		return "anthropic"
-	case strings.Contains(url, "localhost") || strings.Contains(url, "127.0.0.1"):
-		return "local"
-	case url == "":
-		return "openai"
-	default:
-		return "openai"
-	}
-}
-
-// NOTE: buf and display lines use plain strings; bubbletea copies the model
-// by value on every Update(), so strings.Builder and other copy-sensitive
-// types will panic.
-type model struct {
-	textarea    textarea.Model
-	viewport    viewport.Model
-	session     *agent.Session
-	loopcfg     agent.Config
-	display     []string
-	buf         string // live streaming assistant text
-	hooks       map[string]string
-	ready       bool
-	agentCh     chan tea.Msg
-	cancel      context.CancelFunc
-	doneCh      chan struct{}
-	modelName   string
-	backendName string // e.g. "ollama", "openrouter", "openai"
-	agentName   string // active agent config name, e.g. "default"
-	agentsDir   string // path to ~/.config/ollie/agents/
-	mcpExec          *tools.Executor   // current agent's MCP executor; closed on agent switch
-	builtinExec      *execpkg.Executor
-	confirmPtr       *agent.ConfirmFn // indirection so startAgent can set it per-run
-	ctxOverhead      int              // fixed per-request char overhead (system prompt + tool schemas)
-	invalidateCaches func()           // clears tool-call dedup caches; set from agentEnv
-	sessionsDir      string
-	sessionID        string
-
-	quitPending bool     // whether a second Ctrl+C should quit
-	lastCtrlC   time.Time // timestamp of last Ctrl+C press
-	// status bar state
-	state         agentState
-	currentTool   string
-	retrySecsLeft int
-	lastUsage     backend.Usage
-	ctxStats      agent.ContextStats
-	confirmCh     chan bool // non-nil when waiting for user confirmation
-}
-
-type agentMsg struct {
-	role      string
-	content   string
-	name      string
-	done      bool
-	usage     backend.Usage
-	ctxStats  agent.ContextStats
-	confirmCh chan bool // set when role=="confirm"
-}
-
-type confirmMsg struct {
-	approved bool
-}
-
-// statusBarStyle is a full-width reversed bar.
-var statusBarStyle = lipgloss.NewStyle().
-	Reverse(true).
-	Padding(0, 1)
-
-// timeoutMsg is sent when the Ctrl+C double-press window expires
-type timeoutMsg struct{}
-
 // agentEnv holds the runtime state derived from an agent config file.
 type agentEnv struct {
-	mcpExec          *tools.Executor  // kept so it can be closed on agent switch
+	mcpExec          *tools.Executor
 	tools            []backend.Tool
 	exec             agent.ToolExecutor
-	confirm          *agent.ConfirmFn // pointer filled in by startAgent per-run
+	confirm          *agent.ConfirmFn
 	hooks            map[string]string
 	systemPrompt     string
 	genParams        backend.GenerationParams
 	ctxOverhead      int
-	messages         []string // startup / status messages to display
-	invalidateCaches func()   // clears per-session tool-call dedup caches on compact/clear
+	messages         []string
+	invalidateCaches func()
 }
 
-// buildAgentEnv constructs the runtime environment for a given agent config.
-// cfg may be nil (no agent file found), in which case only the builtin tool
-// is available and no hooks or agent prompt are set.
 func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 	var messages []string
 	mcpExec := tools.NewExecutor()
@@ -414,15 +297,10 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 		builtinNames[t.Name] = struct{}{}
 	}
 
-	var confirmFn agent.ConfirmFn // filled in by startAgent
+	var confirmFn agent.ConfirmFn
 	confirmPtr := &confirmFn
 
-	// fileReadCache tracks which files have been read this session (by path).
-	// Used to guard file_write against blind overwrites and to block redundant re-reads.
-	// Cleared on /compact and /clear.
 	fileReadCache := make(map[string]bool)
-
-	// toolCallSeen tracks all non-file tool calls by exact (name, args) to warn on repeats.
 	toolCallSeen := make(map[string]bool)
 
 	rawExec := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
@@ -468,9 +346,7 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 				if a.Path != "" {
 					_, statErr := os.Stat(a.Path)
 					fileExists := !os.IsNotExist(statErr)
-
 					if fileExists {
-						// Existing files: whole-file overwrites are forbidden.
 						if a.StartLine == 0 && a.EndLine == 0 {
 							return "", fmt.Errorf("file_write: whole-file overwrite of existing file %s is not allowed; use start_line/end_line to write specific line ranges", a.Path)
 						}
@@ -478,7 +354,6 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 							return "", fmt.Errorf("file_write: %s has not been read this session; read it first", a.Path)
 						}
 					}
-					// New files: whole-file write is the only option and is safe.
 				}
 				result, err := dispatchBuiltinExec(ctx, name, builtinExec, cfn, args)
 				if err != nil {
@@ -496,7 +371,6 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 	}
 
 	execFn := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
-		// Hard-error on duplicate tool calls (file_read/file_write handled above).
 		if name != "file_read" && name != "file_write" {
 			key := name + "\x00" + string(args)
 			if toolCallSeen[key] {
@@ -528,38 +402,556 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 	}
 }
 
-// agentConfigPath returns the path for a named agent config, falling back to
-// the legacy config.json if the agents/ directory file does not exist.
 func agentConfigPath(agentsDir, name string) string {
 	p := agentsDir + "/" + name + ".json"
 	if _, err := os.Stat(p); err == nil {
 		return p
 	}
-	// Legacy fallback: only for "default"
 	if name == "default" {
 		home, _ := os.UserHomeDir()
 		return home + "/.config/ollie/config.json"
 	}
-	return p // will produce a load error, which is the right behaviour
+	return p
 }
 
-// newSessionID returns a unique session identifier embedding the current timestamp.
 func newSessionID() string {
 	b := make([]byte, 3)
 	rand.Read(b) //nolint:errcheck
 	return time.Now().Format("20060102-150405") + "-" + fmt.Sprintf("%06x", b)
 }
 
-// saveSession persists the current session to disk; silently no-ops if no
-// active session or session ID is set.
-func (m *model) saveSession() {
-	if m.session == nil || m.sessionID == "" || m.sessionsDir == "" {
+// resolveBackendName returns a short human-readable backend label.
+func resolveBackendName() string {
+	which := os.Getenv("OLLIE_BACKEND")
+	if which == "" {
+		which = "ollama"
+	}
+	if which != "openai" {
+		return which
+	}
+	url := strings.ToLower(os.Getenv("OLLIE_OPENAI_URL"))
+	switch {
+	case strings.Contains(url, "openrouter"):
+		return "openrouter"
+	case strings.Contains(url, "together"):
+		return "together"
+	case strings.Contains(url, "groq"):
+		return "groq"
+	case strings.Contains(url, "mistral"):
+		return "mistral"
+	case strings.Contains(url, "anthropic"):
+		return "anthropic"
+	case strings.Contains(url, "localhost") || strings.Contains(url, "127.0.0.1"):
+		return "local"
+	default:
+		return "openai"
+	}
+}
+
+// actionHandle holds the cancel function for the current agent turn.
+type actionHandle struct {
+	cancel context.CancelCauseFunc
+}
+
+// appState is the top-level runtime state, replacing the old bubbletea model.
+type appState struct {
+	session          *agent.Session
+	loopcfg          agent.Config
+	hooks            map[string]string
+	modelName        string
+	backendName      string
+	agentName        string
+	agentsDir        string
+	sessionsDir      string
+	sessionID        string
+	mcpExec          *tools.Executor
+	builtinExec      *execpkg.Executor
+	confirmPtr       *agent.ConfirmFn
+	ctxOverhead      int
+	invalidateCaches func()
+	split            *splitInput
+	currentAction    atomic.Pointer[actionHandle]
+	history          recentHistory
+}
+
+// recentHistory implements readline.IHistory for the multiline editor.
+type recentHistory struct {
+	entries []string
+}
+
+var _ readline.IHistory = (*recentHistory)(nil)
+
+func (h *recentHistory) Len() int { return len(h.entries) }
+func (h *recentHistory) At(i int) string {
+	if i >= 0 && i < len(h.entries) {
+		return h.entries[i]
+	}
+	return ""
+}
+
+func (s *appState) prompt() string {
+	return fmt.Sprintf("[%s :: %s] ", s.backendName, s.agentName)
+}
+
+func (s *appState) saveSession() {
+	if s.session == nil || s.sessionID == "" || s.sessionsDir == "" {
 		return
 	}
-	path := m.sessionsDir + "/" + m.sessionID + ".json"
-	if err := m.session.SaveTo(path, m.sessionID, m.agentName); err != nil {
-		m.appendDisplay("session save: " + err.Error())
+	path := s.sessionsDir + "/" + s.sessionID + ".json"
+	if err := s.session.SaveTo(path, s.sessionID, s.agentName); err != nil {
+		fmt.Fprintln(os.Stderr, "session save:", err)
 	}
+}
+
+func (s *appState) getActionCancel() context.CancelCauseFunc {
+	if a := s.currentAction.Load(); a != nil {
+		return a.cancel
+	}
+	return nil
+}
+
+func (s *appState) runInteractiveTTY(ctx context.Context) {
+	t, err := gotty.Open()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tty:", err)
+		return
+	}
+	defer t.Close()
+
+	var ed multiline.Editor
+	restorePaste, err := setupBracketedPaste(t, &ed)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bracketed paste:", err)
+	} else {
+		defer restorePaste()
+	}
+
+	ed.SetPrompt(func(w io.Writer, lnum int) (int, error) {
+		if lnum == 0 {
+			return fmt.Fprint(w, s.prompt())
+		}
+		return fmt.Fprint(w, "... ")
+	})
+
+	ed.SubmitOnEnterWhen(func(lines []string, _ int) bool {
+		if len(lines) <= 1 {
+			return true
+		}
+		return !strings.HasSuffix(strings.TrimSpace(lines[len(lines)-1]), "\\")
+	})
+
+	ed.SetHistory(&s.history)
+	ed.SetHistoryCycling(true)
+
+	s.split = newSplitInput(t, t.Output(), s.prompt(), nil)
+
+	appCtx, appCancel := context.WithCancelCause(ctx)
+	startSignalWatcher(appCancel, s.getActionCancel, os.Stderr)
+
+	var lastCtrlC time.Time
+	firstRead := true
+
+	for appCtx.Err() == nil {
+		if firstRead {
+			firstRead = false
+			if _, h, err := t.Size(); err == nil && h > 0 {
+				clearScreenAndMoveToBottom(t.Output(), h)
+			}
+		}
+
+		lines, err := ed.Read(appCtx)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			errs := err.Error()
+			if errs == "interrupted" || errs == "^C" {
+				now := time.Now()
+				if !lastCtrlC.IsZero() && now.Sub(lastCtrlC) <= ctrlCExitWindow {
+					break
+				}
+				lastCtrlC = now
+				fmt.Fprint(os.Stderr, "^C (press Ctrl-C again to exit)\n")
+				continue
+			}
+			fmt.Fprintln(os.Stderr, "input error:", err)
+			break
+		}
+
+		input := strings.Join(lines, "\n")
+		lastCtrlC = time.Time{}
+
+		if strings.TrimSpace(input) == "" {
+			continue
+		}
+
+		s.history.entries = append(s.history.entries, input)
+
+		if len(lines) == 1 {
+			if w, _, err := t.Size(); err == nil {
+				prompt := s.prompt()
+				if shouldRerenderSubmittedSingleLine(prompt, input, w) {
+					rerenderSubmittedSingleLine(t.Output(), prompt, input)
+				}
+			}
+		}
+
+		s.processInputWithSplit(appCtx, input, &ed)
+	}
+}
+
+func (s *appState) processInputWithSplit(ctx context.Context, input string, ed *multiline.Editor) {
+	if s.split == nil {
+		s.processInput(ctx, input, os.Stdout)
+		return
+	}
+
+	s.split.SetPrompt(s.prompt())
+	wrapper := s.split.Enter()
+	out := io.Writer(os.Stdout)
+	if wrapper != nil {
+		out = wrapper
+	}
+
+	s.processInput(ctx, input, out)
+
+	for ctx.Err() == nil {
+		q, ok := s.split.PopQueue()
+		if !ok {
+			break
+		}
+		s.split.SetPrompt(s.prompt())
+		s.split.EchoQueuedInput(q)
+		s.history.entries = append(s.history.entries, q)
+		s.processInput(ctx, q, out)
+	}
+
+	_, pending := s.split.Exit()
+	if pending != "" {
+		ed.SetDefault([]string{pending})
+	}
+}
+
+func (s *appState) processInput(ctx context.Context, input string, out io.Writer) {
+	if s.handleCommand(ctx, input, out) {
+		return
+	}
+
+	if hook := s.hooks["userPromptSubmit"]; hook != "" {
+		exec.Command("sh", "-c", hook).Run() //nolint:errcheck
+	}
+
+	if s.session == nil {
+		s.session = agent.NewSessionWithConfig(buildFirstPrompt(input), agent.ContextConfig{
+			FixedOverheadChars: s.ctxOverhead,
+		})
+	} else {
+		s.session.AppendUserMessage(input)
+	}
+
+	actCtx, actCancel := context.WithCancelCause(ctx)
+	handle := &actionHandle{cancel: actCancel}
+	s.currentAction.Store(handle)
+
+	s.loopcfg.Output = makeOutputFn(out)
+	*s.confirmPtr = nil // auto-approve all confirmations for now
+
+	if hook := s.hooks["agentSpawn"]; hook != "" {
+		exec.Command("sh", "-c", hook).Run() //nolint:errcheck
+	}
+
+	err := agent.Run(actCtx, s.loopcfg, s.session)
+	actCancel(nil)
+	s.currentAction.CompareAndSwap(handle, nil)
+
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrInterrupted) {
+		fmt.Fprintf(out, "error: %v\n", err)
+		s.session.Rollback()
+	}
+
+	fmt.Fprintln(out)
+
+	if hook := s.hooks["stop"]; hook != "" {
+		exec.Command("sh", "-c", hook).Run() //nolint:errcheck
+	}
+
+	s.saveSession()
+}
+
+func makeOutputFn(out io.Writer) agent.OutputFn {
+	return func(em agent.OutputMsg) {
+		switch em.Role {
+		case "assistant":
+			fmt.Fprint(out, em.Content)
+		case "call":
+			args := squashWhitespace(em.Content)
+			if len(args) > 500 {
+				args = args[:500] + "..."
+			}
+			fmt.Fprintf(out, "-> %s(%s)\n", em.Name, args)
+		case "tool":
+			s := strings.TrimRight(em.Content, "\n")
+			if len(s) > 500 {
+				s = s[:500] + "..."
+			}
+			fmt.Fprintf(out, "= %s\n", s)
+		case "retry":
+			fmt.Fprintf(out, "retrying in %ss...\n", em.Content)
+		case "error":
+			fmt.Fprintf(out, "error: %s\n", em.Content)
+		case "stalled":
+			fmt.Fprintln(out, "agent stalled")
+		}
+	}
+}
+
+func (s *appState) handleCommand(ctx context.Context, input string, out io.Writer) bool {
+	if strings.HasPrefix(input, "!") {
+		cmdStr := strings.TrimSpace(input[1:])
+		if cmdStr == "" {
+			return true
+		}
+		o, err := exec.Command("sh", "-c", cmdStr).CombinedOutput()
+		if err != nil {
+			fmt.Fprintf(out, "error: %v\n", err)
+		}
+		if len(o) > 0 {
+			fmt.Fprint(out, strings.TrimRight(string(o), "\n")+"\n")
+		}
+		return true
+	}
+
+	if !strings.HasPrefix(input, "/") {
+		return false
+	}
+
+	parts := strings.Fields(input)
+	if len(parts) == 0 {
+		return false
+	}
+
+	cmd := parts[0]
+	args := parts[1:]
+
+	switch cmd {
+	case "/queued":
+		var qcmd queuedCommand
+		var err error
+		if len(args) == 0 {
+			qcmd, err = parseQueuedCommandArgs("")
+		} else {
+			qcmd, err = parseQueuedCommandArgs(strings.Join(args, " "))
+		}
+		if err != nil {
+			fmt.Fprintln(out, err)
+			return true
+		}
+		if s.split == nil {
+			_, msg := runQueuedCommand(nil, qcmd)
+			fmt.Fprintln(out, msg)
+		} else {
+			fmt.Fprintln(out, s.split.runQueuedCommand(qcmd))
+		}
+		return true
+
+	case "/backend":
+		if len(args) == 0 {
+			fmt.Fprintln(out, "error: /backend requires an argument (e.g., /backend ollama)")
+			return true
+		}
+		os.Setenv("OLLIE_BACKEND", args[0])
+		be, err := backend.New()
+		if err != nil {
+			fmt.Fprintf(out, "error: failed to switch backend: %v\n", err)
+			return true
+		}
+		s.loopcfg.Backend = be
+		s.backendName = resolveBackendName()
+		fmt.Fprintf(out, "switched backend to: %s\n", s.backendName)
+		return true
+
+	case "/model":
+		if len(args) == 0 {
+			fmt.Fprintln(out, "error: /model requires an argument (e.g., /model qwen3:8b)")
+			return true
+		}
+		s.loopcfg.Model = args[0]
+		s.modelName = args[0]
+		fmt.Fprintf(out, "switched model to: %s\n", args[0])
+		return true
+
+	case "/agents":
+		entries, err := os.ReadDir(s.agentsDir)
+		if err != nil {
+			fmt.Fprintf(out, "agents: %v\n", err)
+			return true
+		}
+		found := false
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), ".json")
+			marker := "  "
+			if name == s.agentName {
+				marker = "* "
+			}
+			fmt.Fprintln(out, marker+name)
+			found = true
+		}
+		if !found {
+			fmt.Fprintln(out, "no agents found in "+s.agentsDir)
+		}
+		return true
+
+	case "/agent":
+		if len(args) == 0 {
+			fmt.Fprintf(out, "active agent: %s\n", s.agentName)
+			return true
+		}
+		name := args[0]
+		cfgPath := agentConfigPath(s.agentsDir, name)
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			fmt.Fprintf(out, "error: agent %q: %v\n", name, err)
+			return true
+		}
+		if s.mcpExec != nil {
+			s.mcpExec.Close()
+		}
+		env := buildAgentEnv(cfg, s.builtinExec)
+		s.mcpExec = env.mcpExec
+		s.hooks = env.hooks
+		s.loopcfg.SystemPrompt = env.systemPrompt
+		s.loopcfg.Tools = env.tools
+		s.loopcfg.Exec = env.exec
+		s.loopcfg.GenerationParams = env.genParams
+		s.ctxOverhead = env.ctxOverhead
+		s.confirmPtr = env.confirm
+		s.invalidateCaches = env.invalidateCaches
+		s.agentName = name
+		s.session = nil
+		s.sessionID = newSessionID()
+		for _, msg := range env.messages {
+			fmt.Fprintln(out, msg)
+		}
+		fmt.Fprintf(out, "agent: %s\n", name)
+		return true
+
+	case "/compact":
+		if s.session == nil {
+			fmt.Fprintln(out, "nothing to compact")
+			return true
+		}
+		n, summary, err := s.session.Compact(ctx, s.loopcfg.Backend, s.loopcfg.Model)
+		if err != nil {
+			fmt.Fprintln(out, "compact error:", err)
+		} else if n == 0 {
+			fmt.Fprintln(out, "nothing to compact")
+		} else {
+			fmt.Fprintf(out, "compacted %d messages\n", n)
+			if summary != "" {
+				fmt.Fprintln(out)
+				fmt.Fprintln(out, summary)
+			}
+			s.saveSession()
+			if s.invalidateCaches != nil {
+				s.invalidateCaches()
+			}
+		}
+		return true
+
+	case "/context":
+		if s.session == nil {
+			fmt.Fprintln(out, "no active session")
+			return true
+		}
+		fmt.Fprintln(out, s.session.ContextDebug())
+		return true
+
+	case "/history":
+		if s.session == nil {
+			fmt.Fprintln(out, "no active session")
+			return true
+		}
+		for _, msg := range s.session.History() {
+			preview := msg.Content
+			if len(preview) > 200 {
+				preview = preview[:200] + "..."
+			}
+			fmt.Fprintf(out, "[%s] %s\n", msg.Role, preview)
+		}
+		return true
+
+	case "/clear":
+		s.session = nil
+		s.sessionID = newSessionID()
+		if s.invalidateCaches != nil {
+			s.invalidateCaches()
+		}
+		fmt.Fprintln(out, "cleared")
+		return true
+
+	case "/sessions":
+		entries, err := os.ReadDir(s.sessionsDir)
+		if err != nil {
+			fmt.Fprintf(out, "sessions: %v\n", err)
+			return true
+		}
+		found := false
+		for i := len(entries) - 1; i >= 0; i-- {
+			e := entries[i]
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue
+			}
+			id := strings.TrimSuffix(e.Name(), ".json")
+			marker := "  "
+			if id == s.sessionID {
+				marker = "* "
+			}
+			label := id
+			if data, readErr := os.ReadFile(s.sessionsDir + "/" + e.Name()); readErr == nil {
+				var ps agent.PersistedSession
+				if json.Unmarshal(data, &ps) == nil {
+					goal := ""
+					for _, msg := range ps.Messages {
+						if msg.Role == "user" {
+							goal = msg.Content
+							break
+						}
+					}
+					if len(goal) > 60 {
+						goal = goal[:60] + "..."
+					}
+					label = fmt.Sprintf("%-24s  [%s] %q", id, ps.Agent, goal)
+				}
+			}
+			fmt.Fprintln(out, marker+label)
+			found = true
+		}
+		if !found {
+			fmt.Fprintln(out, "no sessions found in "+s.sessionsDir)
+		}
+		return true
+
+	case "/help":
+		fmt.Fprintln(out, "Available commands:")
+		fmt.Fprintln(out, "  /agents          - list available agent configs")
+		fmt.Fprintln(out, "  /sessions        - list saved sessions")
+		fmt.Fprintln(out, "  /agent [name]    - show or switch active agent")
+		fmt.Fprintln(out, "  /backend <type>  - switch backend (ollama, openai)")
+		fmt.Fprintln(out, "  /model <name>    - switch model")
+		fmt.Fprintln(out, "  /queued [pop|clear] - manage queued prompts")
+		fmt.Fprintln(out, "  /compact         - summarize evicted context messages")
+		fmt.Fprintln(out, "  /context         - show context window debug info")
+		fmt.Fprintln(out, "  /history         - dump bounded message history")
+		fmt.Fprintln(out, "  /clear           - clear session")
+		fmt.Fprintln(out, "  /help            - show this help")
+		fmt.Fprintln(out, "  !<cmd>           - run shell command")
+		return true
+	}
+
+	return false
 }
 
 func main() {
@@ -571,12 +963,14 @@ func main() {
 	agentsDir := home + "/.config/ollie/agents"
 	sessionsDir := home + "/.config/ollie/sessions"
 	if err := os.MkdirAll(sessionsDir, 0700); err != nil {
-		log.Fatalf("sessions dir: %v", err)
+		fmt.Fprintln(os.Stderr, "sessions dir:", err)
+		os.Exit(1)
 	}
 
 	be, err := backend.New()
 	if err != nil {
-		log.Fatalf("Failed to create backend: %v", err)
+		fmt.Fprintln(os.Stderr, "failed to create backend:", err)
+		os.Exit(1)
 	}
 
 	modelName := os.Getenv("OLLIE_MODEL")
@@ -584,33 +978,30 @@ func main() {
 		modelName = "qwen3.5:9b"
 	}
 
-	// Resolve after backend.New() so that loadEnvFile has already run and
-	// populated OLLIE_BACKEND / OLLIE_OPENAI_URL from ~/.config/ollie/env.
 	backendName := resolveBackendName()
 	builtinExec := execpkg.New(
 		home+"/.local/state/ollie",
 		home+"/.cache/ollie/exec",
 	)
 
-	// Determine agent name: explicit arg > session file > env > "default".
 	agentName := os.Getenv("OLLIE_AGENT")
 	if agentName == "" {
 		agentName = "default"
 	}
 
-	// If resuming a session, peek at the file to get the stored agent name
-	// (used only when no agent is specified on the command line).
 	sessionID := newSessionID()
 	var resumeMessages []backend.Message
 	if *sessionFlag != "" {
 		sessionPath := sessionsDir + "/" + *sessionFlag + ".json"
 		data, readErr := os.ReadFile(sessionPath)
 		if readErr != nil {
-			log.Fatalf("--session: %v", readErr)
+			fmt.Fprintln(os.Stderr, "--session:", readErr)
+			os.Exit(1)
 		}
 		var ps agent.PersistedSession
 		if jsonErr := json.Unmarshal(data, &ps); jsonErr != nil {
-			log.Fatalf("--session: bad JSON: %v", jsonErr)
+			fmt.Fprintln(os.Stderr, "--session: bad JSON:", jsonErr)
+			os.Exit(1)
 		}
 		sessionID = ps.ID
 		resumeMessages = ps.Messages
@@ -625,23 +1016,13 @@ func main() {
 	cfgPath := agentConfigPath(agentsDir, agentName)
 	cfg, cfgErr := config.Load(cfgPath)
 
-	var startup []string
-	if cfgErr != nil {
-		startup = append(startup, fmt.Sprintf("agent config: %v", cfgErr))
-	}
-
 	env := buildAgentEnv(cfg, builtinExec)
-	startup = append(startup, env.messages...)
 
-	// Restore or record session info.
 	var initialSession *agent.Session
 	if len(resumeMessages) > 0 {
 		initialSession = agent.RestoreSession(resumeMessages, agent.ContextConfig{
 			FixedOverheadChars: env.ctxOverhead,
 		})
-		startup = append(startup, fmt.Sprintf("session: %s (resumed)", sessionID))
-	} else {
-		startup = append(startup, fmt.Sprintf("session: %s", sessionID))
 	}
 
 	loopcfg := agent.Config{
@@ -654,32 +1035,10 @@ func main() {
 		GenerationParams: env.genParams,
 	}
 
-	ta := textarea.New()
-	ta.Placeholder = "Type your message..."
-	ta.Prompt = ""
-	ta.ShowLineNumbers = false
-	ta.CharLimit = 0
-	ta.SetHeight(5)
-	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
-	ta.Focus()
-
-	vp := viewport.New(0, 0)
-	vp.KeyMap = viewport.KeyMap{
-		PageDown:     key.NewBinding(key.WithKeys("pgdown")),
-		PageUp:       key.NewBinding(key.WithKeys("pgup")),
-		HalfPageDown: key.NewBinding(key.WithKeys("alt+d")),
-		HalfPageUp:   key.NewBinding(key.WithKeys("alt+u")),
-		Down:         key.NewBinding(key.WithKeys("down", "alt+n")),
-		Up:           key.NewBinding(key.WithKeys("up", "alt+p")),
-	}
-
-	p := tea.NewProgram(model{
-		textarea:         ta,
-		viewport:         vp,
+	s := &appState{
 		session:          initialSession,
 		loopcfg:          loopcfg,
 		hooks:            env.hooks,
-		display:          startup,
 		modelName:        modelName,
 		backendName:      backendName,
 		agentName:        agentName,
@@ -691,715 +1050,29 @@ func main() {
 		confirmPtr:       env.confirm,
 		ctxOverhead:      env.ctxOverhead,
 		invalidateCaches: env.invalidateCaches,
-		quitPending:      false,
-		state:            agentIdle,
-	})
+	}
+
+	if cfgErr != nil {
+		fmt.Fprintln(os.Stderr, "agent config:", cfgErr)
+	}
+	for _, msg := range env.messages {
+		fmt.Fprintln(os.Stderr, msg)
+	}
+	if len(resumeMessages) > 0 {
+		fmt.Fprintf(os.Stderr, "session: %s (resumed)\n", sessionID)
+	} else {
+		fmt.Fprintf(os.Stderr, "session: %s\n", sessionID)
+	}
 
 	if hook := env.hooks["agentSpawn"]; hook != "" {
-		exec.Command("sh", "-c", hook).Run()
+		exec.Command("sh", "-c", hook).Run() //nolint:errcheck
 	}
 
-	if _, err := p.Run(); err != nil {
-		log.Fatal(err)
-	}
+	s.runInteractiveTTY(context.Background())
 }
 
-func (m model) Init() tea.Cmd {
-	return textarea.Blink
-}
-
-// renderDisplay produces the full viewport text.
-func (m model) renderDisplay() string {
-	var b strings.Builder
-	for i, line := range m.display {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(line)
-	}
-	if m.buf != "" {
-		if len(m.display) > 0 {
-			b.WriteString("\n\n")
-		}
-		b.WriteString("Bot: " + m.buf)
-	}
-	return b.String()
-}
-
-func (m *model) refreshView() {
-	m.viewport.SetContent(wordWrap(m.renderDisplay(), m.viewport.Width))
-	m.viewport.GotoBottom()
-}
-
-// renderStatusBar returns the one-line status bar string.
-func (m model) renderStatusBar() string {
-	// Agent state segment.
-	var stateStr string
-	switch m.state {
-	case agentIdle:
-		stateStr = "idle"
-	case agentThinking:
-		stateStr = "thinking\u2026"
-	case agentRunningTool:
-		stateStr = "tool: " + m.currentTool
-	case agentRetrying:
-		stateStr = fmt.Sprintf("retry %ds", m.retrySecsLeft)
-	case agentConfirming:
-		stateStr = "confirm [y/n]"
-	case agentStalled:
-		stateStr = "stalled"
-	}
-
-	// Token usage segment.
-	usageStr := "last: -"
-	if m.lastUsage.InputTokens > 0 || m.lastUsage.OutputTokens > 0 {
-		usageStr = fmt.Sprintf("last: \u2191%d \u2193%d", m.lastUsage.InputTokens, m.lastUsage.OutputTokens)
-	}
-
-	// Context stats segment.
-	ctxStr := "ctx: -"
-	if m.ctxStats.StoredMessages > 0 {
-		ktok := float64(m.ctxStats.ApproxTokens) / 1000.0
-		ctxStr = fmt.Sprintf("ctx: ~%.1fk tokens (%d msgs)", ktok, m.ctxStats.BoundedMessages)
-		if m.ctxStats.Evicted > 0 {
-			ctxStr += fmt.Sprintf(", %d evicted", m.ctxStats.Evicted)
-		}
-	}
-
-	bar := fmt.Sprintf("[%s :: %s :: %s] %s | %s | %s",
-		m.backendName, m.modelName, m.agentName, stateStr, usageStr, ctxStr)
-	return statusBarStyle.Width(m.viewport.Width).Render(bar)
-}
-
-// finalizeBuf commits the in-progress streaming text as a new display line.
-
-// addStreamingContent concatenates a streaming chunk onto the buffer,
-// inserting a single space when neither side has whitespace at the boundary.
-//
-// Some backends (e.g. DeepInfra) occasionally drop whitespace-only tokens
-// (emitting null or "" for a space token), causing words to fuse.  Since
-// LLM APIs always deliver complete BPE tokens — which never split mid-word —
-// inserting a space whenever two non-space runes meet is safe in practice.
-func addStreamingContent(buf, chunk string) string {
-	return buf + chunk
-}
-
-func (m *model) appendDisplay(line string) {
-	if len(m.display) > 0 {
-		m.display = append(m.display, "")
-	}
-	m.display = append(m.display, line)
-}
-
-func (m *model) finalizeBuf() {
-	if m.buf != "" {
-		m.appendDisplay("Bot: " + m.buf)
-		m.buf = ""
-	}
-}
-
-// apply writes one agent output event into the model.
-func (m *model) apply(am agentMsg) {
-	switch am.role {
-	case "assistant":
-		m.state = agentThinking
-		m.buf = addStreamingContent(m.buf, am.content)
-
-	case "call":
-		m.state = agentRunningTool
-		m.currentTool = am.name
-		m.finalizeBuf()
-		args := squashWhitespace(am.content)
-		if len(args) > 500 {
-			args = args[:500] + "..."
-		}
-		m.appendDisplay(fmt.Sprintf("-> %s(%s)", am.name, args))
-
-	case "tool":
-		m.state = agentThinking
-		s := strings.TrimRight(am.content, "\n")
-		if len(s) > 500 {
-			s = s[:500] + "..."
-		}
-		m.appendDisplay("= " + s)
-
-	case "retry":
-		m.state = agentRetrying
-		if secs, err := strconv.Atoi(am.content); err == nil {
-			m.retrySecsLeft = secs
-		}
-
-	case "error":
-		m.finalizeBuf()
-		m.appendDisplay("Error: " + am.content)
-		if m.session != nil {
-			m.session.Rollback()
-		}
-
-	case "confirm":
-		m.state = agentConfirming
-		m.confirmCh = am.confirmCh
-		m.appendDisplay("Confirm: " + am.content + " [y/n]")
-
-	case "stalled":
-		m.state = agentStalled
-
-	case "usage":
-		// Update status bar only; no display line appended.
-		m.lastUsage = am.usage
-		m.ctxStats = am.ctxStats
-	}
-}
-
-// drainAgent cancels the in-flight goroutine and drains remaining events.
-// If interrupted is true, rolls back any incomplete assistant turn.
-func (m *model) drainAgent(interrupted bool) {
-	if m.cancel == nil {
-		return
-	}
-	m.cancel()
-	m.cancel = nil
-	if m.doneCh != nil {
-		<-m.doneCh
-		m.doneCh = nil
-	}
-	if m.agentCh != nil {
-		for msg := range m.agentCh {
-			if am, ok := msg.(agentMsg); ok {
-				m.apply(am)
-			}
-		}
-		m.agentCh = nil
-	}
-	if interrupted && m.session != nil {
-		m.session.Rollback()
-	}
-	m.state = agentIdle
-	m.currentTool = ""
-}
-
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.viewport.Width = msg.Width
-		m.textarea.SetWidth(msg.Width)
-		barHeight := lipgloss.Height(m.renderStatusBar())
-		m.viewport.Height = msg.Height - m.textarea.Height() - barHeight
-		m.refreshView()
-		m.ready = true
-
-	case timeoutMsg:
-		// Clear quitPending flag when timeout expires
-		m.quitPending = false
-		return m, nil
-
-
-	case confirmMsg:
-		if m.confirmCh != nil {
-			m.confirmCh <- msg.approved
-			m.confirmCh = nil
-		}
-		m.state = agentRunningTool
-		m.refreshView()
-		if m.agentCh == nil {
-			return m, nil
-		}
-		return m, func() tea.Msg { return <-m.agentCh }
-
-	case agentMsg:
-		m.apply(msg)
-		m.refreshView()
-		if msg.done {
-			if m.state != agentStalled {
-				m.state = agentIdle
-			}
-			m.currentTool = ""
-			m.agentCh = nil
-			m.cancel = nil
-			m.doneCh = nil
-			m.saveSession()
-			return m, nil
-		}
-		// Stop pumping while waiting for user confirmation.
-		if m.state == agentConfirming {
-			return m, nil
-		}
-		return m, func() tea.Msg { return <-m.agentCh }
-
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "esc":
-			// ESC always interrupts if agent is running
-			if m.cancel != nil {
-				m.drainAgent(true)
-			}
-			m.quitPending = false
-			return m, nil
-
-		case "ctrl+c":
-			now := time.Now()
-
-			// Handle double-press to quit
-			if m.quitPending && now.Sub(m.lastCtrlC) <= 1*time.Second {
-				// Double Ctrl+C within 1 second: quit
-				return m, tea.Quit
-			}
-
-			// First Ctrl+C: interrupt if agent running
-			if m.cancel != nil {
-				m.drainAgent(true)
-				m.quitPending = false
-				return m, nil
-			}
-
-			// No agent running, track for potential double-press
-			if m.lastCtrlC.IsZero() {
-				// First Ctrl+C with no agent
-				m.lastCtrlC = now
-				m.quitPending = true
-				return m, tea.Cmd(func() tea.Msg {
-					time.Sleep(1 * time.Second)
-					return timeoutMsg{}
-				})
-			} else if now.Sub(m.lastCtrlC) <= 1*time.Second {
-				// Double Ctrl+C within 1 second with no agent: quit
-				return m, tea.Quit
-			} else {
-				// Ctrl+C after timeout, reset and start new timer
-				m.lastCtrlC = now
-				m.quitPending = true
-				return m, tea.Cmd(func() tea.Msg {
-					time.Sleep(1 * time.Second)
-					return timeoutMsg{}
-				})
-			}
-
-		case "enter":
-			input := strings.TrimSpace(m.textarea.Value())
-			if input == "" {
-				return m, nil
-			}
-
-			// Handle confirmation prompt
-			if m.state == agentConfirming && m.confirmCh != nil {
-				m.textarea.Reset()
-				lower := strings.ToLower(input)
-				if lower == "y" || lower == "yes" {
-					m.appendDisplay("You: " + input)
-					m.refreshView()
-					return m, func() tea.Msg { return confirmMsg{approved: true} }
-				} else if lower == "n" || lower == "no" {
-					m.appendDisplay("You: " + input)
-					m.refreshView()
-					return m, func() tea.Msg { return confirmMsg{approved: false} }
-				}
-				// Anything else: deny and fall through to normal prompt handling
-				ch := m.confirmCh
-				m.confirmCh = nil
-				m.state = agentIdle
-				ch <- false
-			}
-
-			m.drainAgent(false)
-			m.finalizeBuf()
-			m.appendDisplay("You: " + input)
-			m.refreshView()
-			m.textarea.Reset()
-
-			if hook := m.hooks["userPromptSubmit"]; hook != "" {
-				exec.Command("sh", "-c", hook).Run()
-			}
-
-			if m.handleCommand(input) {
-				m.refreshView()
-				return m, nil
-			}
-
-			if m.session == nil {
-				m.session = agent.NewSessionWithConfig(buildFirstPrompt(input), agent.ContextConfig{
-					FixedOverheadChars: m.ctxOverhead,
-				})
-			} else {
-				m.session.AppendUserMessage(input)
-			}
-			m.state = agentThinking
-			ch, cancel, doneCh := m.startAgent(m.session)
-			m.agentCh = ch
-			m.cancel = cancel
-			m.doneCh = doneCh
-			return m, func() tea.Msg { return <-ch }
-		}
-	}
-
-	var vpCmd tea.Cmd
-	m.viewport, vpCmd = m.viewport.Update(msg)
-	m.textarea, cmd = m.textarea.Update(msg)
-	return m, tea.Batch(cmd, vpCmd)
-}
-
-// handleCommand processes special slash commands and returns true if handled.
-func (m *model) handleCommand(input string) bool {
-	if strings.HasPrefix(input, "!") {
-		cmdStr := strings.TrimSpace(input[1:])
-		if cmdStr == "" {
-			return true
-		}
-		out, err := exec.Command("sh", "-c", cmdStr).CombinedOutput()
-		if err != nil {
-			m.appendDisplay("Error: " + err.Error())
-		}
-		if len(out) > 0 {
-			m.appendDisplay(strings.TrimRight(string(out), "\n"))
-		}
-		return true
-	}
-	if !strings.HasPrefix(input, "/") {
-		return false
-	}
-
-	parts := strings.Fields(input)
-	if len(parts) == 0 {
-		return false
-	}
-
-	cmd := parts[0]
-	args := parts[1:]
-
-	switch cmd {
-	case "/backend":
-		if len(args) == 0 {
-			m.display = append(m.display, "Error: /backend requires an argument (e.g., /backend ollama)")
-			return true
-		}
-		backendType := args[0]
-		os.Setenv("OLLIE_BACKEND", backendType)
-		be, err := backend.New()
-		if err != nil {
-			m.display = append(m.display, fmt.Sprintf("Error: Failed to switch backend: %v", err))
-			return true
-		}
-		m.loopcfg.Backend = be
-		m.backendName = resolveBackendName()
-		m.display = append(m.display, fmt.Sprintf("Switched backend to: %s", m.backendName))
-		return true
-
-	case "/model":
-		if len(args) == 0 {
-			m.display = append(m.display, "Error: /model requires an argument (e.g., /model qwen3:8b)")
-			return true
-		}
-		m.loopcfg.Model = args[0]
-		m.modelName = args[0]
-		m.display = append(m.display, fmt.Sprintf("Switched model to: %s", args[0]))
-		return true
-
-	case "/agents":
-		entries, err := os.ReadDir(m.agentsDir)
-		if err != nil {
-			m.display = append(m.display, fmt.Sprintf("agents: %v", err))
-			return true
-		}
-		found := false
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-				continue
-			}
-			name := strings.TrimSuffix(e.Name(), ".json")
-			marker := "  "
-			if name == m.agentName {
-				marker = "* "
-			}
-			m.display = append(m.display, marker+name)
-			found = true
-		}
-		if !found {
-			m.display = append(m.display, "no agents found in "+m.agentsDir)
-		}
-		return true
-
-	case "/agent":
-		if len(args) == 0 {
-			m.display = append(m.display, fmt.Sprintf("active agent: %s", m.agentName))
-			return true
-		}
-		name := args[0]
-		cfgPath := agentConfigPath(m.agentsDir, name)
-		cfg, err := config.Load(cfgPath)
-		if err != nil {
-			m.display = append(m.display, fmt.Sprintf("Error: agent %q: %v", name, err))
-			return true
-		}
-		if m.mcpExec != nil {
-			m.mcpExec.Close()
-		}
-		env := buildAgentEnv(cfg, m.builtinExec)
-		m.mcpExec = env.mcpExec
-		m.hooks = env.hooks
-		m.loopcfg.SystemPrompt = env.systemPrompt
-		m.loopcfg.Tools = env.tools
-		m.loopcfg.Exec = env.exec
-		m.loopcfg.GenerationParams = env.genParams
-		m.ctxOverhead = env.ctxOverhead
-		m.confirmPtr = env.confirm
-		m.invalidateCaches = env.invalidateCaches
-		m.agentName = name
-		m.session = nil // new agent, new session
-		m.sessionID = newSessionID()
-		for _, msg := range env.messages {
-			m.display = append(m.display, msg)
-		}
-		m.display = append(m.display, fmt.Sprintf("agent: %s", name))
-		return true
-
-	case "/compact":
-		if m.session == nil {
-			m.display = append(m.display, "nothing to compact")
-			return true
-		}
-		n, summary, err := m.session.Compact(context.Background(), m.loopcfg.Backend, m.loopcfg.Model)
-		if err != nil {
-			m.display = append(m.display, "compact error: "+err.Error())
-		} else if n == 0 {
-			m.display = append(m.display, "nothing to compact")
-		} else {
-			m.display = append(m.display, fmt.Sprintf("compacted %d messages", n))
-			if summary != "" {
-				m.display = append(m.display, "")
-				for _, line := range strings.Split(summary, "\n") {
-					m.display = append(m.display, line)
-				}
-			}
-			m.saveSession()
-			if m.invalidateCaches != nil {
-				m.invalidateCaches()
-			}
-		}
-		return true
-
-	case "/context":
-		if m.session == nil {
-			m.display = append(m.display, "no active session")
-			return true
-		}
-		for _, line := range strings.Split(m.session.ContextDebug(), "\n") {
-			m.display = append(m.display, line)
-		}
-		return true
-
-	case "/history":
-		if m.session == nil {
-			m.display = append(m.display, "no active session")
-			return true
-		}
-		for _, msg := range m.session.History() {
-			preview := msg.Content
-			if len(preview) > 200 {
-				preview = preview[:200] + "..."
-			}
-			m.display = append(m.display, fmt.Sprintf("[%s] %s", msg.Role, preview))
-		}
-		return true
-
-	case "/clear":
-		m.session = nil
-		m.display = nil
-		m.buf = ""
-		m.ctxStats = agent.ContextStats{}
-		m.lastUsage = backend.Usage{}
-		m.sessionID = newSessionID()
-		if m.invalidateCaches != nil {
-			m.invalidateCaches()
-		}
-		return true
-
-	case "/sessions":
-		entries, err := os.ReadDir(m.sessionsDir)
-		if err != nil {
-			m.display = append(m.display, fmt.Sprintf("sessions: %v", err))
-			return true
-		}
-		found := false
-		// ReadDir returns sorted by name (date-prefixed IDs → chronological).
-		// Show most recent first.
-		for i := len(entries) - 1; i >= 0; i-- {
-			e := entries[i]
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-				continue
-			}
-			id := strings.TrimSuffix(e.Name(), ".json")
-			marker := "  "
-			if id == m.sessionID {
-				marker = "* "
-			}
-			// Quick-read agent name and first user message for context.
-			label := id
-			if data, readErr := os.ReadFile(m.sessionsDir + "/" + e.Name()); readErr == nil {
-				var ps agent.PersistedSession
-				if json.Unmarshal(data, &ps) == nil {
-					agentLabel := ps.Agent
-					goal := ""
-					for _, msg := range ps.Messages {
-						if msg.Role == "user" {
-							goal = msg.Content
-							break
-						}
-					}
-					if len(goal) > 60 {
-						goal = goal[:60] + "..."
-					}
-					label = fmt.Sprintf("%-24s  [%s] %q", id, agentLabel, goal)
-				}
-			}
-			m.display = append(m.display, marker+label)
-			found = true
-		}
-		if !found {
-			m.display = append(m.display, "no sessions found in "+m.sessionsDir)
-		}
-		return true
-
-	case "/help":
-		m.display = append(m.display, "Available commands:")
-		m.display = append(m.display, "  /agents          - List available agent configs")
-		m.display = append(m.display, "  /sessions        - List saved sessions")
-		m.display = append(m.display, "  /agent [name]    - Show or switch active agent")
-		m.display = append(m.display, "  /backend <type>  - Switch backend (ollama, openai)")
-		m.display = append(m.display, "  /model <name>    - Switch model")
-		m.display = append(m.display, "  /compact         - Summarize evicted context messages")
-		m.display = append(m.display, "  /context         - Show context window debug info")
-		m.display = append(m.display, "  /history         - Dump bounded message history")
-		m.display = append(m.display, "  /clear           - Clear session and display")
-		m.display = append(m.display, "  /help            - Show this help")
-		return true
-	}
-
-	return false
-}
-
-// startAgent launches the loop in a goroutine, wiring its output to ch.
-func (m model) startAgent(session *agent.Session) (chan tea.Msg, context.CancelFunc, chan struct{}) {
-	loopcfg := m.loopcfg
-	hooks := m.hooks
-	ch := make(chan tea.Msg, 64)
-	ctx, cancel := context.WithCancel(context.Background())
-	doneCh := make(chan struct{})
-
-	go func() {
-		defer close(ch)
-		defer close(doneCh)
-
-		loopcfg.Output = func(em agent.OutputMsg) {
-			var msg agentMsg
-			msg.role = em.Role
-			msg.content = em.Content
-			msg.name = em.Name
-
-			if em.Role == "usage" {
-				msg.usage = em.Usage
-				msg.ctxStats = session.ContextStats()
-			}
-
-			select {
-			case ch <- msg:
-			case <-ctx.Done():
-				return
-			}
-		}
-
-		loopcfg.Confirm = func(prompt string) bool {
-			replyCh := make(chan bool, 1)
-			select {
-			case ch <- agentMsg{role: "confirm", content: prompt, confirmCh: replyCh}:
-			case <-ctx.Done():
-				return false
-			}
-			select {
-			case approved := <-replyCh:
-				return approved
-			case <-ctx.Done():
-				return false
-			}
-		}
-		if m.confirmPtr != nil {
-			*m.confirmPtr = loopcfg.Confirm
-		}
-
-		if err := agent.Run(ctx, loopcfg, session); err != nil {
-			select {
-			case ch <- agentMsg{role: "error", content: err.Error()}:
-			case <-ctx.Done():
-				return
-			}
-		}
-
-		if hook := hooks["stop"]; hook != "" {
-			exec.Command("sh", "-c", hook).Run()
-		}
-
-		select {
-		case ch <- agentMsg{done: true}:
-		case <-ctx.Done():
-		}
-	}()
-
-	return ch, cancel, doneCh
-}
-
-func (m model) View() string {
-	if !m.ready {
-		return "Loading..."
-	}
-	return m.viewport.View() + "\n" + m.renderStatusBar() + "\n" + m.textarea.View()
-}
-
-// compactJSON removes whitespace between JSON tokens.
-func compactJSON(s string) string {
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, []byte(s)); err != nil {
-		return squashWhitespace(s)
-	}
-	return squashWhitespace(buf.String())
-}
-
-// squashWhitespace collapses all runs of whitespace into single spaces.
 func squashWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
-}
-
-// wordWrap wraps text at word boundaries so no line exceeds width.
-func wordWrap(s string, width int) string {
-	if width <= 0 {
-		return s
-	}
-	var out strings.Builder
-	lines := strings.Split(s, "\n")
-	for _, line := range lines {
-		if out.Len() > 0 {
-			out.WriteByte('\n')
-		}
-		col, first := 0, true
-		for _, word := range strings.Fields(line) {
-			wl := len(word)
-			switch {
-			case first:
-				out.WriteString(word)
-				col = wl
-				first = false
-			case col+wl+1 > width:
-				out.WriteByte('\n')
-				out.WriteString(word)
-				col = wl
-				first = true
-			default:
-				out.WriteByte(' ')
-				out.WriteString(word)
-				col += wl + 1
-			}
-		}
-	}
-	return out.String()
 }
 
 func mcpToolsToBackend(mcpTools []tools.ToolInfo) []backend.Tool {
@@ -1443,7 +1116,7 @@ func dispatchBuiltinExec(ctx context.Context, name string, e *execpkg.Executor, 
 		return dispatchExecutePipe(ctx, e, confirm, args)
 	case "execute_tool":
 		return dispatchExecuteTool(ctx, e, confirm, args)
-	default: // execute_code
+	default:
 		return dispatchExecuteCode(ctx, e, confirm, args)
 	}
 }
@@ -1608,7 +1281,6 @@ func dispatchFileWrite(confirm agent.ConfirmFn, args json.RawMessage) (string, e
 		return "", fmt.Errorf("file_write: denied by user")
 	}
 
-	// Full overwrite
 	if a.StartLine == 0 && a.EndLine == 0 {
 		if err := os.WriteFile(a.Path, []byte(a.Content), 0644); err != nil {
 			return "", fmt.Errorf("file_write: %w", err)
@@ -1616,7 +1288,6 @@ func dispatchFileWrite(confirm agent.ConfirmFn, args json.RawMessage) (string, e
 		return fmt.Sprintf("wrote %d bytes to %s", len(a.Content), a.Path), nil
 	}
 
-	// Range replacement
 	data, err := os.ReadFile(a.Path)
 	if err != nil {
 		return "", fmt.Errorf("file_write: %w", err)
