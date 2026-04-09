@@ -3,7 +3,7 @@ INSTALL_PATH=$HOME/bin
 all:V: install
 
 build:V:
-	go build -o $INSTALL_PATH/ollie
+	go build -o $INSTALL_PATH/ollie ./cmd/ollie
 	mkdir -p $HOME/.config/ollie
 	cp -rf agents $HOME/.config/ollie
 

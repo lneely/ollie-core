@@ -1,6 +1,6 @@
 package agent
 
-import "ollie/backend"
+import "ollie/internal/backend"
 
 // ToolResult holds the output of a single tool call.
 type ToolResult struct {

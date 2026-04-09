@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"ollie/backend"
+	"ollie/internal/backend"
 )
 
 // PersistedSession is the on-disk format for a saved session.

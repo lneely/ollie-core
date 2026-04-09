@@ -1,22 +1,19 @@
-package main
+package tui
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"time"
-)
 
-var ErrInterrupted = errors.New("interrupted")
+	"ollie/pkg/core"
+)
 
 const ctrlCExitWindow = 750 * time.Millisecond
 
-type ActionCanceler func() context.CancelCauseFunc
-
-func startSignalWatcher(appCancel context.CancelCauseFunc, getActionCancel ActionCanceler, errStream io.Writer) {
+func startSignalWatcher(appCancel context.CancelCauseFunc, c core.Core, errStream io.Writer) {
 	ch := make(chan os.Signal, 16)
 	signals := []os.Signal{os.Interrupt}
 	if haveSIGTERM {
@@ -34,10 +31,8 @@ func startSignalWatcher(appCancel context.CancelCauseFunc, getActionCancel Actio
 				appCancel(context.Canceled)
 				continue
 			case os.Interrupt:
-				if cancel := getActionCancel(); cancel != nil {
+				if c.Interrupt(core.ErrInterrupted) {
 					fmt.Fprint(errStream, "\n^C\n")
-					cancel(ErrInterrupted)
-					continue
 				}
 			}
 		}

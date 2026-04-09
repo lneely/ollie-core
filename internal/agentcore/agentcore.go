@@ -1,14 +1,11 @@
-package main
+package agentcore
 
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -17,16 +14,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	multiline "github.com/hymkor/go-multiline-ny"
-	gotty "github.com/mattn/go-tty"
-	readline "github.com/nyaosorg/go-readline-ny"
+	"crypto/rand"
 
-	"ollie/agent"
-	"ollie/backend"
-	"ollie/config"
-	execpkg "ollie/exec"
-	"ollie/mcp"
-	"ollie/tools"
+	"ollie/internal/agent"
+	"ollie/internal/backend"
+	"ollie/internal/config"
+	execpkg "ollie/internal/exec"
+	"ollie/internal/mcp"
+	"ollie/internal/tools"
+	"ollie/pkg/core"
 )
 
 const systemPromptBase = `Use the fewest words possible. No preamble, filler, or narration ("Let me...", "I'll now...", "Great!"). No explanations of actions taken. No summaries of completed work. No reasoning unless asked. If the answer is one word, write one word.
@@ -48,7 +44,9 @@ Tool call examples:
   Run named tool:   {"tool": "discover_skill.sh", "args": ["keyword"]}
   Pipeline:         {"pipe": [{"code": "cat file.txt"}, {"code": "grep foo"}]}`
 
-func buildFirstPrompt(input string) string {
+// BuildFirstPrompt seeds the first user message with the project file listing
+// and README so the agent has immediate context.
+func BuildFirstPrompt(input string) string {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return input
@@ -123,7 +121,8 @@ func buildFirstPrompt(input string) string {
 	return sb.String()
 }
 
-func systemPrompt(allTools []backend.Tool) string {
+// SystemPrompt builds the full system prompt for a given tool set.
+func SystemPrompt(allTools []backend.Tool) string {
 	cwd, _ := os.Getwd()
 	now := time.Now().Format("2006-01-02 15:04:05 MST")
 	names := make([]string, len(allTools))
@@ -135,7 +134,8 @@ func systemPrompt(allTools []backend.Tool) string {
 		"\nAvailable tools: " + strings.Join(names, ", ")
 }
 
-var builtinTools = []backend.Tool{
+// BuiltinTools is the set of tools provided by the agent core.
+var BuiltinTools = []backend.Tool{
 	{
 		Name:        "execute_code",
 		Description: "Run inline code in a sandboxed environment.",
@@ -214,21 +214,22 @@ var builtinTools = []backend.Tool{
 	},
 }
 
-// agentEnv holds the runtime state derived from an agent config file.
-type agentEnv struct {
-	mcpExec          *tools.Executor
-	tools            []backend.Tool
-	exec             agent.ToolExecutor
-	confirm          *agent.ConfirmFn
-	hooks            map[string]string
-	systemPrompt     string
-	genParams        backend.GenerationParams
-	ctxOverhead      int
-	messages         []string
-	invalidateCaches func()
+// AgentEnv holds the runtime state derived from an agent config file.
+type AgentEnv struct {
+	McpExec          *tools.Executor
+	Tools            []backend.Tool
+	Exec             agent.ToolExecutor
+	Confirm          *agent.ConfirmFn
+	Hooks            map[string]string
+	SystemPrompt     string
+	GenParams        backend.GenerationParams
+	CtxOverhead      int
+	Messages         []string
+	InvalidateCaches func()
 }
 
-func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
+// BuildAgentEnv constructs an AgentEnv from a config file and a builtin executor.
+func BuildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) AgentEnv {
 	var messages []string
 	mcpExec := tools.NewExecutor()
 
@@ -260,7 +261,7 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 		serverOf[t.Name] = t.Server
 	}
 
-	allTools := append(mcpToolsToBackend(mcpTools), builtinTools...)
+	allTools := append(mcpToolsToBackend(mcpTools), BuiltinTools...)
 
 	hooks := map[string]string{}
 	agentPrompt := ""
@@ -282,9 +283,9 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 		}
 	}
 
-	sp := systemPrompt(allTools)
+	sp := SystemPrompt(allTools)
 	if agentPrompt != "" {
-		sp = systemPrompt(allTools) + "\n\n" + agentPrompt
+		sp = SystemPrompt(allTools) + "\n\n" + agentPrompt
 	}
 
 	overhead := len(sp)
@@ -292,8 +293,8 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 		overhead += len(t.Name) + len(t.Description) + len(t.Parameters)
 	}
 
-	builtinNames := make(map[string]struct{}, len(builtinTools))
-	for _, t := range builtinTools {
+	builtinNames := make(map[string]struct{}, len(BuiltinTools))
+	for _, t := range BuiltinTools {
 		builtinNames[t.Name] = struct{}{}
 	}
 
@@ -385,24 +386,25 @@ func buildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) agentEnv {
 		return rawExec(ctx, name, args)
 	}
 
-	return agentEnv{
-		mcpExec:      mcpExec,
-		tools:        allTools,
-		exec:         execFn,
-		confirm:      confirmPtr,
-		hooks:        hooks,
-		systemPrompt: sp,
-		genParams:    genParams,
-		ctxOverhead:  overhead,
-		messages:     messages,
-		invalidateCaches: func() {
+	return AgentEnv{
+		McpExec:      mcpExec,
+		Tools:        allTools,
+		Exec:         execFn,
+		Confirm:      confirmPtr,
+		Hooks:        hooks,
+		SystemPrompt: sp,
+		GenParams:    genParams,
+		CtxOverhead:  overhead,
+		Messages:     messages,
+		InvalidateCaches: func() {
 			clear(fileReadCache)
 			clear(toolCallSeen)
 		},
 	}
 }
 
-func agentConfigPath(agentsDir, name string) string {
+// AgentConfigPath resolves the config file path for a named agent.
+func AgentConfigPath(agentsDir, name string) string {
 	p := agentsDir + "/" + name + ".json"
 	if _, err := os.Stat(p); err == nil {
 		return p
@@ -414,14 +416,15 @@ func agentConfigPath(agentsDir, name string) string {
 	return p
 }
 
-func newSessionID() string {
+// NewSessionID generates a unique session identifier.
+func NewSessionID() string {
 	b := make([]byte, 3)
 	rand.Read(b) //nolint:errcheck
 	return time.Now().Format("20060102-150405") + "-" + fmt.Sprintf("%06x", b)
 }
 
-// defaultModelForBackend returns a sensible default model for the given backend label.
-func defaultModelForBackend(name string) string {
+// DefaultModelForBackend returns a sensible default model for the given backend label.
+func DefaultModelForBackend(name string) string {
 	switch name {
 	case "anthropic":
 		return "claude-sonnet-4-5"
@@ -434,8 +437,8 @@ func defaultModelForBackend(name string) string {
 	}
 }
 
-// resolveBackendName returns a short human-readable backend label.
-func resolveBackendName() string {
+// ResolveBackendName returns a short human-readable backend label from env vars.
+func ResolveBackendName() string {
 	which := os.Getenv("OLLIE_BACKEND")
 	if which == "" {
 		which = "ollama"
@@ -462,13 +465,33 @@ func resolveBackendName() string {
 	}
 }
 
+// infoEvent wraps a plain-text message as an info Event.
+func infoEvent(text string) core.Event {
+	return core.Event{Role: "info", Content: text + "\n"}
+}
+
 // actionHandle holds the cancel function for the current agent turn.
 type actionHandle struct {
 	cancel context.CancelCauseFunc
 }
 
-// appState is the top-level runtime state, replacing the old bubbletea model.
-type appState struct {
+// AgentCoreConfig is the configuration for creating an AgentCore.
+type AgentCoreConfig struct {
+	Backend     backend.Backend
+	BackendName string
+	ModelName   string
+	AgentName   string
+	AgentsDir   string
+	SessionsDir string
+	SessionID   string
+	Session     *agent.Session
+	Env         AgentEnv
+	BuiltinExec *execpkg.Executor
+}
+
+// AgentCore is the Core implementation. It owns all agent and session state
+// but has no knowledge of how output is rendered.
+type AgentCore struct {
 	session          *agent.Session
 	loopcfg          agent.Config
 	hooks            map[string]string
@@ -483,31 +506,48 @@ type appState struct {
 	confirmPtr       *agent.ConfirmFn
 	ctxOverhead      int
 	invalidateCaches func()
-	split            *splitInput
 	currentAction    atomic.Pointer[actionHandle]
-	history          recentHistory
 }
 
-// recentHistory implements readline.IHistory for the multiline editor.
-type recentHistory struct {
-	entries []string
-}
+var _ core.Core = (*AgentCore)(nil) // compile-time interface check
 
-var _ readline.IHistory = (*recentHistory)(nil)
-
-func (h *recentHistory) Len() int { return len(h.entries) }
-func (h *recentHistory) At(i int) string {
-	if i >= 0 && i < len(h.entries) {
-		return h.entries[i]
+// NewAgentCore creates an AgentCore from the given configuration.
+func NewAgentCore(cfg AgentCoreConfig) *AgentCore {
+	loopcfg := agent.Config{
+		Backend:          cfg.Backend,
+		Model:            cfg.ModelName,
+		SystemPrompt:     cfg.Env.SystemPrompt,
+		Tools:            cfg.Env.Tools,
+		Exec:             cfg.Env.Exec,
+		MaxSteps:         20,
+		GenerationParams: cfg.Env.GenParams,
 	}
-	return ""
+	return &AgentCore{
+		session:          cfg.Session,
+		loopcfg:          loopcfg,
+		hooks:            cfg.Env.Hooks,
+		modelName:        cfg.ModelName,
+		backendName:      cfg.BackendName,
+		agentName:        cfg.AgentName,
+		agentsDir:        cfg.AgentsDir,
+		sessionsDir:      cfg.SessionsDir,
+		sessionID:        cfg.SessionID,
+		mcpExec:          cfg.Env.McpExec,
+		builtinExec:      cfg.BuiltinExec,
+		confirmPtr:       cfg.Env.Confirm,
+		ctxOverhead:      cfg.Env.CtxOverhead,
+		invalidateCaches: cfg.Env.InvalidateCaches,
+	}
 }
 
-func (s *appState) prompt() string {
+func (s *AgentCore) prompt() string {
 	return fmt.Sprintf("[%s :: %s] ", s.backendName, s.agentName)
 }
 
-func (s *appState) saveSession() {
+// Prompt returns the display prompt string for the current session state.
+func (s *AgentCore) Prompt() string { return s.prompt() }
+
+func (s *AgentCore) saveSession() {
 	if s.session == nil || s.sessionID == "" || s.sessionsDir == "" {
 		return
 	}
@@ -517,137 +557,28 @@ func (s *appState) saveSession() {
 	}
 }
 
-func (s *appState) getActionCancel() context.CancelCauseFunc {
+func (s *AgentCore) getActionCancel() context.CancelCauseFunc {
 	if a := s.currentAction.Load(); a != nil {
 		return a.cancel
 	}
 	return nil
 }
 
-func (s *appState) runInteractiveTTY(ctx context.Context) {
-	t, err := gotty.Open()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "tty:", err)
-		return
+// Interrupt cancels the current in-progress agent turn.
+// Returns true if an action was running and was cancelled.
+func (s *AgentCore) Interrupt(cause error) bool {
+	if cancel := s.getActionCancel(); cancel != nil {
+		cancel(cause)
+		return true
 	}
-	defer t.Close()
-
-	var ed multiline.Editor
-	restorePaste, err := setupBracketedPaste(t, &ed)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "bracketed paste:", err)
-	} else {
-		defer restorePaste()
-	}
-
-	ed.SetPrompt(func(w io.Writer, lnum int) (int, error) {
-		if lnum == 0 {
-			return fmt.Fprint(w, s.prompt())
-		}
-		return fmt.Fprint(w, "... ")
-	})
-
-	ed.SubmitOnEnterWhen(func(lines []string, _ int) bool {
-		if len(lines) <= 1 {
-			return true
-		}
-		return !strings.HasSuffix(strings.TrimSpace(lines[len(lines)-1]), "\\")
-	})
-
-	ed.SetHistory(&s.history)
-	ed.SetHistoryCycling(true)
-
-	s.split = newSplitInput(t, t.Output(), s.prompt(), nil)
-
-	appCtx, appCancel := context.WithCancelCause(ctx)
-	startSignalWatcher(appCancel, s.getActionCancel, os.Stderr)
-
-	var lastCtrlC time.Time
-	firstRead := true
-
-	for appCtx.Err() == nil {
-		if firstRead {
-			firstRead = false
-			if _, h, err := t.Size(); err == nil && h > 0 {
-				clearScreenAndMoveToBottom(t.Output(), h)
-			}
-		}
-
-		lines, err := ed.Read(appCtx)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			errs := err.Error()
-			if errs == "interrupted" || errs == "^C" {
-				now := time.Now()
-				if !lastCtrlC.IsZero() && now.Sub(lastCtrlC) <= ctrlCExitWindow {
-					break
-				}
-				lastCtrlC = now
-				fmt.Fprint(os.Stderr, "^C (press Ctrl-C again to exit)\n")
-				continue
-			}
-			fmt.Fprintln(os.Stderr, "input error:", err)
-			break
-		}
-
-		input := strings.Join(lines, "\n")
-		lastCtrlC = time.Time{}
-
-		if strings.TrimSpace(input) == "" {
-			continue
-		}
-
-		s.history.entries = append(s.history.entries, input)
-
-		if len(lines) == 1 {
-			if w, _, err := t.Size(); err == nil {
-				prompt := s.prompt()
-				if shouldRerenderSubmittedSingleLine(prompt, input, w) {
-					rerenderSubmittedSingleLine(t.Output(), prompt, input)
-				}
-			}
-		}
-
-		s.processInputWithSplit(appCtx, input, &ed)
-	}
+	return false
 }
 
-func (s *appState) processInputWithSplit(ctx context.Context, input string, ed *multiline.Editor) {
-	if s.split == nil {
-		s.processInput(ctx, input, os.Stdout)
-		return
-	}
-
-	s.split.SetPrompt(s.prompt())
-	wrapper := s.split.Enter()
-	out := io.Writer(os.Stdout)
-	if wrapper != nil {
-		out = wrapper
-	}
-
-	s.processInput(ctx, input, out)
-
-	for ctx.Err() == nil {
-		q, ok := s.split.PopQueue()
-		if !ok {
-			break
-		}
-		s.split.SetPrompt(s.prompt())
-		s.split.EchoQueuedInput(q)
-		s.history.entries = append(s.history.entries, q)
-		s.processInput(ctx, q, out)
-	}
-
-	_, pending := s.split.Exit()
-	if pending != "" {
-		ed.SetDefault([]string{pending})
-	}
-}
-
-func (s *appState) processInput(ctx context.Context, input string, out io.Writer) {
-	if s.handleCommand(ctx, input, out) {
+// Submit implements Core. It processes one line of user input: slash commands
+// and shell shortcuts are dispatched immediately via handler; any other input
+// starts an agent turn that streams events to handler.
+func (s *AgentCore) Submit(ctx context.Context, input string, handler core.EventHandler) {
+	if s.handleCommand(ctx, input, handler) {
 		return
 	}
 
@@ -656,7 +587,7 @@ func (s *appState) processInput(ctx context.Context, input string, out io.Writer
 	}
 
 	if s.session == nil {
-		s.session = agent.NewSessionWithConfig(buildFirstPrompt(input), agent.ContextConfig{
+		s.session = agent.NewSessionWithConfig(BuildFirstPrompt(input), agent.ContextConfig{
 			FixedOverheadChars: s.ctxOverhead,
 		})
 	} else {
@@ -667,7 +598,7 @@ func (s *appState) processInput(ctx context.Context, input string, out io.Writer
 	handle := &actionHandle{cancel: actCancel}
 	s.currentAction.Store(handle)
 
-	s.loopcfg.Output = makeOutputFn(out)
+	s.loopcfg.Output = handler
 	*s.confirmPtr = nil // auto-approve all confirmations for now
 
 	if hook := s.hooks["agentSpawn"]; hook != "" {
@@ -678,12 +609,12 @@ func (s *appState) processInput(ctx context.Context, input string, out io.Writer
 	actCancel(nil)
 	s.currentAction.CompareAndSwap(handle, nil)
 
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrInterrupted) {
-		fmt.Fprintf(out, "error: %v\n", err)
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, core.ErrInterrupted) {
+		handler(core.Event{Role: "error", Content: err.Error()})
 		s.session.Rollback()
 	}
 
-	fmt.Fprintln(out)
+	handler(core.Event{Role: "newline"})
 
 	if hook := s.hooks["stop"]; hook != "" {
 		exec.Command("sh", "-c", hook).Run() //nolint:errcheck
@@ -692,34 +623,7 @@ func (s *appState) processInput(ctx context.Context, input string, out io.Writer
 	s.saveSession()
 }
 
-func makeOutputFn(out io.Writer) agent.OutputFn {
-	return func(em agent.OutputMsg) {
-		switch em.Role {
-		case "assistant":
-			fmt.Fprint(out, em.Content)
-		case "call":
-			args := squashWhitespace(em.Content)
-			if len(args) > 500 {
-				args = args[:500] + "..."
-			}
-			fmt.Fprintf(out, "-> %s(%s)\n", em.Name, args)
-		case "tool":
-			s := strings.TrimRight(em.Content, "\n")
-			if len(s) > 500 {
-				s = s[:500] + "..."
-			}
-			fmt.Fprintf(out, "= %s\n", s)
-		case "retry":
-			fmt.Fprintf(out, "retrying in %ss...\n", em.Content)
-		case "error":
-			fmt.Fprintf(out, "error: %s\n", em.Content)
-		case "stalled":
-			fmt.Fprintln(out, "agent stalled")
-		}
-	}
-}
-
-func (s *appState) handleCommand(ctx context.Context, input string, out io.Writer) bool {
+func (s *AgentCore) handleCommand(ctx context.Context, input string, handler core.EventHandler) bool {
 	if strings.HasPrefix(input, "!") {
 		cmdStr := strings.TrimSpace(input[1:])
 		if cmdStr == "" {
@@ -727,10 +631,10 @@ func (s *appState) handleCommand(ctx context.Context, input string, out io.Write
 		}
 		o, err := exec.Command("sh", "-c", cmdStr).CombinedOutput()
 		if err != nil {
-			fmt.Fprintf(out, "error: %v\n", err)
+			handler(infoEvent("error: " + err.Error()))
 		}
 		if len(o) > 0 {
-			fmt.Fprint(out, strings.TrimRight(string(o), "\n")+"\n")
+			handler(infoEvent(strings.TrimRight(string(o), "\n")))
 		}
 		return true
 	}
@@ -748,58 +652,38 @@ func (s *appState) handleCommand(ctx context.Context, input string, out io.Write
 	args := parts[1:]
 
 	switch cmd {
-	case "/queued":
-		var qcmd queuedCommand
-		var err error
-		if len(args) == 0 {
-			qcmd, err = parseQueuedCommandArgs("")
-		} else {
-			qcmd, err = parseQueuedCommandArgs(strings.Join(args, " "))
-		}
-		if err != nil {
-			fmt.Fprintln(out, err)
-			return true
-		}
-		if s.split == nil {
-			_, msg := runQueuedCommand(nil, qcmd)
-			fmt.Fprintln(out, msg)
-		} else {
-			fmt.Fprintln(out, s.split.runQueuedCommand(qcmd))
-		}
-		return true
-
 	case "/backend":
 		if len(args) == 0 {
-			fmt.Fprintln(out, "error: /backend requires an argument (e.g., /backend ollama)")
+			handler(infoEvent("error: /backend requires an argument (e.g., /backend ollama)"))
 			return true
 		}
 		os.Setenv("OLLIE_BACKEND", args[0])
 		be, err := backend.New()
 		if err != nil {
-			fmt.Fprintf(out, "error: failed to switch backend: %v\n", err)
+			handler(infoEvent(fmt.Sprintf("error: failed to switch backend: %v", err)))
 			return true
 		}
 		s.loopcfg.Backend = be
-		s.backendName = resolveBackendName()
-		s.loopcfg.Model = defaultModelForBackend(s.backendName)
+		s.backendName = ResolveBackendName()
+		s.loopcfg.Model = DefaultModelForBackend(s.backendName)
 		s.modelName = s.loopcfg.Model
-		fmt.Fprintf(out, "switched backend to: %s (model: %s)\n", s.backendName, s.modelName)
+		handler(infoEvent(fmt.Sprintf("switched backend to: %s (model: %s)", s.backendName, s.modelName)))
 		return true
 
 	case "/model":
 		if len(args) == 0 {
-			fmt.Fprintln(out, "error: /model requires an argument (e.g., /model qwen3:8b)")
+			handler(infoEvent("error: /model requires an argument (e.g., /model qwen3:8b)"))
 			return true
 		}
 		s.loopcfg.Model = args[0]
 		s.modelName = args[0]
-		fmt.Fprintf(out, "switched model to: %s\n", args[0])
+		handler(infoEvent("switched model to: " + args[0]))
 		return true
 
 	case "/agents":
 		entries, err := os.ReadDir(s.agentsDir)
 		if err != nil {
-			fmt.Fprintf(out, "agents: %v\n", err)
+			handler(infoEvent(fmt.Sprintf("agents: %v", err)))
 			return true
 		}
 		found := false
@@ -812,63 +696,63 @@ func (s *appState) handleCommand(ctx context.Context, input string, out io.Write
 			if name == s.agentName {
 				marker = "* "
 			}
-			fmt.Fprintln(out, marker+name)
+			handler(infoEvent(marker + name))
 			found = true
 		}
 		if !found {
-			fmt.Fprintln(out, "no agents found in "+s.agentsDir)
+			handler(infoEvent("no agents found in " + s.agentsDir))
 		}
 		return true
 
 	case "/agent":
 		if len(args) == 0 {
-			fmt.Fprintf(out, "active agent: %s\n", s.agentName)
+			handler(infoEvent("active agent: " + s.agentName))
 			return true
 		}
 		name := args[0]
-		cfgPath := agentConfigPath(s.agentsDir, name)
+		cfgPath := AgentConfigPath(s.agentsDir, name)
 		cfg, err := config.Load(cfgPath)
 		if err != nil {
-			fmt.Fprintf(out, "error: agent %q: %v\n", name, err)
+			handler(infoEvent(fmt.Sprintf("error: agent %q: %v", name, err)))
 			return true
 		}
 		if s.mcpExec != nil {
 			s.mcpExec.Close()
 		}
-		env := buildAgentEnv(cfg, s.builtinExec)
-		s.mcpExec = env.mcpExec
-		s.hooks = env.hooks
-		s.loopcfg.SystemPrompt = env.systemPrompt
-		s.loopcfg.Tools = env.tools
-		s.loopcfg.Exec = env.exec
-		s.loopcfg.GenerationParams = env.genParams
-		s.ctxOverhead = env.ctxOverhead
-		s.confirmPtr = env.confirm
-		s.invalidateCaches = env.invalidateCaches
+		env := BuildAgentEnv(cfg, s.builtinExec)
+		s.mcpExec = env.McpExec
+		s.hooks = env.Hooks
+		s.loopcfg.SystemPrompt = env.SystemPrompt
+		s.loopcfg.Tools = env.Tools
+		s.loopcfg.Exec = env.Exec
+		s.loopcfg.GenerationParams = env.GenParams
+		s.ctxOverhead = env.CtxOverhead
+		s.confirmPtr = env.Confirm
+		s.invalidateCaches = env.InvalidateCaches
 		s.agentName = name
 		s.session = nil
-		s.sessionID = newSessionID()
-		for _, msg := range env.messages {
-			fmt.Fprintln(out, msg)
+		s.sessionID = NewSessionID()
+		for _, msg := range env.Messages {
+			handler(infoEvent(msg))
 		}
-		fmt.Fprintf(out, "agent: %s\n", name)
+		handler(infoEvent("agent: " + name))
 		return true
 
 	case "/compact":
 		if s.session == nil {
-			fmt.Fprintln(out, "nothing to compact")
+			handler(infoEvent("nothing to compact"))
 			return true
 		}
 		n, summary, err := s.session.Compact(ctx, s.loopcfg.Backend, s.loopcfg.Model)
 		if err != nil {
-			fmt.Fprintln(out, "compact error:", err)
+			handler(infoEvent("compact error: " + err.Error()))
 		} else if n == 0 {
-			fmt.Fprintln(out, "nothing to compact")
+			handler(infoEvent("nothing to compact"))
 		} else {
-			fmt.Fprintf(out, "compacted %d messages\n", n)
+			handler(infoEvent(fmt.Sprintf("compacted %d messages", n)))
 			if summary != "" {
-				fmt.Fprintln(out)
-				fmt.Fprintln(out, summary)
+				handler(core.Event{Role: "newline"})
+				handler(infoEvent(summary))
 			}
 			s.saveSession()
 			if s.invalidateCaches != nil {
@@ -879,15 +763,15 @@ func (s *appState) handleCommand(ctx context.Context, input string, out io.Write
 
 	case "/context":
 		if s.session == nil {
-			fmt.Fprintln(out, "no active session")
+			handler(infoEvent("no active session"))
 			return true
 		}
-		fmt.Fprintln(out, s.session.ContextDebug())
+		handler(infoEvent(strings.TrimRight(s.session.ContextDebug(), "\n")))
 		return true
 
 	case "/history":
 		if s.session == nil {
-			fmt.Fprintln(out, "no active session")
+			handler(infoEvent("no active session"))
 			return true
 		}
 		for _, msg := range s.session.History() {
@@ -895,23 +779,23 @@ func (s *appState) handleCommand(ctx context.Context, input string, out io.Write
 			if len(preview) > 200 {
 				preview = preview[:200] + "..."
 			}
-			fmt.Fprintf(out, "[%s] %s\n", msg.Role, preview)
+			handler(infoEvent(fmt.Sprintf("[%s] %s", msg.Role, preview)))
 		}
 		return true
 
 	case "/clear":
 		s.session = nil
-		s.sessionID = newSessionID()
+		s.sessionID = NewSessionID()
 		if s.invalidateCaches != nil {
 			s.invalidateCaches()
 		}
-		fmt.Fprintln(out, "cleared")
+		handler(infoEvent("cleared"))
 		return true
 
 	case "/sessions":
 		entries, err := os.ReadDir(s.sessionsDir)
 		if err != nil {
-			fmt.Fprintf(out, "sessions: %v\n", err)
+			handler(infoEvent(fmt.Sprintf("sessions: %v", err)))
 			return true
 		}
 		found := false
@@ -942,159 +826,37 @@ func (s *appState) handleCommand(ctx context.Context, input string, out io.Write
 					label = fmt.Sprintf("%-24s  [%s] %q", id, ps.Agent, goal)
 				}
 			}
-			fmt.Fprintln(out, marker+label)
+			handler(infoEvent(marker + label))
 			found = true
 		}
 		if !found {
-			fmt.Fprintln(out, "no sessions found in "+s.sessionsDir)
+			handler(infoEvent("no sessions found in " + s.sessionsDir))
 		}
 		return true
 
 	case "/help":
-		fmt.Fprintln(out, "Available commands:")
-		fmt.Fprintln(out, "  /agents          - list available agent configs")
-		fmt.Fprintln(out, "  /sessions        - list saved sessions")
-		fmt.Fprintln(out, "  /agent [name]    - show or switch active agent")
-		fmt.Fprintln(out, "  /backend <type>  - switch backend (ollama, openai)")
-		fmt.Fprintln(out, "  /model <name>    - switch model")
-		fmt.Fprintln(out, "  /queued [pop|clear] - manage queued prompts")
-		fmt.Fprintln(out, "  /compact         - summarize evicted context messages")
-		fmt.Fprintln(out, "  /context         - show context window debug info")
-		fmt.Fprintln(out, "  /history         - dump bounded message history")
-		fmt.Fprintln(out, "  /clear           - clear session")
-		fmt.Fprintln(out, "  /help            - show this help")
-		fmt.Fprintln(out, "  !<cmd>           - run shell command")
+		lines := []string{
+			"Available commands:",
+			"  /agents          - list available agent configs",
+			"  /sessions        - list saved sessions",
+			"  /agent [name]    - show or switch active agent",
+			"  /backend <type>  - switch backend (ollama, openai)",
+			"  /model <name>    - switch model",
+			"  /queued [pop|clear] - manage queued prompts",
+			"  /compact         - summarize evicted context messages",
+			"  /context         - show context window debug info",
+			"  /history         - dump bounded message history",
+			"  /clear           - clear session",
+			"  /help            - show this help",
+			"  !<cmd>           - run shell command",
+		}
+		for _, l := range lines {
+			handler(infoEvent(l))
+		}
 		return true
 	}
 
 	return false
-}
-
-func main() {
-	sessionFlag := flag.String("session", "", "resume a session by ID")
-	promptFlag := flag.String("prompt", "", "run a single prompt non-interactively and exit")
-	flag.Parse()
-	extraArgs := flag.Args()
-
-	home, _ := os.UserHomeDir()
-	agentsDir := home + "/.config/ollie/agents"
-	sessionsDir := home + "/.config/ollie/sessions"
-	if err := os.MkdirAll(sessionsDir, 0700); err != nil {
-		fmt.Fprintln(os.Stderr, "sessions dir:", err)
-		os.Exit(1)
-	}
-
-	be, err := backend.New()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "failed to create backend:", err)
-		os.Exit(1)
-	}
-
-	backendName := resolveBackendName()
-
-	modelName := os.Getenv("OLLIE_MODEL")
-	if modelName == "" {
-		modelName = defaultModelForBackend(backendName)
-	}
-	builtinExec := execpkg.New(
-		home+"/.local/state/ollie",
-		home+"/.cache/ollie/exec",
-	)
-
-	agentName := os.Getenv("OLLIE_AGENT")
-	if agentName == "" {
-		agentName = "default"
-	}
-
-	sessionID := newSessionID()
-	var resumeMessages []backend.Message
-	if *sessionFlag != "" {
-		sessionPath := sessionsDir + "/" + *sessionFlag + ".json"
-		data, readErr := os.ReadFile(sessionPath)
-		if readErr != nil {
-			fmt.Fprintln(os.Stderr, "--session:", readErr)
-			os.Exit(1)
-		}
-		var ps agent.PersistedSession
-		if jsonErr := json.Unmarshal(data, &ps); jsonErr != nil {
-			fmt.Fprintln(os.Stderr, "--session: bad JSON:", jsonErr)
-			os.Exit(1)
-		}
-		sessionID = ps.ID
-		resumeMessages = ps.Messages
-		if ps.Agent != "" && len(extraArgs) == 0 {
-			agentName = ps.Agent
-		}
-	}
-	if len(extraArgs) > 0 {
-		agentName = extraArgs[0]
-	}
-
-	cfgPath := agentConfigPath(agentsDir, agentName)
-	cfg, cfgErr := config.Load(cfgPath)
-
-	env := buildAgentEnv(cfg, builtinExec)
-
-	var initialSession *agent.Session
-	if len(resumeMessages) > 0 {
-		initialSession = agent.RestoreSession(resumeMessages, agent.ContextConfig{
-			FixedOverheadChars: env.ctxOverhead,
-		})
-	}
-
-	loopcfg := agent.Config{
-		Backend:          be,
-		Model:            modelName,
-		SystemPrompt:     env.systemPrompt,
-		Tools:            env.tools,
-		Exec:             env.exec,
-		MaxSteps:         20,
-		GenerationParams: env.genParams,
-	}
-
-	s := &appState{
-		session:          initialSession,
-		loopcfg:          loopcfg,
-		hooks:            env.hooks,
-		modelName:        modelName,
-		backendName:      backendName,
-		agentName:        agentName,
-		agentsDir:        agentsDir,
-		sessionsDir:      sessionsDir,
-		sessionID:        sessionID,
-		mcpExec:          env.mcpExec,
-		builtinExec:      builtinExec,
-		confirmPtr:       env.confirm,
-		ctxOverhead:      env.ctxOverhead,
-		invalidateCaches: env.invalidateCaches,
-	}
-
-	if cfgErr != nil {
-		fmt.Fprintln(os.Stderr, "agent config:", cfgErr)
-	}
-	for _, msg := range env.messages {
-		fmt.Fprintln(os.Stderr, msg)
-	}
-	if len(resumeMessages) > 0 {
-		fmt.Fprintf(os.Stderr, "session: %s (resumed)\n", sessionID)
-	} else {
-		fmt.Fprintf(os.Stderr, "session: %s\n", sessionID)
-	}
-
-	if hook := env.hooks["agentSpawn"]; hook != "" {
-		exec.Command("sh", "-c", hook).Run() //nolint:errcheck
-	}
-
-	if *promptFlag != "" {
-		s.processInput(context.Background(), *promptFlag, os.Stdout)
-		return
-	}
-
-	s.runInteractiveTTY(context.Background())
-}
-
-func squashWhitespace(s string) string {
-	return strings.Join(strings.Fields(s), " ")
 }
 
 func mcpToolsToBackend(mcpTools []tools.ToolInfo) []backend.Tool {
@@ -1331,4 +1093,8 @@ func dispatchFileWrite(confirm agent.ConfirmFn, args json.RawMessage) (string, e
 		return "", fmt.Errorf("file_write: %w", err)
 	}
 	return fmt.Sprintf("replaced lines %d-%d in %s", start, end, a.Path), nil
+}
+
+func squashWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }

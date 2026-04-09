@@ -3,7 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
-	"ollie/mcp"
+	"ollie/internal/mcp"
 )
 
 // ToolInfo describes a tool provided by an MCP server.
