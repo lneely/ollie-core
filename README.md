@@ -2,7 +2,7 @@
 
 A Go library for building agentic systems. Provides a sandboxed `execute_code` tool, a common LLM backend interface, MCP server support, and a skill system for domain-specific capabilities.
 
-Intended to be used with [anvillm](https://github.com/lneely/anvillm), which provides the skill system, tool scripts, and multi-agent infrastructure that ollie builds on.
+Works well with [anvillm](https://github.com/lneely/anvillm), which provides a skill system, tool scripts, and multi-agent infrastructure.
 
 The reference frontend is [ollie-tui](https://github.com/lneely/ollie-tui), a terminal UI built on top of this library.
 
@@ -38,6 +38,7 @@ OLLIE_ANTHROPIC_KEY=sk-ant-...
 OLLIE_COPILOT_TOKEN=...
 OLLIE_KIRO_TOKEN=...           # bearer token or sqlite:// path (auto-detected from Kiro CLI if unset)
 OLLIE_MODEL=qwen/qwen3-235b-a22b
+OLLIE_TOOLS_PATH=~/.local/share/ollie/tools  # directory for execute_tool scripts
 ```
 
 Shell environment variables take precedence over the env file.
@@ -65,12 +66,16 @@ Shell environment variables take precedence over the env file.
 
 MCP server `env` values support `${VAR}` expansion from the parent environment.
 
+### Sandbox config: `~/.config/ollie/sandbox.yaml`
+
+Controls landrun sandboxing for `execute_code`. Created automatically with defaults on first run. See the file header for documentation.
+
 ## Tools
 
 Three built-in tool modes:
 
 - `execute_code` — run inline shell code in a sandbox
-- `execute_tool` — run a named tool script from the tools directory
+- `execute_tool` — run a named tool script from `OLLIE_TOOLS_PATH` (default: `~/.local/share/ollie/tools`)
 - `execute_pipe` — chain steps as a pipeline
 
 MCP server tools are discovered at startup and available alongside the built-ins.
