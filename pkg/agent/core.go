@@ -401,45 +401,6 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) AgentEnv {
 	}
 }
 
-func defaultModelForBackend(name string) string {
-	switch name {
-	case "anthropic":
-		return "claude-sonnet-4-5"
-	case "openrouter":
-		return "deepseek/deepseek-v3.2"
-	case "kiro", "codewhisperer":
-		return "auto"
-	default:
-		return "qwen3.5:9b"
-	}
-}
-
-func resolveBackendName() string {
-	which := os.Getenv("OLLIE_BACKEND")
-	if which == "" {
-		which = "ollama"
-	}
-	if which != "openai" {
-		return which
-	}
-	url := strings.ToLower(os.Getenv("OLLIE_OPENAI_URL"))
-	switch {
-	case strings.Contains(url, "openrouter"):
-		return "openrouter"
-	case strings.Contains(url, "together"):
-		return "together"
-	case strings.Contains(url, "groq"):
-		return "groq"
-	case strings.Contains(url, "mistral"):
-		return "mistral"
-	case strings.Contains(url, "anthropic"):
-		return "anthropic"
-	case strings.Contains(url, "localhost") || strings.Contains(url, "127.0.0.1"):
-		return "local"
-	default:
-		return "openai"
-	}
-}
 
 // agentConfigPath resolves the config file path for a named agent.
 func agentConfigPath(agentsDir, name string) string {
@@ -475,8 +436,7 @@ type actionHandle struct {
 // AgentCoreConfig is the configuration for creating an agentCore.
 type AgentCoreConfig struct {
 	Backend     backend.Backend
-	BackendName string
-	ModelName   string
+	ModelName   string // if non-empty, overrides backend's default model
 	AgentName   string
 	AgentsDir   string
 	SessionsDir string
@@ -492,8 +452,6 @@ type agentCore struct {
 	session          *Session
 	loopcfg          loopConfig
 	hooks            Hooks
-	modelName        string
-	backendName      string
 	agentName        string
 	agentsDir        string
 	sessionsDir      string
@@ -510,9 +468,11 @@ var _ Core = (*agentCore)(nil) // compile-time interface check
 
 // NewAgentCore creates an agentCore from the given configuration.
 func NewAgentCore(cfg AgentCoreConfig) Core {
+	if cfg.ModelName != "" {
+		cfg.Backend.SetModel(cfg.ModelName)
+	}
 	loopcfg := loopConfig{
 		Backend:          cfg.Backend,
-		Model:            cfg.ModelName,
 		systemPrompt:     cfg.Env.systemPrompt,
 		Tools:            cfg.Env.tools,
 		Exec:             cfg.Env.exec,
@@ -523,8 +483,6 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		session:          cfg.Session,
 		loopcfg:          loopcfg,
 		hooks:            cfg.Env.Hooks,
-		modelName:        cfg.ModelName,
-		backendName:      cfg.BackendName,
 		agentName:        cfg.AgentName,
 		agentsDir:        cfg.AgentsDir,
 		sessionsDir:      cfg.SessionsDir,
@@ -538,7 +496,7 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 }
 
 func (s *agentCore) prompt() string {
-	return fmt.Sprintf("[%s :: %s] ", s.backendName, s.agentName)
+	return fmt.Sprintf("[%s :: %s] ", s.loopcfg.Backend.Name(), s.agentName)
 }
 
 // Prompt returns the display prompt string for the current session state.
@@ -655,10 +613,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			return true
 		}
 		s.loopcfg.Backend = be
-		s.backendName = resolveBackendName()
-		s.loopcfg.Model = defaultModelForBackend(s.backendName)
-		s.modelName = s.loopcfg.Model
-		handler(infoEvent(fmt.Sprintf("switched backend to: %s (model: %s)", s.backendName, s.modelName)))
+		handler(infoEvent(fmt.Sprintf("switched backend to: %s (model: %s)", be.Name(), be.Model())))
 		return true
 
 	case "/model":
@@ -666,8 +621,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			handler(infoEvent("error: /model requires an argument (e.g., /model qwen3:8b)"))
 			return true
 		}
-		s.loopcfg.Model = args[0]
-		s.modelName = args[0]
+		s.loopcfg.Backend.SetModel(args[0])
 		handler(infoEvent("switched model to: " + args[0]))
 		return true
 
@@ -734,7 +688,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			handler(infoEvent("nothing to compact"))
 			return true
 		}
-		n, summary, err := s.session.compact(ctx, s.loopcfg.Backend, s.loopcfg.Model)
+		n, summary, err := s.session.compact(ctx, s.loopcfg.Backend)
 		if err != nil {
 			handler(infoEvent("compact error: " + err.Error()))
 		} else if n == 0 {

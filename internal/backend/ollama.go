@@ -13,6 +13,7 @@ import (
 // OllamaBackend speaks the Ollama /api/chat wire format.
 type OllamaBackend struct {
 	baseURL string
+	model   string
 	client  *http.Client
 }
 
@@ -20,8 +21,15 @@ func NewOllama(baseURL string) *OllamaBackend {
 	if baseURL == "" {
 		baseURL = "http://localhost:11434"
 	}
-	return &OllamaBackend{baseURL: baseURL, client: &http.Client{}}
+	b := &OllamaBackend{baseURL: baseURL, client: &http.Client{}}
+	b.model = b.DefaultModel()
+	return b
 }
+
+func (b *OllamaBackend) Name() string         { return "ollama" }
+func (b *OllamaBackend) DefaultModel() string { return "qwen3.5:9b" }
+func (b *OllamaBackend) Model() string        { return b.model }
+func (b *OllamaBackend) SetModel(m string)    { b.model = m }
 
 // -- wire types --
 
@@ -69,7 +77,8 @@ type ollamaChatResponse struct {
 
 // -- implementation --
 
-func (b *OllamaBackend) ChatStream(ctx context.Context, model string, messages []Message, tools []Tool, _ GenerationParams) (<-chan StreamEvent, error) {
+func (b *OllamaBackend) ChatStream(ctx context.Context, messages []Message, tools []Tool, _ GenerationParams) (<-chan StreamEvent, error) {
+	model := b.model
 	wireMessages := make([]ollamaMessage, len(messages))
 	for i, m := range messages {
 		wireMessages[i] = ollamaMessage{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}

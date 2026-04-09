@@ -77,5 +77,13 @@ type GenerationParams struct {
 // Streaming is the only supported mode; backends that wrap blocking APIs
 // should implement ChatStream as a single-event stream.
 type Backend interface {
-	ChatStream(ctx context.Context, model string, messages []Message, tools []Tool, params GenerationParams) (<-chan StreamEvent, error)
+	ChatStream(ctx context.Context, messages []Message, tools []Tool, params GenerationParams) (<-chan StreamEvent, error)
+	// Name returns a short human-readable label for this backend (e.g. "ollama", "openrouter").
+	Name() string
+	// DefaultModel returns a reasonable default model name for this backend.
+	DefaultModel() string
+	// Model returns the currently active model name.
+	Model() string
+	// SetModel changes the active model.
+	SetModel(model string)
 }

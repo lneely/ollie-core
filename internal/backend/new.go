@@ -61,7 +61,9 @@ func New() (Backend, error) {
 	case "ollama":
 		return NewOllama(os.Getenv("OLLIE_OLLAMA_URL")), nil
 	case "openai", "openrouter":
-		return NewOpenAI(os.Getenv("OLLIE_OPENAI_URL"), os.Getenv("OLLIE_OPENAI_KEY")), nil
+		url := os.Getenv("OLLIE_OPENAI_URL")
+		key := os.Getenv("OLLIE_OPENAI_KEY")
+		return NewOpenAI(openAIName(which, url), url, key), nil
 	case "anthropic":
 		key := os.Getenv("OLLIE_ANTHROPIC_KEY")
 		if key == "" {
@@ -78,5 +80,27 @@ func New() (Backend, error) {
 		return NewCodeWhisperer(os.Getenv("OLLIE_KIRO_TOKEN"))
 	default:
 		return nil, fmt.Errorf("unknown OLLIE_BACKEND %q (supported: ollama, openai, openrouter, anthropic, copilot)", which)
+	}
+}
+
+// openAIName derives a short backend label from the OLLIE_BACKEND value and
+// the base URL, so openai-compatible endpoints self-identify correctly.
+func openAIName(which, url string) string {
+	url = strings.ToLower(url)
+	switch {
+	case strings.Contains(url, "openrouter"):
+		return "openrouter"
+	case strings.Contains(url, "together"):
+		return "together"
+	case strings.Contains(url, "groq"):
+		return "groq"
+	case strings.Contains(url, "mistral"):
+		return "mistral"
+	case strings.Contains(url, "anthropic"):
+		return "anthropic"
+	case strings.Contains(url, "localhost") || strings.Contains(url, "127.0.0.1"):
+		return "local"
+	default:
+		return which
 	}
 }

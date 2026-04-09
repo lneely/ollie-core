@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"ollie/internal/backend"
@@ -37,10 +36,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	backendName := resolveBackendName()
-	modelName := os.Getenv("OLLIE_MODEL")
-	if modelName == "" {
-		modelName = defaultModelForBackend(backendName)
+	if modelName := os.Getenv("OLLIE_MODEL"); modelName != "" {
+		be.SetModel(modelName)
 	}
 
 	builtinExec := execpkg.New(
@@ -88,8 +85,6 @@ func main() {
 
 	agentCore := agent.NewAgentCore(agent.AgentCoreConfig{
 		Backend:     be,
-		BackendName: backendName,
-		ModelName:   modelName,
 		AgentName:   agentName,
 		AgentsDir:   agentsDir,
 		SessionsDir: sessionsDir,
@@ -121,45 +116,6 @@ func main() {
 	tui.New(agentCore).Run(context.Background())
 }
 
-func resolveBackendName() string {
-	which := os.Getenv("OLLIE_BACKEND")
-	if which == "" {
-		which = "ollama"
-	}
-	if which != "openai" {
-		return which
-	}
-	url := strings.ToLower(os.Getenv("OLLIE_OPENAI_URL"))
-	switch {
-	case strings.Contains(url, "openrouter"):
-		return "openrouter"
-	case strings.Contains(url, "together"):
-		return "together"
-	case strings.Contains(url, "groq"):
-		return "groq"
-	case strings.Contains(url, "mistral"):
-		return "mistral"
-	case strings.Contains(url, "anthropic"):
-		return "anthropic"
-	case strings.Contains(url, "localhost") || strings.Contains(url, "127.0.0.1"):
-		return "local"
-	default:
-		return "openai"
-	}
-}
-
-func defaultModelForBackend(name string) string {
-	switch name {
-	case "anthropic":
-		return "claude-sonnet-4-5"
-	case "openrouter":
-		return "deepseek/deepseek-v3.2"
-	case "kiro", "codewhisperer":
-		return "auto"
-	default:
-		return "qwen3.5:9b"
-	}
-}
 
 func newSessionID() string {
 	b := make([]byte, 3)

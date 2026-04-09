@@ -17,7 +17,6 @@ type toolExecutor func(ctx context.Context, name string, args json.RawMessage) (
 
 type loopConfig struct {
 	Backend          backend.Backend
-	Model            string
 	Tools            []backend.Tool
 	Exec             toolExecutor
 	Confirm          confirmFn
@@ -49,7 +48,7 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 		var ch <-chan backend.StreamEvent
 		for attempt := range maxRateLimitRetries + 1 {
 			var err error
-			ch, err = cfg.Backend.ChatStream(ctx, cfg.Model, history, cfg.Tools, cfg.GenerationParams)
+			ch, err = cfg.Backend.ChatStream(ctx, history, cfg.Tools, cfg.GenerationParams)
 			if err == nil {
 				break
 			}

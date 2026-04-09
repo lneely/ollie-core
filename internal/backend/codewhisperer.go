@@ -30,6 +30,7 @@ import (
 
 type CodeWhispererBackend struct {
 	endpoint     string // overrides auth-derived endpoint if non-empty
+	model        string
 	extraHeaders map[string]string
 	authSource   kiroAuthSource
 	authInitErr  error
@@ -42,22 +43,29 @@ func NewCodeWhisperer(apiKey string) (*CodeWhispererBackend, error) {
 		apiKey = kiroDefaultSQLiteKey()
 	}
 	authSource, err := newKiroAuthSource(apiKey)
-	return &CodeWhispererBackend{
+	b := &CodeWhispererBackend{
 		authSource:  authSource,
 		authInitErr: err,
 		httpClient:  &http.Client{},
-	}, nil
+	}
+	b.model = b.DefaultModel()
+	return b, nil
 }
+
+func (b *CodeWhispererBackend) Name() string         { return "kiro" }
+func (b *CodeWhispererBackend) DefaultModel() string { return "auto" }
+func (b *CodeWhispererBackend) Model() string        { return b.model }
+func (b *CodeWhispererBackend) SetModel(m string)    { b.model = m }
 
 // ── Backend interface ─────────────────────────────────────────────────────────
 
 func (b *CodeWhispererBackend) ChatStream(
 	ctx context.Context,
-	model string,
 	messages []Message,
 	tools []Tool,
 	params GenerationParams,
 ) (<-chan StreamEvent, error) {
+	model := b.model
 	if b.authInitErr != nil {
 		return nil, b.authInitErr
 	}

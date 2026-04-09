@@ -106,7 +106,7 @@ func (s *Session) markComplete() error {
 // an LLM call, replacing them with a single summary system message.
 // Unlike the previous eviction-based approach, this works for any session size.
 // Returns (n compacted, summary text, error); n==0 means nothing to compact.
-func (s *Session) compact(ctx context.Context, b backend.Backend, model string) (int, string, error) {
+func (s *Session) compact(ctx context.Context, b backend.Backend) (int, string, error) {
 	older := s.ctx.OlderMessages()
 	if len(older) == 0 {
 		return 0, "", nil
@@ -119,7 +119,7 @@ func (s *Session) compact(ctx context.Context, b backend.Backend, model string) 
 	}
 	prompt := "Summarize the following conversation history concisely, preserving key facts, decisions, and context:\n\n" + sb.String()
 
-	ch, err := b.ChatStream(ctx, model, []backend.Message{
+	ch, err := b.ChatStream(ctx, []backend.Message{
 		{Role: "user", Content: prompt},
 	}, nil, backend.GenerationParams{})
 	if err != nil {

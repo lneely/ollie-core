@@ -9,6 +9,7 @@ import "net/http"
 // injected on every request via the OpenAIBackend's extraHeaders mechanism.
 func NewCopilot(token string) *OpenAIBackend {
 	return &OpenAIBackend{
+		name:    "copilot",
 		baseURL: "https://api.githubcopilot.com",
 		apiKey:  token,
 		client:  &http.Client{},

@@ -16,17 +16,35 @@ import (
 // OpenAIBackend speaks the OpenAI /v1/chat/completions wire format.
 // Compatible with OpenRouter, OpenAI, and any other OpenAI-compatible API.
 type OpenAIBackend struct {
+	name         string
 	baseURL      string
 	apiKey       string
+	model        string
 	client       *http.Client
 	extraHeaders map[string]string // optional; applied after Authorization
 }
 
-func NewOpenAI(baseURL, apiKey string) *OpenAIBackend {
+func NewOpenAI(name, baseURL, apiKey string) *OpenAIBackend {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
 	}
-	return &OpenAIBackend{baseURL: baseURL, apiKey: apiKey, client: &http.Client{}}
+	b := &OpenAIBackend{name: name, baseURL: baseURL, apiKey: apiKey, client: &http.Client{}}
+	b.model = b.DefaultModel()
+	return b
+}
+
+func (b *OpenAIBackend) Name() string         { return b.name }
+func (b *OpenAIBackend) Model() string        { return b.model }
+func (b *OpenAIBackend) SetModel(m string)    { b.model = m }
+func (b *OpenAIBackend) DefaultModel() string {
+	switch b.name {
+	case "openrouter":
+		return "deepseek/deepseek-v3.2"
+	case "anthropic":
+		return "claude-sonnet-4-5"
+	default:
+		return "qwen3.5:9b"
+	}
 }
 
 // -- wire types --
@@ -101,7 +119,8 @@ type openAIStreamResponse struct {
 
 // -- implementation --
 
-func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages []Message, tools []Tool, params GenerationParams) (<-chan StreamEvent, error) {
+func (b *OpenAIBackend) ChatStream(ctx context.Context, messages []Message, tools []Tool, params GenerationParams) (<-chan StreamEvent, error) {
+	model := b.model
 	wireMessages := make([]openAIMessage, len(messages))
 	for i, m := range messages {
 		wm := openAIMessage{
