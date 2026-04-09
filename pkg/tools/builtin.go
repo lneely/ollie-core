@@ -1,5 +1,5 @@
 // Package tools defines the Executor and Server interfaces, the MCPExecutor
-// implementation, and the BuiltinServer that provides the built-in file and
+// implementation, and the builtinServer that provides the built-in file and
 // execute tools.
 package tools
 
@@ -12,19 +12,23 @@ import (
 	"ollie/pkg/tools/file"
 )
 
-// BuiltinServer implements Server for the built-in execute and file tools.
-// Confirm is read from Exec.Confirm for all operations.
-type BuiltinServer struct {
-	Exec *execute.Executor
+// builtinServer implements Server for the built-in execute and file tools.
+type builtinServer struct {
+	exec *execute.Executor
+}
+
+// NewBuiltinServer returns a Server backed by exec for the built-in tools.
+func NewBuiltinServer(exec *execute.Executor) Server {
+	return &builtinServer{exec: exec}
 }
 
 // ListTools returns definitions for all five built-in tools.
-func (b *BuiltinServer) ListTools() ([]ToolInfo, error) {
+func (b *builtinServer) ListTools() ([]ToolInfo, error) {
 	return append(ExecuteDefs(execute.ToolsPath()), FileDefs()...), nil
 }
 
 // CallTool dispatches a built-in tool call and wraps the result in MCP format.
-func (b *BuiltinServer) CallTool(ctx context.Context, tool string, args json.RawMessage) (json.RawMessage, error) {
+func (b *builtinServer) CallTool(ctx context.Context, tool string, args json.RawMessage) (json.RawMessage, error) {
 	result, err := b.dispatch(ctx, tool, args)
 	if err != nil {
 		return json.Marshal(map[string]string{"error": err.Error()})
@@ -35,12 +39,12 @@ func (b *BuiltinServer) CallTool(ctx context.Context, tool string, args json.Raw
 }
 
 // Close is a no-op.
-func (b *BuiltinServer) Close() {}
+func (b *builtinServer) Close() {}
 
-func (b *BuiltinServer) dispatch(ctx context.Context, name string, args json.RawMessage) (string, error) {
+func (b *builtinServer) dispatch(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	switch name {
 	case "execute_code", "execute_tool", "execute_pipe":
-		return b.Exec.Dispatch(ctx, name, args)
+		return b.exec.Dispatch(ctx, name, args)
 	case "file_read":
 		return b.dispatchFileRead(args)
 	case "file_write":
@@ -50,14 +54,14 @@ func (b *BuiltinServer) dispatch(ctx context.Context, name string, args json.Raw
 	}
 }
 
-func (b *BuiltinServer) confirm(prompt string) bool {
-	if b.Exec.Confirm == nil {
+func (b *builtinServer) confirm(prompt string) bool {
+	if b.exec.Confirm == nil {
 		return true
 	}
-	return b.Exec.Confirm(prompt)
+	return b.exec.Confirm(prompt)
 }
 
-func (b *BuiltinServer) dispatchFileRead(args json.RawMessage) (string, error) {
+func (b *builtinServer) dispatchFileRead(args json.RawMessage) (string, error) {
 	var a struct {
 		Path string `json:"path"`
 	}
@@ -73,7 +77,7 @@ func (b *BuiltinServer) dispatchFileRead(args json.RawMessage) (string, error) {
 	return file.Read(a.Path)
 }
 
-func (b *BuiltinServer) dispatchFileWrite(args json.RawMessage) (string, error) {
+func (b *builtinServer) dispatchFileWrite(args json.RawMessage) (string, error) {
 	var a struct {
 		Path      string `json:"path"`
 		Content   string `json:"content"`

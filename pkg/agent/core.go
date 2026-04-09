@@ -186,7 +186,7 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execute.Executor) AgentEnv {
 		}
 		return (*confirmPtr)(prompt)
 	}
-	mcpExec.AddServer("builtin", &tools.BuiltinServer{Exec: builtinExec})
+	mcpExec.AddServer("builtin", tools.NewBuiltinServer(builtinExec))
 
 	allToolInfos, listErr := mcpExec.ListTools()
 	if listErr != nil {
