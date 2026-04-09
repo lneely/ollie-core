@@ -38,6 +38,10 @@ type Executor struct {
 	// Defaults to 8000.
 	MaxOutputChars int
 
+	// Confirm is an optional function called before executing sensitive operations.
+	// If it returns false, the operation is denied.
+	Confirm func(string) bool
+
 	// rate limiting state (per-Executor)
 	rateLimitMu        sync.Mutex
 	validationFailures int

@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -17,77 +18,115 @@ type ToolInfo struct {
 	InputSchema json.RawMessage
 }
 
+// Server is the interface satisfied by any tool server registered with an Executor.
+// Both MCP servers and built-in tool sets implement this interface.
+type Server interface {
+	ListTools() ([]ToolInfo, error)
+	CallTool(ctx context.Context, tool string, args json.RawMessage) (json.RawMessage, error)
+	Close()
+}
+
 // Executor routes tool calls to the server that owns them.
 // Implementations may back this with MCP servers, local functions, or mocks.
 type Executor interface {
 	ListTools() ([]ToolInfo, error)
-	Execute(server, tool string, args json.RawMessage) (json.RawMessage, error)
+	Execute(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error)
 	Close()
 }
 
-// MCPExecutor is the default Executor backed by MCP servers.
+// MCPExecutor is the default Executor backed by registered Server instances.
 // NewExecutor returns a *MCPExecutor so callers can call AddServer during
 // setup; after setup it satisfies the Executor interface.
 type MCPExecutor struct {
-	servers map[string]*mcp.Client
+	servers map[string]Server
 }
 
-// NewExecutor returns an MCP-backed executor with no servers registered.
-// Call AddServer to attach MCP clients before using it.
+// NewExecutor returns an executor with no servers registered.
+// Call AddServer to attach servers before using it.
 func NewExecutor() *MCPExecutor {
-	return &MCPExecutor{servers: make(map[string]*mcp.Client)}
+	return &MCPExecutor{servers: make(map[string]Server)}
 }
 
-// AddServer registers an MCP client under the given name.
-func (e *MCPExecutor) AddServer(name string, client *mcp.Client) {
-	e.servers[name] = client
+// AddServer registers a Server under the given name.
+func (e *MCPExecutor) AddServer(name string, s Server) {
+	e.servers[name] = s
 }
 
-// Close shuts down all connected MCP servers.
+// NewMCPServer wraps an mcp.Client as a Server.
+func NewMCPServer(client *mcp.Client) Server {
+	return &mcpServer{client: client}
+}
+
+// Close shuts down all registered servers.
 func (e *MCPExecutor) Close() {
-	for _, client := range e.servers {
-		client.Close()
+	for _, s := range e.servers {
+		s.Close()
 	}
 }
 
-// ListTools returns all tools advertised by all connected servers.
+// ListTools returns all tools advertised by all registered servers.
 func (e *MCPExecutor) ListTools() ([]ToolInfo, error) {
 	var all []ToolInfo
-	for serverName, client := range e.servers {
-		result, err := client.Call("tools/list", nil)
+	for serverName, s := range e.servers {
+		tools, err := s.ListTools()
 		if err != nil {
 			return nil, fmt.Errorf("server %s: %w", serverName, err)
 		}
-		var resp struct {
-			Tools []struct {
-				Name        string          `json:"name"`
-				Description string          `json:"description"`
-				InputSchema json.RawMessage `json:"inputSchema"`
-			} `json:"tools"`
-		}
-		if err := json.Unmarshal(result, &resp); err != nil {
-			return nil, err
-		}
-		for _, t := range resp.Tools {
-			all = append(all, ToolInfo{
-				Server:      serverName,
-				Name:        t.Name,
-				Description: t.Description,
-				InputSchema: t.InputSchema,
-			})
+		for _, t := range tools {
+			t.Server = serverName
+			all = append(all, t)
 		}
 	}
 	return all, nil
 }
 
 // Execute calls a named tool on the named server.
-func (e *MCPExecutor) Execute(server, tool string, args json.RawMessage) (json.RawMessage, error) {
-	client, ok := e.servers[server]
+func (e *MCPExecutor) Execute(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error) {
+	s, ok := e.servers[server]
 	if !ok {
 		return nil, fmt.Errorf("server not found: %s", server)
 	}
-	return client.Call("tools/call", map[string]any{
+	return s.CallTool(ctx, tool, args)
+}
+
+// mcpServer wraps an mcp.Client as a Server.
+type mcpServer struct {
+	client *mcp.Client
+}
+
+func (m *mcpServer) ListTools() ([]ToolInfo, error) {
+	result, err := m.client.Call("tools/list", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Tools []struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description"`
+			InputSchema json.RawMessage `json:"inputSchema"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, err
+	}
+	var tools []ToolInfo
+	for _, t := range resp.Tools {
+		tools = append(tools, ToolInfo{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		})
+	}
+	return tools, nil
+}
+
+func (m *mcpServer) CallTool(_ context.Context, tool string, args json.RawMessage) (json.RawMessage, error) {
+	return m.client.Call("tools/call", map[string]any{
 		"name":      tool,
 		"arguments": args,
 	})
+}
+
+func (m *mcpServer) Close() {
+	m.client.Close()
 }

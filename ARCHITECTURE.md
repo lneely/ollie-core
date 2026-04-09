@@ -43,9 +43,10 @@ Consumers extend ollie by implementing or composing its interfaces:
 Frontend
   └── agent.Core.Submit(prompt)
         └── loop.run()
-              ├── backend.ChatStream()       — LLM call
-              ├── tools.Executor.Execute()   — MCP tool dispatch
-              └── execute.Executor.Execute() — built-in sandbox tools
+              ├── backend.ChatStream()                   — LLM call
+              └── tools.Executor.Execute()               — tool dispatch (interface)
+                    ├── tools.MCPExecutor                — default impl: MCP server tools
+                    └── tools/execute.Executor.Execute() — built-in sandbox tools
 ```
 
 ## Built-in Tools
