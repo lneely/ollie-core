@@ -1,11 +1,3 @@
-# Binaries
-/ollie
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-
 # Test binary
 *.test
 
