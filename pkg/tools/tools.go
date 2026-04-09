@@ -1,12 +1,15 @@
+// Package tools defines the Executor interface for routing tool calls,
+// and provides a default MCP-backed implementation.
 package tools
 
 import (
 	"encoding/json"
 	"fmt"
-	"ollie/internal/mcp"
+
+	"ollie/pkg/mcp"
 )
 
-// ToolInfo describes a tool provided by an MCP server.
+// ToolInfo describes a tool provided by a tool server.
 type ToolInfo struct {
 	Server      string
 	Name        string
@@ -14,30 +17,41 @@ type ToolInfo struct {
 	InputSchema json.RawMessage
 }
 
-// Executor routes tool calls to the MCP server that owns them.
-type Executor struct {
+// Executor routes tool calls to the server that owns them.
+// Implementations may back this with MCP servers, local functions, or mocks.
+type Executor interface {
+	ListTools() ([]ToolInfo, error)
+	Execute(server, tool string, args json.RawMessage) (json.RawMessage, error)
+	Close()
+}
+
+// MCPExecutor is the default Executor backed by MCP servers.
+// NewExecutor returns a *MCPExecutor so callers can call AddServer during
+// setup; after setup it satisfies the Executor interface.
+type MCPExecutor struct {
 	servers map[string]*mcp.Client
 }
 
-// NewExecutor creates an empty Executor.
-func NewExecutor() *Executor {
-	return &Executor{servers: make(map[string]*mcp.Client)}
+// NewExecutor returns an MCP-backed executor with no servers registered.
+// Call AddServer to attach MCP clients before using it.
+func NewExecutor() *MCPExecutor {
+	return &MCPExecutor{servers: make(map[string]*mcp.Client)}
 }
 
 // AddServer registers an MCP client under the given name.
-func (e *Executor) AddServer(name string, client *mcp.Client) {
+func (e *MCPExecutor) AddServer(name string, client *mcp.Client) {
 	e.servers[name] = client
 }
 
 // Close shuts down all connected MCP servers.
-func (e *Executor) Close() {
+func (e *MCPExecutor) Close() {
 	for _, client := range e.servers {
 		client.Close()
 	}
 }
 
 // ListTools returns all tools advertised by all connected servers.
-func (e *Executor) ListTools() ([]ToolInfo, error) {
+func (e *MCPExecutor) ListTools() ([]ToolInfo, error) {
 	var all []ToolInfo
 	for serverName, client := range e.servers {
 		result, err := client.Call("tools/list", nil)
@@ -67,13 +81,13 @@ func (e *Executor) ListTools() ([]ToolInfo, error) {
 }
 
 // Execute calls a named tool on the named server.
-func (e *Executor) Execute(serverName, toolName string, args json.RawMessage) (json.RawMessage, error) {
-	client, ok := e.servers[serverName]
+func (e *MCPExecutor) Execute(server, tool string, args json.RawMessage) (json.RawMessage, error) {
+	client, ok := e.servers[server]
 	if !ok {
-		return nil, fmt.Errorf("server not found: %s", serverName)
+		return nil, fmt.Errorf("server not found: %s", server)
 	}
 	return client.Call("tools/call", map[string]any{
-		"name":      toolName,
+		"name":      tool,
 		"arguments": args,
 	})
 }

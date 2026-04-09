@@ -1,4 +1,4 @@
-package exec
+package execute
 
 import (
 	"crypto/sha256"

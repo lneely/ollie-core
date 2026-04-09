@@ -1,4 +1,6 @@
-package exec
+// Package execute provides the builtin execute_code, execute_tool, and
+// execute_pipe tools. The Executor struct is the shared sandbox runner.
+package execute
 
 import (
 	"bytes"
@@ -15,88 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"9fans.net/go/plan9/client"
 	"anvillm/pkg/sandbox"
 )
-
-// ReadTool reads a named tool script from the 9P tools directory.
-func ReadTool(name string) (string, error) {
-	if strings.Contains(name, "/") || strings.Contains(name, "..") {
-		return "", fmt.Errorf("invalid tool name")
-	}
-
-	ns := fmt.Sprintf("/tmp/ns.%s.:0", os.Getenv("USER"))
-	fsys, err := client.Mount("unix", filepath.Join(ns, "anvillm"))
-	if err != nil {
-		return "", fmt.Errorf("failed to mount 9P: %v", err)
-	}
-	defer fsys.Close()
-
-	fid, err := fsys.Open("/tools/"+name, 0)
-	if err != nil {
-		return "", fmt.Errorf("tool not found: %s", name)
-	}
-	defer fid.Close()
-
-	var buf []byte
-	tmp := make([]byte, 8192)
-	for {
-		n, err := fid.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-		}
-		if err != nil || n < len(tmp) {
-			break
-		}
-	}
-	return string(buf), nil
-}
-
-// PipeStep is one stage in a tool pipeline.
-// Exactly one of Tool or Code must be set.
-type PipeStep struct {
-	Tool string // named tool read from 9P (trusted)
-	Code string // inline bash code (untrusted, validated)
-	Args []string
-}
-
-// BuildPipeline constructs a single bash pipeline string from the given steps.
-// Tool steps are trusted (sourced from 9P); inline code steps are validated
-// individually so the combined string is always returned as trusted.
-func BuildPipeline(steps []PipeStep) (string, bool, error) {
-	if len(steps) == 0 {
-		return "", false, fmt.Errorf("pipe requires at least one step")
-	}
-	validator := &Executor{} // used only for ValidateCode; fresh instance = no shared rate limit state
-	parts := make([]string, 0, len(steps))
-	for _, step := range steps {
-		var code string
-		if step.Tool != "" {
-			var err error
-			code, err = ReadTool(step.Tool)
-			if err != nil {
-				return "", false, fmt.Errorf("pipe step %q: %v", step.Tool, err)
-			}
-		} else if step.Code != "" {
-			if err := validator.ValidateCode(step.Code); err != nil {
-				return "", false, fmt.Errorf("pipe step code: %v", err)
-			}
-			code = step.Code
-		} else {
-			return "", false, fmt.Errorf("each pipe step requires either 'tool' or 'code'")
-		}
-		if len(step.Args) > 0 {
-			var escaped []string
-			for _, arg := range step.Args {
-				escaped = append(escaped, "'"+strings.ReplaceAll(arg, "'", "'\\''")+"'")
-			}
-			parts = append(parts, fmt.Sprintf("( set -- %s\n%s )", strings.Join(escaped, " "), code))
-		} else {
-			parts = append(parts, fmt.Sprintf("(\n%s\n)", code))
-		}
-	}
-	return strings.Join(parts, " |\n"), true, nil
-}
 
 const defaultMaxOutputChars = 8000
 
@@ -149,20 +71,20 @@ func (e *Executor) logDir() string {
 }
 
 var dangerousPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s*/(home|var|usr|etc|boot|root|bin|sbin|lib|opt|srv)?`), // rm -rf, rm -r -f on sensitive paths
-	regexp.MustCompile(`rm\s+(-[a-z]*f[a-z]*\s+)*-[a-z]*r[a-z]*\s*/(home|var|usr|etc|boot|root|bin|sbin|lib|opt|srv)?`), // rm -fr, rm -f -r on sensitive paths
-	regexp.MustCompile(`rm\s+.*--recursive.*--force`),                                                                    // rm --recursive --force
-	regexp.MustCompile(`rm\s+.*--force.*--recursive`),                                                                    // rm --force --recursive
-	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s+\.\.?(/|$)`),                                          // rm -rf ./ or rm -rf ../
-	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s+~`),                                                   // rm -rf ~ (home dir)
-	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s+\*`),                                                  // rm -rf * (glob expansion)
-	regexp.MustCompile(`:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&`),                                                              // fork bomb
-	regexp.MustCompile(`\bmkfs\b`),                                                                                       // filesystem format
-	regexp.MustCompile(`\bdd\b.*\bif=/dev/`),                                                                             // dd from device
-	regexp.MustCompile(`>\s*/dev/sd`),                                                                                    // write to block device
-	regexp.MustCompile(`\beval\s+".*\$`),                                                                                 // eval with variable expansion
-	regexp.MustCompile(`\b(sudo|su)\s`),                                                                                  // privilege escalation
-	regexp.MustCompile(`/etc/(shadow|sudoers)`),                                                                          // sensitive files (not passwd)
+	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s*/(home|var|usr|etc|boot|root|bin|sbin|lib|opt|srv)?`),
+	regexp.MustCompile(`rm\s+(-[a-z]*f[a-z]*\s+)*-[a-z]*r[a-z]*\s*/(home|var|usr|etc|boot|root|bin|sbin|lib|opt|srv)?`),
+	regexp.MustCompile(`rm\s+.*--recursive.*--force`),
+	regexp.MustCompile(`rm\s+.*--force.*--recursive`),
+	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s+\.\.?(/|$)`),
+	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s+~`),
+	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s+\*`),
+	regexp.MustCompile(`:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&`),
+	regexp.MustCompile(`\bmkfs\b`),
+	regexp.MustCompile(`\bdd\b.*\bif=/dev/`),
+	regexp.MustCompile(`>\s*/dev/sd`),
+	regexp.MustCompile(`\beval\s+".*\$`),
+	regexp.MustCompile(`\b(sudo|su)\s`),
+	regexp.MustCompile(`/etc/(shadow|sudoers)`),
 }
 
 var whitespacePattern = regexp.MustCompile(`\s+`)
@@ -231,7 +153,6 @@ func (e *Executor) ValidateCode(code string) error {
 	return nil
 }
 
-
 func loadLayeredConfig(name string) (*sandbox.Config, error) {
 	baseCfg, err := sandbox.Load()
 	if err != nil {
@@ -296,20 +217,6 @@ func (e *Executor) Execute(ctx context.Context, code, language string, timeout i
 
 	workDir, _ := os.Getwd()
 	var cleanupWorkDir bool
-
-	// TODO: unsure if i want to keep WorkspaceBase by default with execute_code tool...
-	/*
-	if e.WorkspaceBase != "" {
-		if err := os.MkdirAll(e.WorkspaceBase, 0700); err != nil {
-			return "", fmt.Errorf("failed to create workspace base: %v", err)
-		}
-		workDir, err = os.MkdirTemp(e.WorkspaceBase, "exec-*")
-		if err != nil {
-			return "", fmt.Errorf("failed to create workspace: %v", err)
-		}
-		cleanupWorkDir = true
-	}
-	*/
 
 	if cleanupWorkDir {
 		defer os.RemoveAll(workDir)

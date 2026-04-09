@@ -18,9 +18,9 @@ import (
 
 	"ollie/internal/backend"
 	"ollie/internal/config"
-	execpkg "ollie/internal/exec"
-	"ollie/internal/mcp"
-	"ollie/internal/tools"
+	execute "ollie/pkg/tools/execute"
+	"ollie/pkg/mcp"
+	"ollie/pkg/tools"
 )
 
 const systemPromptBase = `Use the fewest words possible. No preamble, filler, or narration ("Let me...", "I'll now...", "Great!"). No explanations of actions taken. No summaries of completed work. No reasoning unless asked. If the answer is one word, write one word.
@@ -214,7 +214,7 @@ var builtinTools = []backend.Tool{
 
 // AgentEnv holds the runtime state derived from an agent config file.
 type AgentEnv struct {
-	mcpExec          *tools.Executor
+	mcpExec          tools.Executor
 	tools            []backend.Tool
 	exec             toolExecutor
 	confirm          *confirmFn
@@ -227,7 +227,7 @@ type AgentEnv struct {
 }
 
 // BuildAgentEnv constructs an AgentEnv from a config file and a builtin executor.
-func BuildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) AgentEnv {
+func BuildAgentEnv(cfg *config.Config, builtinExec *execute.Executor) AgentEnv {
 	var messages []string
 	mcpExec := tools.NewExecutor()
 
@@ -443,7 +443,7 @@ type AgentCoreConfig struct {
 	SessionID   string
 	Session     *Session
 	Env         AgentEnv
-	BuiltinExec *execpkg.Executor
+	BuiltinExec *execute.Executor
 }
 
 // agentCore is the Core implementation. It owns all agent and session state
@@ -456,8 +456,8 @@ type agentCore struct {
 	agentsDir        string
 	sessionsDir      string
 	sessionID        string
-	mcpExec          *tools.Executor
-	builtinExec      *execpkg.Executor
+	mcpExec          tools.Executor
+	builtinExec      *execute.Executor
 	confirmPtr       *confirmFn
 	ctxOverhead      int
 	invalidateCaches func()
@@ -835,7 +835,7 @@ func extractMCPText(raw json.RawMessage) string {
 	return strings.Join(parts, "\n")
 }
 
-func dispatchBuiltinExec(ctx context.Context, name string, e *execpkg.Executor, confirm confirmFn, args json.RawMessage) (string, error) {
+func dispatchBuiltinExec(ctx context.Context, name string, e *execute.Executor, confirm confirmFn, args json.RawMessage) (string, error) {
 	switch name {
 	case "file_read":
 		return dispatchFileRead(confirm, args)
@@ -876,7 +876,7 @@ func execArgs(args json.RawMessage) (code, language, sandbox string, timeout int
 	return
 }
 
-func dispatchExecuteCode(ctx context.Context, e *execpkg.Executor, confirm confirmFn, args json.RawMessage) (string, error) {
+func dispatchExecuteCode(ctx context.Context, e *execute.Executor, confirm confirmFn, args json.RawMessage) (string, error) {
 	code, language, sandbox, timeout, err := execArgs(args)
 	if err != nil {
 		return "", fmt.Errorf("execute_code: bad args: %w", err)
@@ -890,7 +890,7 @@ func dispatchExecuteCode(ctx context.Context, e *execpkg.Executor, confirm confi
 	return e.Execute(ctx, code, language, timeout, sandbox, false)
 }
 
-func dispatchExecuteTool(ctx context.Context, e *execpkg.Executor, confirm confirmFn, args json.RawMessage) (string, error) {
+func dispatchExecuteTool(ctx context.Context, e *execute.Executor, confirm confirmFn, args json.RawMessage) (string, error) {
 	var a struct {
 		Tool     string   `json:"tool"`
 		Args     []string `json:"args"`
@@ -907,7 +907,7 @@ func dispatchExecuteTool(ctx context.Context, e *execpkg.Executor, confirm confi
 	if confirm != nil && !confirm(fmt.Sprintf("execute_tool: %s %s", a.Tool, strings.Join(a.Args, " "))) {
 		return "", fmt.Errorf("execute_tool: denied by user")
 	}
-	toolCode, err := execpkg.ReadTool(a.Tool)
+	toolCode, err := execute.ReadTool(a.Tool)
 	if err != nil {
 		return "", err
 	}
@@ -934,9 +934,9 @@ func dispatchExecuteTool(ctx context.Context, e *execpkg.Executor, confirm confi
 	return e.Execute(ctx, code, language, timeout, sandbox, true)
 }
 
-func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, confirm confirmFn, args json.RawMessage) (string, error) {
+func dispatchExecutePipe(ctx context.Context, e *execute.Executor, confirm confirmFn, args json.RawMessage) (string, error) {
 	var a struct {
-		Pipe    []execpkg.PipeStep `json:"pipe"`
+		Pipe    []execute.PipeStep `json:"pipe"`
 		Timeout int                `json:"timeout"`
 		Sandbox string             `json:"sandbox"`
 	}
@@ -946,7 +946,7 @@ func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, confirm confi
 	if len(a.Pipe) == 0 {
 		return "", fmt.Errorf("execute_pipe: 'pipe' is required")
 	}
-	code, _, err := execpkg.BuildPipeline(a.Pipe)
+	code, _, err := execute.BuildPipeline(a.Pipe)
 	if err != nil {
 		return "", err
 	}

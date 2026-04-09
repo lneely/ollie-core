@@ -11,7 +11,7 @@ import (
 
 	"ollie/internal/backend"
 	"ollie/internal/config"
-	execpkg "ollie/internal/exec"
+	execute "ollie/pkg/tools/execute"
 	"ollie/internal/tui"
 	"ollie/pkg/agent"
 )
@@ -40,7 +40,7 @@ func main() {
 		be.SetModel(modelName)
 	}
 
-	builtinExec := execpkg.New(
+	builtinExec := execute.New(
 		home+"/.local/state/ollie",
 		home+"/.cache/ollie/exec",
 	)
