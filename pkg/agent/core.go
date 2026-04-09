@@ -20,6 +20,7 @@ import (
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
 	execute "ollie/pkg/tools/execute"
+	"ollie/pkg/tools/file"
 	"ollie/pkg/mcp"
 	"ollie/pkg/tools"
 )
@@ -145,21 +146,21 @@ func systemPrompt(allTools []backend.Tool) string {
 
 // AgentEnv holds the runtime state derived from an agent config file.
 type AgentEnv struct {
-	mcpExec          tools.Executor
-	tools            []backend.Tool
-	exec             toolExecutor
-	confirm          *confirmFn
-	Hooks            Hooks
-	systemPrompt     string
-	genParams        backend.GenerationParams
-	CtxOverhead      int
-	Messages         []string
+	dispatcher   tools.Dispatcher
+	tools        []backend.Tool
+	exec         toolExecutor
+	Hooks        Hooks
+	systemPrompt string
+	genParams    backend.GenerationParams
+	CtxOverhead  int
+	Messages     []string
 }
 
-// BuildAgentEnv constructs an AgentEnv from a config file and a builtin executor.
-func BuildAgentEnv(cfg *config.Config, builtinExec *execute.Executor) AgentEnv {
+// BuildAgentEnv constructs an AgentEnv from a pre-configured Dispatcher and
+// optional agent config. The caller is responsible for registering all servers
+// on d before calling this.
+func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher) AgentEnv {
 	var messages []string
-	mcpExec := tools.NewExecutor()
 
 	if cfg != nil {
 		for name, serverCfg := range cfg.MCPServers {
@@ -172,34 +173,14 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execute.Executor) AgentEnv {
 				messages = append(messages, fmt.Sprintf("MCP %s: failed to connect: %v", name, err))
 				continue
 			}
-			mcpExec.AddServer(name, tools.NewMCPServer(client))
+			d.AddServer(name, tools.NewServer(client))
 			messages = append(messages, fmt.Sprintf("MCP %s: connected", name))
 		}
 	}
 
-	// Wire confirm through pointer so it can be updated after construction.
-	var cfn confirmFn
-	confirmPtr := &cfn
-	builtinExec.Confirm = func(prompt string) bool {
-		if *confirmPtr == nil {
-			return true
-		}
-		return (*confirmPtr)(prompt)
-	}
-	mcpExec.AddServer("builtin", tools.NewBuiltinServer(builtinExec))
-
-	allToolInfos, listErr := mcpExec.ListTools()
+	allToolInfos, listErr := d.ListTools()
 	if listErr != nil {
 		messages = append(messages, fmt.Sprintf("list tools: %v", listErr))
-	}
-	mcpCount := 0
-	for _, t := range allToolInfos {
-		if t.Server != "builtin" {
-			mcpCount++
-		}
-	}
-	if mcpCount > 0 {
-		messages = append(messages, fmt.Sprintf("MCP tools loaded: %d", mcpCount))
 	}
 
 	serverOf := make(map[string]string, len(allToolInfos))
@@ -240,7 +221,7 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execute.Executor) AgentEnv {
 		if !ok {
 			return "", fmt.Errorf("unknown tool: %s", name)
 		}
-		raw, err := mcpExec.Execute(ctx, server, name, args)
+		raw, err := d.Dispatch(ctx, server, name, args)
 		if err != nil {
 			return "", err
 		}
@@ -248,16 +229,16 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execute.Executor) AgentEnv {
 	}
 
 	return AgentEnv{
-		mcpExec:      mcpExec,
+		dispatcher:   d,
 		tools:        allTools,
 		exec:         exec,
-		confirm:      confirmPtr,
 		Hooks:        hooks,
 		systemPrompt: sp,
 		genParams:    genParams,
 		CtxOverhead:  overhead,
 		Messages:     messages,
 	}
+
 }
 
 
@@ -302,24 +283,25 @@ type AgentCoreConfig struct {
 	SessionID   string
 	Session     *Session
 	Env         AgentEnv
-	BuiltinExec *execute.Executor
+	ExecServer  *execute.Server
+	FileServer  *file.Server
 }
 
 // agentCore is the Core implementation. It owns all agent and session state
 // but has no knowledge of how output is rendered.
 type agentCore struct {
-	session          *Session
-	loopcfg          loopConfig
-	hooks            Hooks
-	agentName        string
-	agentsDir        string
-	sessionsDir      string
-	sessionID        string
-	mcpExec          tools.Executor
-	builtinExec      *execute.Executor
-	confirmPtr    *confirmFn
+	session       *Session
+	loopcfg       loopConfig
+	hooks         Hooks
+	agentName     string
+	agentsDir     string
+	sessionsDir   string
+	sessionID     string
+	dispatcher    tools.Dispatcher
+	execServer    *execute.Server
+	fileServer    *file.Server
 	ctxOverhead   int
-	currentAction    atomic.Pointer[actionHandle]
+	currentAction atomic.Pointer[actionHandle]
 }
 
 var _ Core = (*agentCore)(nil) // compile-time interface check
@@ -338,16 +320,16 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		GenerationParams: cfg.Env.genParams,
 	}
 	return &agentCore{
-		session:          cfg.Session,
-		loopcfg:          loopcfg,
-		hooks:            cfg.Env.Hooks,
-		agentName:        cfg.AgentName,
-		agentsDir:        cfg.AgentsDir,
-		sessionsDir:      cfg.SessionsDir,
-		sessionID:        cfg.SessionID,
-		mcpExec:          cfg.Env.mcpExec,
-		builtinExec:      cfg.BuiltinExec,
-		confirmPtr:  cfg.Env.confirm,
+		session:     cfg.Session,
+		loopcfg:     loopcfg,
+		hooks:       cfg.Env.Hooks,
+		agentName:   cfg.AgentName,
+		agentsDir:   cfg.AgentsDir,
+		sessionsDir: cfg.SessionsDir,
+		sessionID:   cfg.SessionID,
+		dispatcher:  cfg.Env.dispatcher,
+		execServer:  cfg.ExecServer,
+		fileServer:  cfg.FileServer,
 		ctxOverhead: cfg.Env.CtxOverhead,
 	}
 }
@@ -409,7 +391,6 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	s.currentAction.Store(handle)
 
 	s.loopcfg.Output = handler
-	*s.confirmPtr = nil // auto-approve all confirmations for now
 
 	s.hooks.Run(HookAgentSpawn)
 
@@ -518,18 +499,20 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			handler(infoEvent(fmt.Sprintf("error: agent %q: %v", name, err)))
 			return true
 		}
-		if s.mcpExec != nil {
-			s.mcpExec.Close()
+		if s.dispatcher != nil {
+			s.dispatcher.Close()
 		}
-		env := BuildAgentEnv(cfg, s.builtinExec)
-		s.mcpExec = env.mcpExec
+		d := tools.NewDispatcher()
+		d.AddServer("execute", s.execServer)
+		d.AddServer("file", s.fileServer)
+		env := BuildAgentEnv(cfg, d)
+		s.dispatcher = env.dispatcher
 		s.hooks = env.Hooks
 		s.loopcfg.systemPrompt = env.systemPrompt
 		s.loopcfg.Tools = env.tools
 		s.loopcfg.Exec = env.exec
 		s.loopcfg.GenerationParams = env.genParams
 		s.ctxOverhead = env.CtxOverhead
-		s.confirmPtr = env.confirm
 		s.agentName = name
 		s.session = nil
 		s.sessionID = newSessionID()

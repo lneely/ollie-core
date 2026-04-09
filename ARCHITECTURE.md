@@ -12,9 +12,9 @@ pkg/
   backend/       — Backend interface + implementations
   config/        — Agent config struct and loader
   mcp/           — MCP client (concrete)
-  tools/         — Server/Executor interfaces, MCPExecutor, BuiltinServer, tool definitions
-  tools/execute/ — Sandbox runner (execute_code, execute_tool, execute_pipe)
-  tools/file/    — File operations (file_read, file_write)
+  tools/         — Server and Dispatcher interfaces, tool definitions (builtin.go)
+  tools/execute/ — execute.Server: execute_code, execute_tool, execute_pipe
+  tools/file/    — file.Server: file_read, file_write
 
 internal/
   sandbox/       — landrun sandbox config and command wrapper
@@ -33,11 +33,13 @@ The sandbox package is an implementation detail of `pkg/tools/execute`. It has n
 Consumers extend ollie by implementing or composing its interfaces:
 
 - **`backend.Backend`** — swap or add LLM backends
-- **`tools.Server`** — add a new tool server (built-in or MCP-backed); register with `MCPExecutor.AddServer`
-- **`tools.Executor`** — replace the tool router entirely (e.g. remote dispatcher, mock)
+- **`tools.Server`** — add a new tool server (built-in or MCP-backed); all servers are equal
+- **`tools.Dispatcher`** — replace the tool router entirely (e.g. remote dispatcher, mock)
 - **`agent.Core`** — the agent's public API; frontends drive it without knowing internals
 
-`tools.NewExecutor()` returns a `*MCPExecutor` (concrete, for `AddServer` during setup), then is used as `tools.Executor` (interface) at runtime. `tools.NewMCPServer(client)` wraps an `mcp.Client` as a `tools.Server`.
+All tool servers implement the same `tools.Server` interface regardless of whether they are built-in or backed by MCP. There is no special "builtin" concept — `execute.Server` and `file.Server` are just servers registered by name, the same way MCP servers are.
+
+`tools.NewDispatcher()` returns a `tools.Dispatcher`. Callers register servers with `d.AddServer(name, server)` before passing `d` to `agent.BuildAgentEnv`. `tools.NewServer(client)` wraps an `mcp.Client` as a `tools.Server`.
 
 ## Data Flow
 
@@ -45,32 +47,55 @@ Consumers extend ollie by implementing or composing its interfaces:
 Frontend
   └── agent.Core.Submit(prompt)
         └── loop.run()
-              ├── backend.ChatStream()                        — LLM call
-              └── tools.Executor.Execute(server, tool, args)  — tool dispatch (interface)
-                    └── tools.MCPExecutor                     — routes by server name
-                          ├── "builtin" → tools.BuiltinServer    — all built-in tools
-                          │       ├── execute_* → execute.Executor.Dispatch()
-                          │       └── file_*    → file.Read / file.Write
-                          └── "<name>"  → tools.mcpServer        — MCP protocol tools
+              ├── backend.ChatStream()              — LLM call
+              └── tools.Dispatcher.Dispatch(...)   — tool dispatch
+                    ├── "execute" → tools.Server
+                    │       execute_code / execute_tool / execute_pipe
+                    ├── "file"    → tools.Server
+                    │       file_read / file_write
+                    └── "<servername>"  → tools.Server
 ```
 
-All tool calls go through one `tools.Executor.Execute` path. `BuiltinServer` in `pkg/tools/` is the single built-in server; `execute/` and `file/` are its implementation subpackages and do not implement `tools.Server` themselves. MCP tools are wrapped in `mcpServer`.
+All tool calls go through one `tools.Dispatcher.Dispatch` path. Every registered server is a `tools.Server`; the dispatcher routes by name and is agnostic to how any server is implemented.
 
 ## Built-in Tools
 
-Five tools are registered under the `"builtin"` server by default:
+Five tools are registered across two servers:
 
-| Tool | What it does |
-|---|---|
-| `execute_code` | Runs inline bash in a landrun sandbox |
-| `execute_tool` | Reads a named script from `OLLIE_TOOLS_PATH` and runs it sandboxed |
-| `execute_pipe` | Chains steps, piping stdout of each into stdin of the next |
-| `file_read` | Reads a file with line numbers (required before `file_write`) |
-| `file_write` | Writes or patches a file by line range |
+| Server | Tool | What it does |
+|---|---|---|
+| `execute` | `execute_code` | Runs inline bash in a landrun sandbox |
+| `execute` | `execute_tool` | Reads a named script from `OLLIE_TOOLS_PATH` and runs it sandboxed |
+| `execute` | `execute_pipe` | Chains steps, piping stdout of each into stdin of the next |
+| `file` | `file_read` | Reads a file with line numbers (required before `file_write`) |
+| `file` | `file_write` | Writes or patches a file by line range |
 
-`tools.BuiltinServer` in `pkg/tools/` is the single `tools.Server` for all built-in tools. Tool definitions (`ExecuteDefs`, `FileDefs`) and file dispatch live in `pkg/tools/builtin.go`; execute dispatch lives in `pkg/tools/execute/dispatch.go`.
+Tool definitions (`ExecuteDefs`, `FileDefs`) live in `pkg/tools/builtin.go` to avoid import cycles — the subpackages import `pkg/tools`, so `pkg/tools` cannot import them back.
 
 `OLLIE_TOOLS_PATH` defaults to `~/.local/share/ollie/tools`. The directory can be a symlink or a mountpoint — `execute_tool` treats it as an ordinary filesystem path.
+
+## Typical Consumer Setup
+
+```go
+execServer := execute.New(logDir, workspaceBase)
+fileServer := file.New()
+
+d := tools.NewDispatcher()
+d.AddServer("execute", execServer)
+d.AddServer("file", fileServer)
+
+env := agent.BuildAgentEnv(cfg, d)  // also connects MCP servers from cfg
+
+core := agent.NewAgentCore(agent.AgentCoreConfig{
+    Backend:    be,
+    ExecServer: execServer,
+    FileServer: fileServer,
+    Env:        env,
+    // ...
+})
+```
+
+`BuildAgentEnv` adds MCP servers from the config on top of the pre-registered servers. `ExecServer` and `FileServer` are stored on the core so `/agent` switching can rebuild the dispatcher with the same sandboxed servers plus new MCP connections.
 
 ## Session and Context
 

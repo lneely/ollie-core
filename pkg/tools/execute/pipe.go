@@ -20,7 +20,7 @@ func BuildPipeline(steps []PipeStep) (string, bool, error) {
 	if len(steps) == 0 {
 		return "", false, fmt.Errorf("pipe requires at least one step")
 	}
-	validator := &Executor{} // used only for ValidateCode; no shared rate-limit state
+	validator := &Server{} // used only for ValidateCode; no shared rate-limit state
 	parts := make([]string, 0, len(steps))
 	for _, step := range steps {
 		var code string

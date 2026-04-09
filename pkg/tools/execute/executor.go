@@ -1,5 +1,5 @@
 // Package execute provides the builtin execute_code, execute_tool, and
-// execute_pipe tools. The Executor struct is the shared sandbox runner.
+// execute_pipe tools. The Server struct is the shared sandbox runner.
 package execute
 
 import (
@@ -22,8 +22,8 @@ import (
 
 const defaultMaxOutputChars = 8000
 
-// Executor runs code in a sandboxed environment.
-type Executor struct {
+// Server runs code in a sandboxed environment.
+type Server struct {
 	// LogDir is the directory for execution and security event logs.
 	// Defaults to ~/.local/state/exec when empty.
 	LogDir string
@@ -42,31 +42,31 @@ type Executor struct {
 	// If it returns false, the operation is denied.
 	Confirm func(string) bool
 
-	// rate limiting state (per-Executor)
+	// rate limiting state (per-Server)
 	rateLimitMu        sync.Mutex
 	validationFailures int
 	lastFailure        time.Time
 	blockedUntil       time.Time
 }
 
-// New creates a new Executor with the given log directory and workspace base.
+// New creates a new Server with the given log directory and workspace base.
 // MaxOutputChars is initialised from OLLIE_TOOL_OUTPUT_CHARS if set,
 // otherwise defaults to 8000.
-func New(logDir, workspaceBase string) *Executor {
+func New(logDir, workspaceBase string) *Server {
 	maxOutput := defaultMaxOutputChars
 	if s := os.Getenv("OLLIE_TOOL_OUTPUT_CHARS"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
 			maxOutput = n
 		}
 	}
-	return &Executor{
+	return &Server{
 		LogDir:         logDir,
 		WorkspaceBase:  workspaceBase,
 		MaxOutputChars: maxOutput,
 	}
 }
 
-func (e *Executor) logDir() string {
+func (e *Server) logDir() string {
 	if e.LogDir != "" {
 		return e.LogDir
 	}
@@ -99,7 +99,7 @@ const (
 	failureWindow = 60 * time.Second
 )
 
-func (e *Executor) checkRateLimit() error {
+func (e *Server) checkRateLimit() error {
 	e.rateLimitMu.Lock()
 	defer e.rateLimitMu.Unlock()
 
@@ -111,7 +111,7 @@ func (e *Executor) checkRateLimit() error {
 	return nil
 }
 
-func (e *Executor) recordValidationFailure() {
+func (e *Server) recordValidationFailure() {
 	e.rateLimitMu.Lock()
 	defer e.rateLimitMu.Unlock()
 
@@ -135,7 +135,7 @@ func (e *Executor) recordValidationFailure() {
 }
 
 // ValidateCode checks code against dangerous patterns.
-func (e *Executor) ValidateCode(code string) error {
+func (e *Server) ValidateCode(code string) error {
 	if err := e.checkRateLimit(); err != nil {
 		return err
 	}
@@ -192,7 +192,7 @@ func loadLayeredConfig(name string) (*sandbox.Config, error) {
 }
 
 // Execute runs code in a sandbox and returns combined stdout+stderr.
-func (e *Executor) Execute(ctx context.Context, code, language string, timeout int, sandboxName string, trusted bool) (string, error) {
+func (e *Server) Execute(ctx context.Context, code, language string, timeout int, sandboxName string, trusted bool) (string, error) {
 	start := time.Now()
 
 	if timeout <= 0 {

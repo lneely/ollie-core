@@ -1,5 +1,5 @@
-// Package tools defines the Executor interface for routing tool calls,
-// and provides a default MCP-backed implementation.
+// Package tools defines the Server and Dispatcher interfaces and their
+// default implementations.
 package tools
 
 import (
@@ -10,7 +10,7 @@ import (
 	"ollie/pkg/mcp"
 )
 
-// ToolInfo describes a tool provided by a tool server.
+// ToolInfo describes a tool provided by a server.
 type ToolInfo struct {
 	Server      string
 	Name        string
@@ -18,56 +18,47 @@ type ToolInfo struct {
 	InputSchema json.RawMessage
 }
 
-// Server is the interface satisfied by any tool server registered with an Executor.
-// Both MCP servers and built-in tool sets implement this interface.
+// Server is the interface satisfied by any tool server.
 type Server interface {
 	ListTools() ([]ToolInfo, error)
 	CallTool(ctx context.Context, tool string, args json.RawMessage) (json.RawMessage, error)
 	Close()
 }
 
-// Executor routes tool calls to the server that owns them.
-// Implementations may back this with MCP servers, local functions, or mocks.
-type Executor interface {
+// Dispatcher routes tool calls to the server that owns them.
+type Dispatcher interface {
+	AddServer(name string, s Server)
 	ListTools() ([]ToolInfo, error)
-	Execute(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error)
+	Dispatch(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error)
 	Close()
 }
 
-// MCPExecutor is the default Executor backed by registered Server instances.
-// NewExecutor returns a *MCPExecutor so callers can call AddServer during
-// setup; after setup it satisfies the Executor interface.
-type MCPExecutor struct {
+// dispatcher is the default Dispatcher backed by registered Server instances.
+type dispatcher struct {
 	servers map[string]Server
 }
 
-// NewExecutor returns an executor with no servers registered.
-// Call AddServer to attach servers before using it.
-func NewExecutor() *MCPExecutor {
-	return &MCPExecutor{servers: make(map[string]Server)}
+// NewDispatcher returns a Dispatcher with no servers registered.
+func NewDispatcher() Dispatcher {
+	return &dispatcher{servers: make(map[string]Server)}
 }
 
 // AddServer registers a Server under the given name.
-func (e *MCPExecutor) AddServer(name string, s Server) {
-	e.servers[name] = s
-}
-
-// NewMCPServer wraps an mcp.Client as a Server.
-func NewMCPServer(client *mcp.Client) Server {
-	return &mcpServer{client: client}
+func (d *dispatcher) AddServer(name string, s Server) {
+	d.servers[name] = s
 }
 
 // Close shuts down all registered servers.
-func (e *MCPExecutor) Close() {
-	for _, s := range e.servers {
+func (d *dispatcher) Close() {
+	for _, s := range d.servers {
 		s.Close()
 	}
 }
 
 // ListTools returns all tools advertised by all registered servers.
-func (e *MCPExecutor) ListTools() ([]ToolInfo, error) {
+func (d *dispatcher) ListTools() ([]ToolInfo, error) {
 	var all []ToolInfo
-	for serverName, s := range e.servers {
+	for serverName, s := range d.servers {
 		tools, err := s.ListTools()
 		if err != nil {
 			return nil, fmt.Errorf("server %s: %w", serverName, err)
@@ -80,13 +71,18 @@ func (e *MCPExecutor) ListTools() ([]ToolInfo, error) {
 	return all, nil
 }
 
-// Execute calls a named tool on the named server.
-func (e *MCPExecutor) Execute(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error) {
-	s, ok := e.servers[server]
+// Dispatch calls a named tool on the named server.
+func (d *dispatcher) Dispatch(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error) {
+	s, ok := d.servers[server]
 	if !ok {
 		return nil, fmt.Errorf("server not found: %s", server)
 	}
 	return s.CallTool(ctx, tool, args)
+}
+
+// NewServer wraps an mcp.Client as a Server.
+func NewServer(client *mcp.Client) Server {
+	return &mcpServer{client: client}
 }
 
 // mcpServer wraps an mcp.Client as a Server.

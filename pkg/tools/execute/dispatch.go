@@ -8,7 +8,7 @@ import (
 )
 
 // Dispatch routes a named execute tool call. Called by tools.BuiltinServer.
-func (e *Executor) Dispatch(ctx context.Context, name string, args json.RawMessage) (string, error) {
+func (e *Server) Dispatch(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	switch name {
 	case "execute_code":
 		return dispatchExecuteCode(ctx, e, args)
@@ -47,7 +47,7 @@ func execArgs(args json.RawMessage) (code, language, sandbox string, timeout int
 	return
 }
 
-func dispatchExecuteCode(ctx context.Context, e *Executor, args json.RawMessage) (string, error) {
+func dispatchExecuteCode(ctx context.Context, e *Server, args json.RawMessage) (string, error) {
 	code, language, sandbox, timeout, err := execArgs(args)
 	if err != nil {
 		return "", fmt.Errorf("execute_code: bad args: %w", err)
@@ -61,7 +61,7 @@ func dispatchExecuteCode(ctx context.Context, e *Executor, args json.RawMessage)
 	return e.Execute(ctx, code, language, timeout, sandbox, false)
 }
 
-func dispatchExecuteTool(ctx context.Context, e *Executor, args json.RawMessage) (string, error) {
+func dispatchExecuteTool(ctx context.Context, e *Server, args json.RawMessage) (string, error) {
 	var a struct {
 		Tool    string   `json:"tool"`
 		Args    []string `json:"args"`
@@ -100,7 +100,7 @@ func dispatchExecuteTool(ctx context.Context, e *Executor, args json.RawMessage)
 	return e.Execute(ctx, code, "bash", timeout, sandbox, true)
 }
 
-func dispatchExecutePipe(ctx context.Context, e *Executor, args json.RawMessage) (string, error) {
+func dispatchExecutePipe(ctx context.Context, e *Server, args json.RawMessage) (string, error) {
 	var a struct {
 		Pipe    []PipeStep `json:"pipe"`
 		Timeout int        `json:"timeout"`

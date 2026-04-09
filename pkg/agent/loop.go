@@ -19,15 +19,11 @@ type loopConfig struct {
 	Backend          backend.Backend
 	Tools            []backend.Tool
 	Exec             toolExecutor
-	Confirm          confirmFn
 	MaxSteps         int
 	Output           EventHandler
 	systemPrompt     string
 	GenerationParams backend.GenerationParams
 }
-
-// confirmFn requests user confirmation for an action. Returns true if approved.
-type confirmFn func(prompt string) bool
 
 func run(ctx context.Context, cfg loopConfig, state state) error {
 	maxSteps := cfg.MaxSteps
