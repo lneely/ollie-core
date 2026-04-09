@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"ollie/pkg/tools"
@@ -65,31 +64,6 @@ func builtinToolDefs() []tools.ToolInfo {
 				}
 			}`),
 		},
-		{
-			Name:        "file_read",
-			Description: "Read a file in full. Output includes line numbers. Use grep/execute_code to search before reading. Prefer file_read only when you need to write — use grep or execute_code for exploration.",
-			InputSchema: json.RawMessage(`{
-				"type": "object",
-				"required": ["path"],
-				"properties": {
-					"path": {"type": "string", "description": "Path to the file."}
-				}
-			}`),
-		},
-		{
-			Name:        "file_write",
-			Description: "Write content to a file. For existing files, start_line and end_line are required — whole-file overwrites are not permitted. For new files (not yet on disk), omit start_line/end_line to write the full content. Always use file_read or grep -n to identify the exact line range before writing. Never guess line numbers. Preserve original formatting and indentation.",
-			InputSchema: json.RawMessage(`{
-				"type": "object",
-				"required": ["path", "content"],
-				"properties": {
-					"path":       {"type": "string",  "description": "Path to the file."},
-					"content":    {"type": "string",  "description": "Content to write."},
-					"start_line": {"type": "integer", "description": "First line of range to replace, 1-based."},
-					"end_line":   {"type": "integer", "description": "Last line of range to replace, inclusive."}
-				}
-			}`),
-		},
 	}
 }
 
@@ -114,10 +88,6 @@ func (e *Executor) Close() {}
 
 func (e *Executor) dispatch(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	switch name {
-	case "file_read":
-		return dispatchFileRead(e, args)
-	case "file_write":
-		return dispatchFileWrite(e, args)
 	case "execute_pipe":
 		return dispatchExecutePipe(ctx, e, args)
 	case "execute_tool":
@@ -241,80 +211,6 @@ func dispatchExecutePipe(ctx context.Context, e *Executor, args json.RawMessage)
 		sandbox = "default"
 	}
 	return e.Execute(ctx, code, "bash", timeout, sandbox, true)
-}
-
-func dispatchFileRead(e *Executor, args json.RawMessage) (string, error) {
-	var a struct {
-		Path string `json:"path"`
-	}
-	if err := json.Unmarshal(args, &a); err != nil {
-		return "", fmt.Errorf("file_read: bad args: %w", err)
-	}
-	if a.Path == "" {
-		return "", fmt.Errorf("file_read: 'path' is required")
-	}
-	if e.Confirm != nil && !e.Confirm(fmt.Sprintf("read %s", a.Path)) {
-		return "", fmt.Errorf("file_read: denied by user")
-	}
-	data, err := os.ReadFile(a.Path)
-	if err != nil {
-		return "", fmt.Errorf("file_read: %w", err)
-	}
-	lines := strings.Split(string(data), "\n")
-	var out strings.Builder
-	for i, line := range lines {
-		fmt.Fprintf(&out, "%d\t%s\n", i+1, line)
-	}
-	return strings.TrimRight(out.String(), "\n"), nil
-}
-
-func dispatchFileWrite(e *Executor, args json.RawMessage) (string, error) {
-	var a struct {
-		Path      string `json:"path"`
-		Content   string `json:"content"`
-		StartLine int    `json:"start_line"`
-		EndLine   int    `json:"end_line"`
-	}
-	if err := json.Unmarshal(args, &a); err != nil {
-		return "", fmt.Errorf("file_write: bad args: %w", err)
-	}
-	if a.Path == "" {
-		return "", fmt.Errorf("file_write: 'path' is required")
-	}
-	prompt := fmt.Sprintf("write %s", a.Path)
-	if a.StartLine > 0 {
-		prompt = fmt.Sprintf("write %s lines %d-%d", a.Path, a.StartLine, a.EndLine)
-	}
-	if e.Confirm != nil && !e.Confirm(prompt) {
-		return "", fmt.Errorf("file_write: denied by user")
-	}
-	if a.StartLine == 0 && a.EndLine == 0 {
-		if err := os.WriteFile(a.Path, []byte(a.Content), 0644); err != nil {
-			return "", fmt.Errorf("file_write: %w", err)
-		}
-		return fmt.Sprintf("wrote %d bytes to %s", len(a.Content), a.Path), nil
-	}
-	data, err := os.ReadFile(a.Path)
-	if err != nil {
-		return "", fmt.Errorf("file_write: %w", err)
-	}
-	lines := strings.Split(string(data), "\n")
-	start, end := a.StartLine, a.EndLine
-	if start < 1 {
-		start = 1
-	}
-	if end > len(lines) {
-		end = len(lines)
-	}
-	if start > end {
-		return "", fmt.Errorf("file_write: start_line %d > end_line %d", start, end)
-	}
-	newLines := strings.Split(a.Content, "\n")
-	result := append(lines[:start-1], append(newLines, lines[end:]...)...)
-	if err := os.WriteFile(a.Path, []byte(strings.Join(result, "\n")), 0644); err != nil {
-		return "", fmt.Errorf("file_write: %w", err)
-	}
-	return fmt.Sprintf("replaced lines %d-%d in %s", start, end, a.Path), nil
 }
 
 func squashWhitespace(s string) string {
