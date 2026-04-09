@@ -80,22 +80,24 @@ Tool definitions (`ExecuteDefs`, `FileDefs`) live in `pkg/tools/builtin.go` to a
 execServer := execute.New(logDir, workspaceBase)
 fileServer := file.New()
 
-d := tools.NewDispatcher()
-d.AddServer("execute", execServer)
-d.AddServer("file", fileServer)
+newDispatcher := func() tools.Dispatcher {
+    d := tools.NewDispatcher()
+    d.AddServer("execute", execServer)
+    d.AddServer("file", fileServer)
+    return d
+}
 
-env := agent.BuildAgentEnv(cfg, d)  // also connects MCP servers from cfg
+env := agent.BuildAgentEnv(cfg, newDispatcher())  // also connects MCP servers from cfg
 
 core := agent.NewAgentCore(agent.AgentCoreConfig{
-    Backend:    be,
-    ExecServer: execServer,
-    FileServer: fileServer,
-    Env:        env,
+    Backend:       be,
+    Env:           env,
+    NewDispatcher: newDispatcher,
     // ...
 })
 ```
 
-`BuildAgentEnv` adds MCP servers from the config on top of the pre-registered servers. `ExecServer` and `FileServer` are stored on the core so `/agent` switching can rebuild the dispatcher with the same sandboxed servers plus new MCP connections.
+`BuildAgentEnv` adds MCP servers from the config on top of the pre-registered servers. `NewDispatcher` is stored on the core so `/agent` switching can rebuild a fresh dispatcher — base servers plus new MCP connections from the new agent config — without `agent` needing to import `execute` or `file`.
 
 ## Session and Context
 

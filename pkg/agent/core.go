@@ -12,15 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"text/template"
 	"time"
 
 	"crypto/rand"
 
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
-	execute "ollie/pkg/tools/execute"
-	"ollie/pkg/tools/file"
 	"ollie/pkg/mcp"
 	"ollie/pkg/tools"
 )
@@ -34,7 +31,7 @@ Do not attempt tasks outside your tools.
 Do not use hedging language ("it looks like", "it appears", "it seems", "likely", "probably"). If you are uncertain, use tools to find out. Give definite answers based on evidence.
 Do not re-read or re-fetch any file or resource that already has a result in the conversation history. Use the existing result.
 Use tools to gather information before asking the user for clarification. Explore files, run commands, and investigate the environment first. Only ask when you have exhausted what you can discover on your own.
-Use execute_code for all shell commands and scripts. Use execute_tool only for named scripts in {{.ToolsPath}}. Use execute_pipe to chain steps: use {code: "cmd --flags"} for shell commands, {tool, args} only for named scripts in {{.ToolsPath}}.
+Use execute_code for all shell commands and scripts. Use execute_tool only for named scripts (see execute_tool description for path). Use execute_pipe to chain steps: use {code: "cmd --flags"} for shell commands, {tool, args} only for named scripts.
 Use grep or execute_code to search and explore files. Use file_read only when you need to write — it reads the full file and is required before file_write. Never use shell commands to read or write files.
 
 Tool call examples:
@@ -122,12 +119,6 @@ func buildFirstPrompt(input string) string {
 }
 
 // systemPrompt builds the full system prompt for a given tool set.
-var systemPromptTmpl = template.Must(template.New("system").Parse(systemPromptBase))
-
-type systemPromptData struct {
-	ToolsPath string
-}
-
 func systemPrompt(allTools []backend.Tool) string {
 	cwd, _ := os.Getwd()
 	now := time.Now().Format("2006-01-02 15:04:05 MST")
@@ -135,11 +126,7 @@ func systemPrompt(allTools []backend.Tool) string {
 	for i, t := range allTools {
 		names[i] = t.Name
 	}
-	var buf strings.Builder
-	systemPromptTmpl.Execute(&buf, systemPromptData{ //nolint:errcheck
-		ToolsPath: execute.ToolsPath(),
-	})
-	return buf.String() + "\n\nWorking directory: " + cwd +
+	return systemPromptBase + "\n\nWorking directory: " + cwd +
 		"\nCurrent time: " + now +
 		"\nAvailable tools: " + strings.Join(names, ", ")
 }
@@ -238,7 +225,6 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher) AgentEnv {
 		CtxOverhead:  overhead,
 		Messages:     messages,
 	}
-
 }
 
 
@@ -282,9 +268,8 @@ type AgentCoreConfig struct {
 	SessionsDir string
 	SessionID   string
 	Session     *Session
-	Env         AgentEnv
-	ExecServer  *execute.Server
-	FileServer  *file.Server
+	Env           AgentEnv
+	NewDispatcher func() tools.Dispatcher
 }
 
 // agentCore is the Core implementation. It owns all agent and session state
@@ -298,8 +283,7 @@ type agentCore struct {
 	sessionsDir   string
 	sessionID     string
 	dispatcher    tools.Dispatcher
-	execServer    *execute.Server
-	fileServer    *file.Server
+	newDispatcher func() tools.Dispatcher
 	ctxOverhead   int
 	currentAction atomic.Pointer[actionHandle]
 }
@@ -320,17 +304,16 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		GenerationParams: cfg.Env.genParams,
 	}
 	return &agentCore{
-		session:     cfg.Session,
-		loopcfg:     loopcfg,
-		hooks:       cfg.Env.Hooks,
-		agentName:   cfg.AgentName,
-		agentsDir:   cfg.AgentsDir,
-		sessionsDir: cfg.SessionsDir,
-		sessionID:   cfg.SessionID,
-		dispatcher:  cfg.Env.dispatcher,
-		execServer:  cfg.ExecServer,
-		fileServer:  cfg.FileServer,
-		ctxOverhead: cfg.Env.CtxOverhead,
+		session:       cfg.Session,
+		loopcfg:       loopcfg,
+		hooks:         cfg.Env.Hooks,
+		agentName:     cfg.AgentName,
+		agentsDir:     cfg.AgentsDir,
+		sessionsDir:   cfg.SessionsDir,
+		sessionID:     cfg.SessionID,
+		dispatcher:    cfg.Env.dispatcher,
+		newDispatcher: cfg.NewDispatcher,
+		ctxOverhead:   cfg.Env.CtxOverhead,
 	}
 }
 
@@ -502,9 +485,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		if s.dispatcher != nil {
 			s.dispatcher.Close()
 		}
-		d := tools.NewDispatcher()
-		d.AddServer("execute", s.execServer)
-		d.AddServer("file", s.fileServer)
+		d := s.newDispatcher()
 		env := BuildAgentEnv(cfg, d)
 		s.dispatcher = env.dispatcher
 		s.hooks = env.Hooks
