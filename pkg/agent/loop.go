@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"ollie/internal/backend"
+	"ollie/pkg/backend"
 )
 
 const maxRateLimitRetries = 3

@@ -16,8 +16,8 @@ import (
 
 	"crypto/rand"
 
-	"ollie/internal/backend"
-	"ollie/internal/config"
+	"ollie/pkg/backend"
+	"ollie/pkg/config"
 	execute "ollie/pkg/tools/execute"
 	"ollie/pkg/mcp"
 	"ollie/pkg/tools"

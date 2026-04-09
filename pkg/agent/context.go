@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"ollie/internal/backend"
+	"ollie/pkg/backend"
 )
 
 // contextConfig controls the bounded context window behaviour.
