@@ -5,39 +5,31 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"9fans.net/go/plan9/client"
 )
 
-// ReadTool reads a named tool script from the 9P tools directory.
+// ToolsPath returns the directory to search for named tool scripts.
+// Resolved in order: OLLIE_TOOLS_PATH env var, then ~/.local/share/ollie/tools.
+func ToolsPath() string {
+	if p := os.Getenv("OLLIE_TOOLS_PATH"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "ollie", "tools")
+}
+
+// ReadTool reads a named tool script from the tools directory.
 func ReadTool(name string) (string, error) {
 	if strings.Contains(name, "/") || strings.Contains(name, "..") {
 		return "", fmt.Errorf("invalid tool name")
 	}
 
-	ns := fmt.Sprintf("/tmp/ns.%s.:0", os.Getenv("USER"))
-	fsys, err := client.Mount("unix", filepath.Join(ns, "anvillm"))
+	path := filepath.Join(ToolsPath(), name)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("failed to mount 9P: %v", err)
-	}
-	defer fsys.Close()
-
-	fid, err := fsys.Open("/tools/"+name, 0)
-	if err != nil {
-		return "", fmt.Errorf("tool not found: %s", name)
-	}
-	defer fid.Close()
-
-	var buf []byte
-	tmp := make([]byte, 8192)
-	for {
-		n, err := fid.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("tool not found: %s", name)
 		}
-		if err != nil || n < len(tmp) {
-			break
-		}
+		return "", fmt.Errorf("read tool %s: %w", name, err)
 	}
-	return string(buf), nil
+	return string(data), nil
 }

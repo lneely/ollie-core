@@ -1,38 +1,42 @@
-# Ollie
+# ollie
 
-An agentic CLI built on a sandboxed `execute_code` tool and a common LLM backend interface. Supports local (Ollama) and OpenAI-compatible backends, optional MCP server connections, and a skill system for domain-specific capabilities.
+A Go library for building agentic systems. Provides a sandboxed `execute_code` tool, a common LLM backend interface, MCP server support, and a skill system for domain-specific capabilities.
 
 Intended to be used with [anvillm](https://github.com/lneely/anvillm), which provides the skill system, tool scripts, and multi-agent infrastructure that ollie builds on.
 
-## Build
+The reference frontend is [ollie-tui](https://github.com/lneely/ollie-tui), a terminal UI built on top of this library.
 
-```bash
-go build
+## Packages
+
+```
+pkg/agent/         — Core interface, agent loop, session management
+pkg/backend/       — Backend interface + implementations (Ollama, OpenAI, Anthropic, Copilot, Kiro)
+pkg/config/        — Config struct and loader
+pkg/mcp/           — MCP client
+pkg/tools/         — Executor interface + MCPExecutor
+pkg/tools/execute/ — Built-in sandbox executor (execute_code, execute_tool, execute_pipe)
 ```
 
-Requires Go 1.21+.
+## Install
 
-## Run
-
-```bash
-./ollie [model]
+```
+mk
 ```
 
-Model defaults to `qwen3:8b`. Override with `OLLIE_MODEL` or pass as the first argument:
-
-```bash
-OLLIE_BACKEND=openai ./ollie qwen/qwen3-235b-a22b
-```
+Copies agent configs to `~/.config/ollie/agents/`.
 
 ## Configuration
 
 ### Environment: `~/.config/ollie/env`
 
 ```
-OLLIE_BACKEND=openai           # ollama | openai (default: ollama)
+OLLIE_BACKEND=openai           # ollama | openai | openrouter | anthropic | copilot | kiro (default: ollama)
 OLLIE_OLLAMA_URL=              # base URL for Ollama (default: http://localhost:11434)
-OLLIE_OPENAI_URL=https://openrouter.ai/api  # any OpenAI-compatible endpoint
+OLLIE_OPENAI_URL=https://openrouter.ai/api
 OLLIE_OPENAI_KEY=sk-or-...
+OLLIE_ANTHROPIC_KEY=sk-ant-...
+OLLIE_COPILOT_TOKEN=...
+OLLIE_KIRO_TOKEN=...           # bearer token or sqlite:// path (auto-detected from Kiro CLI if unset)
 OLLIE_MODEL=qwen/qwen3-235b-a22b
 ```
 
@@ -59,33 +63,17 @@ Shell environment variables take precedence over the env file.
 }
 ```
 
-MCP server `env` values support `${VAR}` expansion from the parent environment. Only whitelisted vars are passed to the subprocess.
-
-An alternate config path can be provided as a second argument:
-
-```bash
-./ollie qwen3:8b /path/to/config.json
-```
-
-## UI
-
-- **Enter** — submit message
-- **Ctrl+J** — insert newline
-- **PageUp / PageDown** — scroll chat history
-- **Ctrl+U / Ctrl+D** — half-page scroll
-- **Ctrl+C / Esc** — quit
-
-Token usage is shown after each response: `[↑N ↓N tokens]`.
+MCP server `env` values support `${VAR}` expansion from the parent environment.
 
 ## Tools
 
-The agent has one built-in tool: `execute_code`. It runs shell code in a sandboxed environment and supports three invocation modes:
+Three built-in tool modes:
 
-- `code` — inline bash
-- `tool` + `args` — named tool script
-- `pipe` — sequence of `{tool, args}` steps
+- `execute_code` — run inline shell code in a sandbox
+- `execute_tool` — run a named tool script from the tools directory
+- `execute_pipe` — chain steps as a pipeline
 
-MCP server tools are discovered at startup and available alongside `execute_code`.
+MCP server tools are discovered at startup and available alongside the built-ins.
 
 ## Skills
 
@@ -95,8 +83,6 @@ Skills are domain-specific tool scripts and knowledge discoverable at runtime:
 {"tool": "discover_skill.sh", "args": ["keyword"]}
 {"tool": "load_skill.sh",     "args": ["skill-name"]}
 ```
-
-The agent discovers and loads relevant skills automatically at the start of each task.
 
 ## License
 

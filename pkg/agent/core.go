@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"text/template"
 	"time"
 
 	"crypto/rand"
@@ -32,7 +33,7 @@ Do not attempt tasks outside your tools.
 Do not use hedging language ("it looks like", "it appears", "it seems", "likely", "probably"). If you are uncertain, use tools to find out. Give definite answers based on evidence.
 Do not re-read or re-fetch any file or resource that already has a result in the conversation history. Use the existing result.
 Use tools to gather information before asking the user for clarification. Explore files, run commands, and investigate the environment first. Only ask when you have exhausted what you can discover on your own.
-Use execute_code for all shell commands and scripts. Use execute_tool only for named scripts in ~/mnt/anvillm/tools. Use execute_pipe to chain steps: use {code: "cmd --flags"} for shell commands, {tool, args} only for named scripts in ~/mnt/anvillm/tools.
+Use execute_code for all shell commands and scripts. Use execute_tool only for named scripts in {{.ToolsPath}}. Use execute_pipe to chain steps: use {code: "cmd --flags"} for shell commands, {tool, args} only for named scripts in {{.ToolsPath}}.
 Use grep or execute_code to search and explore files. Use file_read only when you need to write — it reads the full file and is required before file_write. Never use shell commands to read or write files.
 
 Tool call examples:
@@ -120,6 +121,12 @@ func buildFirstPrompt(input string) string {
 }
 
 // systemPrompt builds the full system prompt for a given tool set.
+var systemPromptTmpl = template.Must(template.New("system").Parse(systemPromptBase))
+
+type systemPromptData struct {
+	ToolsPath string
+}
+
 func systemPrompt(allTools []backend.Tool) string {
 	cwd, _ := os.Getwd()
 	now := time.Now().Format("2006-01-02 15:04:05 MST")
@@ -127,13 +134,20 @@ func systemPrompt(allTools []backend.Tool) string {
 	for i, t := range allTools {
 		names[i] = t.Name
 	}
-	return systemPromptBase + "\n\nWorking directory: " + cwd +
+	var buf strings.Builder
+	systemPromptTmpl.Execute(&buf, systemPromptData{ //nolint:errcheck
+		ToolsPath: execute.ToolsPath(),
+	})
+	return buf.String() + "\n\nWorking directory: " + cwd +
 		"\nCurrent time: " + now +
 		"\nAvailable tools: " + strings.Join(names, ", ")
 }
 
-// builtinTools is the set of tools provided by the agent core.
-var builtinTools = []backend.Tool{
+// builtinTools returns the set of tools provided by the agent core,
+// with path-dependent descriptions resolved at call time.
+func builtinTools() []backend.Tool {
+	tp := execute.ToolsPath()
+	return []backend.Tool{
 	{
 		Name:        "execute_code",
 		Description: "Run inline code in a sandboxed environment.",
@@ -150,7 +164,7 @@ var builtinTools = []backend.Tool{
 	},
 	{
 		Name:        "execute_tool",
-		Description: "Run a named tool script from ~/mnt/anvillm/tools in a sandboxed environment. Use this only for named scripts, not for inline shell commands.",
+		Description: "Run a named tool script from " + tp + " in a sandboxed environment. Use this only for named scripts, not for inline shell commands.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"required": ["tool"],
@@ -164,7 +178,7 @@ var builtinTools = []backend.Tool{
 	},
 	{
 		Name:        "execute_pipe",
-		Description: "Run a pipeline of steps, piping stdout of each into stdin of the next. Use {code: \"cmd --flags\"} for shell commands; use {tool, args} only for named scripts in ~/mnt/anvillm/tools.",
+		Description: "Run a pipeline of steps, piping stdout of each into stdin of the next. Use {code: \"cmd --flags\"} for shell commands; use {tool, args} only for named scripts in " + tp + ".",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"required": ["pipe"],
@@ -210,6 +224,7 @@ var builtinTools = []backend.Tool{
 			}
 		}`),
 	},
+	}
 }
 
 // AgentEnv holds the runtime state derived from an agent config file.
@@ -259,7 +274,7 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execute.Executor) AgentEnv {
 		serverOf[t.Name] = t.Server
 	}
 
-	allTools := append(mcpToolsToBackend(mcpTools), builtinTools...)
+	allTools := append(mcpToolsToBackend(mcpTools), builtinTools()...)
 
 	hooks := Hooks{}
 	agentPrompt := ""
@@ -291,8 +306,9 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execute.Executor) AgentEnv {
 		overhead += len(t.Name) + len(t.Description) + len(t.Parameters)
 	}
 
-	builtinNames := make(map[string]struct{}, len(builtinTools))
-	for _, t := range builtinTools {
+	bt := builtinTools()
+	builtinNames := make(map[string]struct{}, len(bt))
+	for _, t := range bt {
 		builtinNames[t.Name] = struct{}{}
 	}
 
