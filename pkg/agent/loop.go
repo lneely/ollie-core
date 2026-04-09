@@ -9,29 +9,28 @@ import (
 	"time"
 
 	"ollie/internal/backend"
-	"ollie/pkg/core"
 )
 
 const maxRateLimitRetries = 3
 
-type ToolExecutor func(ctx context.Context, name string, args json.RawMessage) (string, error)
+type toolExecutor func(ctx context.Context, name string, args json.RawMessage) (string, error)
 
-type Config struct {
+type loopConfig struct {
 	Backend          backend.Backend
 	Model            string
 	Tools            []backend.Tool
-	Exec             ToolExecutor
-	Confirm          ConfirmFn
+	Exec             toolExecutor
+	Confirm          confirmFn
 	MaxSteps         int
-	Output           core.EventHandler
-	SystemPrompt     string
+	Output           EventHandler
+	systemPrompt     string
 	GenerationParams backend.GenerationParams
 }
 
-// ConfirmFn requests user confirmation for an action. Returns true if approved.
-type ConfirmFn func(prompt string) bool
+// confirmFn requests user confirmation for an action. Returns true if approved.
+type confirmFn func(prompt string) bool
 
-func Run(ctx context.Context, cfg Config, state State) error {
+func run(ctx context.Context, cfg loopConfig, state state) error {
 	maxSteps := cfg.MaxSteps
 	if maxSteps <= 0 {
 		maxSteps = 1
@@ -41,9 +40,9 @@ func Run(ctx context.Context, cfg Config, state State) error {
 	hitLimit := false
 
 	for step := range maxSteps {
-		history := state.History()
-		if cfg.SystemPrompt != "" {
-			history = append([]backend.Message{{Role: "system", Content: cfg.SystemPrompt}}, history...)
+		history := state.history()
+		if cfg.systemPrompt != "" {
+			history = append([]backend.Message{{Role: "system", Content: cfg.systemPrompt}}, history...)
 		}
 
 		// Stream the assistant's response, retrying on HTTP 429.
@@ -76,7 +75,7 @@ func Run(ctx context.Context, cfg Config, state State) error {
 		for ev := range ch {
 			if ev.Content != "" {
 				content.WriteString(ev.Content)
-				emit(cfg, core.Event{Role: "assistant", Content: ev.Content})
+				emit(cfg, Event{Role: "assistant", Content: ev.Content})
 			}
 			toolCalls = append(toolCalls, ev.ToolCalls...)
 			if ev.Done {
@@ -99,11 +98,11 @@ func Run(ctx context.Context, cfg Config, state State) error {
 
 		// Announce and execute tool calls.
 		msg := backend.Message{Role: "assistant", Content: content.String(), ToolCalls: toolCalls}
-		var results []ToolResult
+		var results []toolResult
 
 		for _, tc := range toolCalls {
 			if tc.Name == "" {
-				results = append(results, ToolResult{
+				results = append(results, toolResult{
 					ToolCallID: tc.ID,
 					Name:       tc.Name,
 					Content:    "error: empty tool name",
@@ -111,7 +110,7 @@ func Run(ctx context.Context, cfg Config, state State) error {
 				})
 				continue
 			}
-			emit(cfg, core.Event{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
+			emit(cfg, Event{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
 
 			var result string
 			var isErr bool
@@ -128,23 +127,23 @@ func Run(ctx context.Context, cfg Config, state State) error {
 				isErr = true
 			}
 
-			results = append(results, ToolResult{
+			results = append(results, toolResult{
 				ToolCallID: tc.ID,
 				Name:       tc.Name,
 				Content:    result,
 				IsError:    isErr,
 			})
-			emit(cfg, core.Event{Role: "tool", Name: tc.Name, Content: result})
+			emit(cfg, Event{Role: "tool", Name: tc.Name, Content: result})
 		}
 
 
 
-		if err := state.Update(msg, results); err != nil {
+		if err := state.update(msg, results); err != nil {
 			return fmt.Errorf("step %d update: %w", step, err)
 		}
 
 		if len(toolCalls) == 0 {
-			if err := state.MarkComplete(); err != nil {
+			if err := state.markComplete(); err != nil {
 				return fmt.Errorf("mark complete: %w", err)
 			}
 			break
@@ -157,13 +156,13 @@ func Run(ctx context.Context, cfg Config, state State) error {
 
 	// Surface stall: only when the step limit was hit without completing.
 	if hitLimit {
-		emit(cfg, core.Event{Role: "stalled", Content: "max steps"})
+		emit(cfg, Event{Role: "stalled", Content: "max steps"})
 	}
 
 	return nil
 }
 
-func emit(cfg Config, msg core.Event) {
+func emit(cfg loopConfig, msg Event) {
 	if cfg.Output != nil {
 		cfg.Output(msg)
 	}
@@ -172,7 +171,7 @@ func emit(cfg Config, msg core.Event) {
 // retryCountdown emits one "retry" OutputMsg per second, counting down from
 // wait, so the UI can display a live countdown. Returns ctx.Err() if the
 // context is cancelled before the wait elapses.
-func retryCountdown(ctx context.Context, cfg Config, wait time.Duration) error {
+func retryCountdown(ctx context.Context, cfg loopConfig, wait time.Duration) error {
 	deadline := time.Now().Add(wait)
 	for {
 		remaining := time.Until(deadline)
@@ -180,7 +179,7 @@ func retryCountdown(ctx context.Context, cfg Config, wait time.Duration) error {
 			return nil
 		}
 		secs := int(remaining.Seconds()) + 1
-		emit(cfg, core.Event{Role: "retry", Content: fmt.Sprintf("%d", secs)})
+		emit(cfg, Event{Role: "retry", Content: fmt.Sprintf("%d", secs)})
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

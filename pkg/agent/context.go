@@ -8,9 +8,9 @@ import (
 	"ollie/internal/backend"
 )
 
-// ContextConfig controls the bounded context window behaviour.
+// contextConfig controls the bounded context window behaviour.
 // All sizes are in characters (a rough proxy for tokens; ~4 chars per token).
-type ContextConfig struct {
+type contextConfig struct {
 	// SoftLimit: if assembled history exceeds this, begin evicting old messages.
 	// Defaults to 24000 (~6k tokens).
 	SoftLimit int
@@ -27,21 +27,21 @@ type ContextConfig struct {
 	TailMessages int
 
 	// FixedOverheadChars is the estimated character count of fixed per-request
-	// overhead (system prompt, tool schemas) sent outside the ContextBuilder.
+	// overhead (system prompt, tool schemas) sent outside the contextBuilder.
 	// Subtracted from the budget before greedy inclusion.
 	// Defaults to 0.
 	FixedOverheadChars int
 }
 
-func defaultContextConfig() ContextConfig {
-	return ContextConfig{
+func defaultContextConfig() contextConfig {
+	return contextConfig{
 		SoftLimit:          120_000,
 		HardLimit:          400_000,
 		TailMessages:       10,
 	}
 }
 
-func (c *ContextConfig) setDefaults() {
+func (c *contextConfig) setDefaults() {
 	if c.SoftLimit <= 0 {
 		c.SoftLimit = 120_000
 	}
@@ -53,38 +53,38 @@ func (c *ContextConfig) setDefaults() {
 	}
 }
 
-// ContextBuilder manages a rolling bounded history window.
-type ContextBuilder struct {
-	cfg      ContextConfig
+// contextBuilder manages a rolling bounded history window.
+type contextBuilder struct {
+	cfg      contextConfig
 	messages []backend.Message // full unbounded log
 }
 
-// NewContextBuilder creates a ContextBuilder with the given config.
-// Pass a zero-value ContextConfig to use all defaults.
-func NewContextBuilder(cfg ContextConfig) *ContextBuilder {
+// newContextBuilder creates a contextBuilder with the given config.
+// Pass a zero-value contextConfig to use all defaults.
+func newContextBuilder(cfg contextConfig) *contextBuilder {
 	cfg.setDefaults()
-	return &ContextBuilder{cfg: cfg}
+	return &contextBuilder{cfg: cfg}
 }
 
 // Append adds a message to the full history.
-func (cb *ContextBuilder) Append(m backend.Message) {
+func (cb *contextBuilder) Append(m backend.Message) {
 	cb.messages = append(cb.messages, m)
 }
 
 // Messages returns the full stored message log (unbounded).
-func (cb *ContextBuilder) Messages() []backend.Message {
+func (cb *contextBuilder) Messages() []backend.Message {
 	return cb.messages
 }
 
 // Truncate discards all messages after index i.
-func (cb *ContextBuilder) Truncate(i int) {
+func (cb *contextBuilder) Truncate(i int) {
 	if i < len(cb.messages) {
 		cb.messages = cb.messages[:i]
 	}
 }
 
 // EvictedMessages returns the messages that would be dropped by buildBounded.
-func (cb *ContextBuilder) EvictedMessages() []backend.Message {
+func (cb *contextBuilder) EvictedMessages() []backend.Message {
 	var rest []backend.Message
 	for _, m := range cb.messages {
 		if m.Role != "system" {
@@ -114,13 +114,13 @@ func (cb *ContextBuilder) EvictedMessages() []backend.Message {
 }
 
 // BoundedHistory returns a context-window-safe slice of messages.
-func (cb *ContextBuilder) BoundedHistory() []backend.Message {
+func (cb *contextBuilder) BoundedHistory() []backend.Message {
 	return cb.buildBounded(false)
 }
 
 // BoundedHistoryWithNotice is like BoundedHistory but injects a compaction
 // notice message when older messages were dropped, so the model is aware.
-func (cb *ContextBuilder) BoundedHistoryWithNotice() []backend.Message {
+func (cb *contextBuilder) BoundedHistoryWithNotice() []backend.Message {
 	return cb.buildBounded(true)
 }
 
@@ -135,7 +135,7 @@ func (cb *ContextBuilder) BoundedHistoryWithNotice() []backend.Message {
 //     accounting for FixedOverheadChars (system prompt, tool schemas).
 //  4. If total still exceeds HardLimit, oldest non-system/non-tail messages
 //     are dropped atomically (assistant[tool_calls]+tool pairs together).
-func (cb *ContextBuilder) buildBounded(injectNotice bool) []backend.Message {
+func (cb *contextBuilder) buildBounded(injectNotice bool) []backend.Message {
 	var system []backend.Message
 	var rest []backend.Message
 
@@ -243,10 +243,10 @@ func computeTailStart(rest []backend.Message, tailCount int) int {
 }
 
 // Len returns the number of stored messages.
-func (cb *ContextBuilder) Len() int { return len(cb.messages) }
+func (cb *contextBuilder) Len() int { return len(cb.messages) }
 
 // SystemMessages returns all system-role messages.
-func (cb *ContextBuilder) SystemMessages() []backend.Message {
+func (cb *contextBuilder) SystemMessages() []backend.Message {
 	var out []backend.Message
 	for _, m := range cb.messages {
 		if m.Role == "system" {
@@ -258,7 +258,7 @@ func (cb *ContextBuilder) SystemMessages() []backend.Message {
 
 // OlderMessages returns non-system messages that fall before the tail window.
 // These are the candidates for compaction.
-func (cb *ContextBuilder) OlderMessages() []backend.Message {
+func (cb *contextBuilder) OlderMessages() []backend.Message {
 	var rest []backend.Message
 	for _, m := range cb.messages {
 		if m.Role != "system" {
@@ -270,7 +270,7 @@ func (cb *ContextBuilder) OlderMessages() []backend.Message {
 }
 
 // TailWindow returns non-system messages within the protected tail window.
-func (cb *ContextBuilder) TailWindow() []backend.Message {
+func (cb *contextBuilder) TailWindow() []backend.Message {
 	var rest []backend.Message
 	for _, m := range cb.messages {
 		if m.Role != "system" {
@@ -283,7 +283,7 @@ func (cb *ContextBuilder) TailWindow() []backend.Message {
 
 // ApproxTokens returns a rough token estimate for the bounded history
 // using the 4-chars-per-token heuristic.
-func (cb *ContextBuilder) ApproxTokens() int {
+func (cb *contextBuilder) ApproxTokens() int {
 	return totalChars(cb.BoundedHistory()) / 4
 }
 
@@ -347,8 +347,8 @@ func sanitizeHistory(msgs []backend.Message) []backend.Message {
 	return result
 }
 
-// ContextStats describes the current state of the context window.
-type ContextStats struct {
+// contextStats describes the current state of the context window.
+type contextStats struct {
 	StoredMessages  int
 	BoundedMessages int
 	ApproxTokens    int
@@ -357,13 +357,13 @@ type ContextStats struct {
 	HardLimit       int
 }
 
-func (cb *ContextBuilder) Stats() ContextStats {
+func (cb *contextBuilder) Stats() contextStats {
 	bounded := cb.BoundedHistory()
 	evicted := len(cb.messages) - len(bounded)
 	if evicted < 0 {
 		evicted = 0
 	}
-	return ContextStats{
+	return contextStats{
 		StoredMessages:  len(cb.messages),
 		BoundedMessages: len(bounded),
 		ApproxTokens:    (totalChars(bounded) + cb.cfg.FixedOverheadChars) / 4,
@@ -374,7 +374,7 @@ func (cb *ContextBuilder) Stats() ContextStats {
 }
 
 // ContextStatsString returns a one-line human-readable summary.
-func (cb *ContextBuilder) ContextStatsString() string {
+func (cb *contextBuilder) ContextStatsString() string {
 	s := cb.Stats()
 	evictedStr := ""
 	if s.Evicted > 0 {
@@ -386,7 +386,7 @@ func (cb *ContextBuilder) ContextStatsString() string {
 
 // FormatContextDebug returns a multi-line breakdown of the bounded history
 // useful for debug output.
-func (cb *ContextBuilder) FormatContextDebug() string {
+func (cb *contextBuilder) FormatContextDebug() string {
 	var sb strings.Builder
 	s := cb.Stats()
 	sb.WriteString(fmt.Sprintf("=== context window: ~%d tokens | %d bounded / %d stored | soft=%d hard=%d ===\n",

@@ -21,7 +21,6 @@ import (
 	execpkg "ollie/internal/exec"
 	"ollie/internal/mcp"
 	"ollie/internal/tools"
-	"ollie/pkg/core"
 )
 
 const systemPromptBase = `Use the fewest words possible. No preamble, filler, or narration ("Let me...", "I'll now...", "Great!"). No explanations of actions taken. No summaries of completed work. No reasoning unless asked. If the answer is one word, write one word.
@@ -43,9 +42,9 @@ Tool call examples:
   Run named tool:   {"tool": "discover_skill.sh", "args": ["keyword"]}
   Pipeline:         {"pipe": [{"code": "cat file.txt"}, {"code": "grep foo"}]}`
 
-// BuildFirstPrompt seeds the first user message with the project file listing
+// buildFirstPrompt seeds the first user message with the project file listing
 // and README so the agent has immediate context.
-func BuildFirstPrompt(input string) string {
+func buildFirstPrompt(input string) string {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return input
@@ -120,8 +119,8 @@ func BuildFirstPrompt(input string) string {
 	return sb.String()
 }
 
-// SystemPrompt builds the full system prompt for a given tool set.
-func SystemPrompt(allTools []backend.Tool) string {
+// systemPrompt builds the full system prompt for a given tool set.
+func systemPrompt(allTools []backend.Tool) string {
 	cwd, _ := os.Getwd()
 	now := time.Now().Format("2006-01-02 15:04:05 MST")
 	names := make([]string, len(allTools))
@@ -133,8 +132,8 @@ func SystemPrompt(allTools []backend.Tool) string {
 		"\nAvailable tools: " + strings.Join(names, ", ")
 }
 
-// BuiltinTools is the set of tools provided by the agent core.
-var BuiltinTools = []backend.Tool{
+// builtinTools is the set of tools provided by the agent core.
+var builtinTools = []backend.Tool{
 	{
 		Name:        "execute_code",
 		Description: "Run inline code in a sandboxed environment.",
@@ -215,16 +214,16 @@ var BuiltinTools = []backend.Tool{
 
 // AgentEnv holds the runtime state derived from an agent config file.
 type AgentEnv struct {
-	McpExec          *tools.Executor
-	Tools            []backend.Tool
-	Exec             ToolExecutor
-	Confirm          *ConfirmFn
-	Hooks            core.Hooks
-	SystemPrompt     string
-	GenParams        backend.GenerationParams
+	mcpExec          *tools.Executor
+	tools            []backend.Tool
+	exec             toolExecutor
+	confirm          *confirmFn
+	Hooks            Hooks
+	systemPrompt     string
+	genParams        backend.GenerationParams
 	CtxOverhead      int
 	Messages         []string
-	InvalidateCaches func()
+	invalidateCaches func()
 }
 
 // BuildAgentEnv constructs an AgentEnv from a config file and a builtin executor.
@@ -260,9 +259,9 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) AgentEnv {
 		serverOf[t.Name] = t.Server
 	}
 
-	allTools := append(mcpToolsToBackend(mcpTools), BuiltinTools...)
+	allTools := append(mcpToolsToBackend(mcpTools), builtinTools...)
 
-	hooks := core.Hooks{}
+	hooks := Hooks{}
 	agentPrompt := ""
 	trustedTools := map[string]struct{}{}
 	var genParams backend.GenerationParams
@@ -282,9 +281,9 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) AgentEnv {
 		}
 	}
 
-	sp := SystemPrompt(allTools)
+	sp := systemPrompt(allTools)
 	if agentPrompt != "" {
-		sp = SystemPrompt(allTools) + "\n\n" + agentPrompt
+		sp = systemPrompt(allTools) + "\n\n" + agentPrompt
 	}
 
 	overhead := len(sp)
@@ -292,13 +291,13 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) AgentEnv {
 		overhead += len(t.Name) + len(t.Description) + len(t.Parameters)
 	}
 
-	builtinNames := make(map[string]struct{}, len(BuiltinTools))
-	for _, t := range BuiltinTools {
+	builtinNames := make(map[string]struct{}, len(builtinTools))
+	for _, t := range builtinTools {
 		builtinNames[t.Name] = struct{}{}
 	}
 
-	var confirmFn ConfirmFn
-	confirmPtr := &confirmFn
+	var cfn confirmFn
+	confirmPtr := &cfn
 
 	fileReadCache := make(map[string]bool)
 	toolCallSeen := make(map[string]bool)
@@ -312,7 +311,7 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) AgentEnv {
 			return extractMCPText(raw), nil
 		}
 		if _, ok := builtinNames[name]; ok {
-			var cfn ConfirmFn
+			var cfn confirmFn
 			if _, trusted := trustedTools[name]; !trusted {
 				cfn = *confirmPtr
 			}
@@ -386,44 +385,23 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) AgentEnv {
 	}
 
 	return AgentEnv{
-		McpExec:      mcpExec,
-		Tools:        allTools,
-		Exec:         execFn,
-		Confirm:      confirmPtr,
+		mcpExec:      mcpExec,
+		tools:        allTools,
+		exec:         execFn,
+		confirm:      confirmPtr,
 		Hooks:        hooks,
-		SystemPrompt: sp,
-		GenParams:    genParams,
+		systemPrompt: sp,
+		genParams:    genParams,
 		CtxOverhead:  overhead,
 		Messages:     messages,
-		InvalidateCaches: func() {
+		invalidateCaches: func() {
 			clear(fileReadCache)
 			clear(toolCallSeen)
 		},
 	}
 }
 
-// AgentConfigPath resolves the config file path for a named agent.
-func AgentConfigPath(agentsDir, name string) string {
-	p := agentsDir + "/" + name + ".json"
-	if _, err := os.Stat(p); err == nil {
-		return p
-	}
-	if name == "default" {
-		home, _ := os.UserHomeDir()
-		return home + "/.config/ollie/config.json"
-	}
-	return p
-}
-
-// NewSessionID generates a unique session identifier.
-func NewSessionID() string {
-	b := make([]byte, 3)
-	rand.Read(b) //nolint:errcheck
-	return time.Now().Format("20060102-150405") + "-" + fmt.Sprintf("%06x", b)
-}
-
-// DefaultModelForBackend returns a sensible default model for the given backend label.
-func DefaultModelForBackend(name string) string {
+func defaultModelForBackend(name string) string {
 	switch name {
 	case "anthropic":
 		return "claude-sonnet-4-5"
@@ -431,13 +409,12 @@ func DefaultModelForBackend(name string) string {
 		return "deepseek/deepseek-v3.2"
 	case "kiro", "codewhisperer":
 		return "auto"
-	default: // ollama, local, groq, mistral, together, etc.
+	default:
 		return "qwen3.5:9b"
 	}
 }
 
-// ResolveBackendName returns a short human-readable backend label from env vars.
-func ResolveBackendName() string {
+func resolveBackendName() string {
 	which := os.Getenv("OLLIE_BACKEND")
 	if which == "" {
 		which = "ollama"
@@ -464,9 +441,30 @@ func ResolveBackendName() string {
 	}
 }
 
+// agentConfigPath resolves the config file path for a named agent.
+func agentConfigPath(agentsDir, name string) string {
+	p := agentsDir + "/" + name + ".json"
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	if name == "default" {
+		home, _ := os.UserHomeDir()
+		return home + "/.config/ollie/config.json"
+	}
+	return p
+}
+
+// newSessionID generates a unique session identifier.
+func newSessionID() string {
+	b := make([]byte, 3)
+	rand.Read(b) //nolint:errcheck
+	return time.Now().Format("20060102-150405") + "-" + fmt.Sprintf("%06x", b)
+}
+
+
 // infoEvent wraps a plain-text message as an info Event.
-func infoEvent(text string) core.Event {
-	return core.Event{Role: "info", Content: text + "\n"}
+func infoEvent(text string) Event {
+	return Event{Role: "info", Content: text + "\n"}
 }
 
 // actionHandle holds the cancel function for the current agent turn.
@@ -474,7 +472,7 @@ type actionHandle struct {
 	cancel context.CancelCauseFunc
 }
 
-// AgentCoreConfig is the configuration for creating an AgentCore.
+// AgentCoreConfig is the configuration for creating an agentCore.
 type AgentCoreConfig struct {
 	Backend     backend.Backend
 	BackendName string
@@ -488,12 +486,12 @@ type AgentCoreConfig struct {
 	BuiltinExec *execpkg.Executor
 }
 
-// AgentCore is the Core implementation. It owns all agent and session state
+// agentCore is the Core implementation. It owns all agent and session state
 // but has no knowledge of how output is rendered.
-type AgentCore struct {
+type agentCore struct {
 	session          *Session
-	loopcfg          Config
-	hooks            core.Hooks
+	loopcfg          loopConfig
+	hooks            Hooks
 	modelName        string
 	backendName      string
 	agentName        string
@@ -502,26 +500,26 @@ type AgentCore struct {
 	sessionID        string
 	mcpExec          *tools.Executor
 	builtinExec      *execpkg.Executor
-	confirmPtr       *ConfirmFn
+	confirmPtr       *confirmFn
 	ctxOverhead      int
 	invalidateCaches func()
 	currentAction    atomic.Pointer[actionHandle]
 }
 
-var _ core.Core = (*AgentCore)(nil) // compile-time interface check
+var _ Core = (*agentCore)(nil) // compile-time interface check
 
-// NewAgentCore creates an AgentCore from the given configuration.
-func NewAgentCore(cfg AgentCoreConfig) *AgentCore {
-	loopcfg := Config{
+// NewAgentCore creates an agentCore from the given configuration.
+func NewAgentCore(cfg AgentCoreConfig) Core {
+	loopcfg := loopConfig{
 		Backend:          cfg.Backend,
 		Model:            cfg.ModelName,
-		SystemPrompt:     cfg.Env.SystemPrompt,
-		Tools:            cfg.Env.Tools,
-		Exec:             cfg.Env.Exec,
+		systemPrompt:     cfg.Env.systemPrompt,
+		Tools:            cfg.Env.tools,
+		Exec:             cfg.Env.exec,
 		MaxSteps:         20,
-		GenerationParams: cfg.Env.GenParams,
+		GenerationParams: cfg.Env.genParams,
 	}
-	return &AgentCore{
+	return &agentCore{
 		session:          cfg.Session,
 		loopcfg:          loopcfg,
 		hooks:            cfg.Env.Hooks,
@@ -531,32 +529,32 @@ func NewAgentCore(cfg AgentCoreConfig) *AgentCore {
 		agentsDir:        cfg.AgentsDir,
 		sessionsDir:      cfg.SessionsDir,
 		sessionID:        cfg.SessionID,
-		mcpExec:          cfg.Env.McpExec,
+		mcpExec:          cfg.Env.mcpExec,
 		builtinExec:      cfg.BuiltinExec,
-		confirmPtr:       cfg.Env.Confirm,
+		confirmPtr:       cfg.Env.confirm,
 		ctxOverhead:      cfg.Env.CtxOverhead,
-		invalidateCaches: cfg.Env.InvalidateCaches,
+		invalidateCaches: cfg.Env.invalidateCaches,
 	}
 }
 
-func (s *AgentCore) prompt() string {
+func (s *agentCore) prompt() string {
 	return fmt.Sprintf("[%s :: %s] ", s.backendName, s.agentName)
 }
 
 // Prompt returns the display prompt string for the current session state.
-func (s *AgentCore) Prompt() string { return s.prompt() }
+func (s *agentCore) Prompt() string { return s.prompt() }
 
-func (s *AgentCore) saveSession() {
+func (s *agentCore) saveSession() {
 	if s.session == nil || s.sessionID == "" || s.sessionsDir == "" {
 		return
 	}
 	path := s.sessionsDir + "/" + s.sessionID + ".json"
-	if err := s.session.SaveTo(path, s.sessionID, s.agentName); err != nil {
+	if err := s.session.saveTo(path, s.sessionID, s.agentName); err != nil {
 		fmt.Fprintln(os.Stderr, "session save:", err)
 	}
 }
 
-func (s *AgentCore) getActionCancel() context.CancelCauseFunc {
+func (s *agentCore) getActionCancel() context.CancelCauseFunc {
 	if a := s.currentAction.Load(); a != nil {
 		return a.cancel
 	}
@@ -565,7 +563,7 @@ func (s *AgentCore) getActionCancel() context.CancelCauseFunc {
 
 // Interrupt cancels the current in-progress agent turn.
 // Returns true if an action was running and was cancelled.
-func (s *AgentCore) Interrupt(cause error) bool {
+func (s *agentCore) Interrupt(cause error) bool {
 	if cancel := s.getActionCancel(); cancel != nil {
 		cancel(cause)
 		return true
@@ -576,19 +574,19 @@ func (s *AgentCore) Interrupt(cause error) bool {
 // Submit implements Core. It processes one line of user input: slash commands
 // and shell shortcuts are dispatched immediately via handler; any other input
 // starts an agent turn that streams events to handler.
-func (s *AgentCore) Submit(ctx context.Context, input string, handler core.EventHandler) {
+func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandler) {
 	if s.handleCommand(ctx, input, handler) {
 		return
 	}
 
-	s.hooks.Run(core.HookUserPromptSubmit)
+	s.hooks.Run(HookUserPromptSubmit)
 
 	if s.session == nil {
-		s.session = NewSessionWithConfig(BuildFirstPrompt(input), ContextConfig{
+		s.session = newSessionWithConfig(buildFirstPrompt(input), contextConfig{
 			FixedOverheadChars: s.ctxOverhead,
 		})
 	} else {
-		s.session.AppendUserMessage(input)
+		s.session.appendUserMessage(input)
 	}
 
 	actCtx, actCancel := context.WithCancelCause(ctx)
@@ -598,25 +596,25 @@ func (s *AgentCore) Submit(ctx context.Context, input string, handler core.Event
 	s.loopcfg.Output = handler
 	*s.confirmPtr = nil // auto-approve all confirmations for now
 
-	s.hooks.Run(core.HookAgentSpawn)
+	s.hooks.Run(HookAgentSpawn)
 
-	err := Run(actCtx, s.loopcfg, s.session)
+	err := run(actCtx, s.loopcfg, s.session)
 	actCancel(nil)
 	s.currentAction.CompareAndSwap(handle, nil)
 
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, core.ErrInterrupted) {
-		handler(core.Event{Role: "error", Content: err.Error()})
-		s.session.Rollback()
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrInterrupted) {
+		handler(Event{Role: "error", Content: err.Error()})
+		s.session.rollback()
 	}
 
-	handler(core.Event{Role: "newline"})
+	handler(Event{Role: "newline"})
 
-	s.hooks.Run(core.HookStop)
+	s.hooks.Run(HookStop)
 
 	s.saveSession()
 }
 
-func (s *AgentCore) handleCommand(ctx context.Context, input string, handler core.EventHandler) bool {
+func (s *agentCore) handleCommand(ctx context.Context, input string, handler EventHandler) bool {
 	if strings.HasPrefix(input, "!") {
 		cmdStr := strings.TrimSpace(input[1:])
 		if cmdStr == "" {
@@ -657,8 +655,8 @@ func (s *AgentCore) handleCommand(ctx context.Context, input string, handler cor
 			return true
 		}
 		s.loopcfg.Backend = be
-		s.backendName = ResolveBackendName()
-		s.loopcfg.Model = DefaultModelForBackend(s.backendName)
+		s.backendName = resolveBackendName()
+		s.loopcfg.Model = defaultModelForBackend(s.backendName)
 		s.modelName = s.loopcfg.Model
 		handler(infoEvent(fmt.Sprintf("switched backend to: %s (model: %s)", s.backendName, s.modelName)))
 		return true
@@ -703,7 +701,7 @@ func (s *AgentCore) handleCommand(ctx context.Context, input string, handler cor
 			return true
 		}
 		name := args[0]
-		cfgPath := AgentConfigPath(s.agentsDir, name)
+		cfgPath := agentConfigPath(s.agentsDir, name)
 		cfg, err := config.Load(cfgPath)
 		if err != nil {
 			handler(infoEvent(fmt.Sprintf("error: agent %q: %v", name, err)))
@@ -713,18 +711,18 @@ func (s *AgentCore) handleCommand(ctx context.Context, input string, handler cor
 			s.mcpExec.Close()
 		}
 		env := BuildAgentEnv(cfg, s.builtinExec)
-		s.mcpExec = env.McpExec
+		s.mcpExec = env.mcpExec
 		s.hooks = env.Hooks
-		s.loopcfg.SystemPrompt = env.SystemPrompt
-		s.loopcfg.Tools = env.Tools
-		s.loopcfg.Exec = env.Exec
-		s.loopcfg.GenerationParams = env.GenParams
+		s.loopcfg.systemPrompt = env.systemPrompt
+		s.loopcfg.Tools = env.tools
+		s.loopcfg.Exec = env.exec
+		s.loopcfg.GenerationParams = env.genParams
 		s.ctxOverhead = env.CtxOverhead
-		s.confirmPtr = env.Confirm
-		s.invalidateCaches = env.InvalidateCaches
+		s.confirmPtr = env.confirm
+		s.invalidateCaches = env.invalidateCaches
 		s.agentName = name
 		s.session = nil
-		s.sessionID = NewSessionID()
+		s.sessionID = newSessionID()
 		for _, msg := range env.Messages {
 			handler(infoEvent(msg))
 		}
@@ -736,7 +734,7 @@ func (s *AgentCore) handleCommand(ctx context.Context, input string, handler cor
 			handler(infoEvent("nothing to compact"))
 			return true
 		}
-		n, summary, err := s.session.Compact(ctx, s.loopcfg.Backend, s.loopcfg.Model)
+		n, summary, err := s.session.compact(ctx, s.loopcfg.Backend, s.loopcfg.Model)
 		if err != nil {
 			handler(infoEvent("compact error: " + err.Error()))
 		} else if n == 0 {
@@ -744,7 +742,7 @@ func (s *AgentCore) handleCommand(ctx context.Context, input string, handler cor
 		} else {
 			handler(infoEvent(fmt.Sprintf("compacted %d messages", n)))
 			if summary != "" {
-				handler(core.Event{Role: "newline"})
+				handler(Event{Role: "newline"})
 				handler(infoEvent(summary))
 			}
 			s.saveSession()
@@ -759,7 +757,7 @@ func (s *AgentCore) handleCommand(ctx context.Context, input string, handler cor
 			handler(infoEvent("no active session"))
 			return true
 		}
-		handler(infoEvent(strings.TrimRight(s.session.ContextDebug(), "\n")))
+		handler(infoEvent(strings.TrimRight(s.session.contextDebug(), "\n")))
 		return true
 
 	case "/history":
@@ -767,7 +765,7 @@ func (s *AgentCore) handleCommand(ctx context.Context, input string, handler cor
 			handler(infoEvent("no active session"))
 			return true
 		}
-		for _, msg := range s.session.History() {
+		for _, msg := range s.session.history() {
 			preview := msg.Content
 			if len(preview) > 200 {
 				preview = preview[:200] + "..."
@@ -778,7 +776,7 @@ func (s *AgentCore) handleCommand(ctx context.Context, input string, handler cor
 
 	case "/clear":
 		s.session = nil
-		s.sessionID = NewSessionID()
+		s.sessionID = newSessionID()
 		if s.invalidateCaches != nil {
 			s.invalidateCaches()
 		}
@@ -883,7 +881,7 @@ func extractMCPText(raw json.RawMessage) string {
 	return strings.Join(parts, "\n")
 }
 
-func dispatchBuiltinExec(ctx context.Context, name string, e *execpkg.Executor, confirm ConfirmFn, args json.RawMessage) (string, error) {
+func dispatchBuiltinExec(ctx context.Context, name string, e *execpkg.Executor, confirm confirmFn, args json.RawMessage) (string, error) {
 	switch name {
 	case "file_read":
 		return dispatchFileRead(confirm, args)
@@ -924,7 +922,7 @@ func execArgs(args json.RawMessage) (code, language, sandbox string, timeout int
 	return
 }
 
-func dispatchExecuteCode(ctx context.Context, e *execpkg.Executor, confirm ConfirmFn, args json.RawMessage) (string, error) {
+func dispatchExecuteCode(ctx context.Context, e *execpkg.Executor, confirm confirmFn, args json.RawMessage) (string, error) {
 	code, language, sandbox, timeout, err := execArgs(args)
 	if err != nil {
 		return "", fmt.Errorf("execute_code: bad args: %w", err)
@@ -938,7 +936,7 @@ func dispatchExecuteCode(ctx context.Context, e *execpkg.Executor, confirm Confi
 	return e.Execute(ctx, code, language, timeout, sandbox, false)
 }
 
-func dispatchExecuteTool(ctx context.Context, e *execpkg.Executor, confirm ConfirmFn, args json.RawMessage) (string, error) {
+func dispatchExecuteTool(ctx context.Context, e *execpkg.Executor, confirm confirmFn, args json.RawMessage) (string, error) {
 	var a struct {
 		Tool     string   `json:"tool"`
 		Args     []string `json:"args"`
@@ -982,7 +980,7 @@ func dispatchExecuteTool(ctx context.Context, e *execpkg.Executor, confirm Confi
 	return e.Execute(ctx, code, language, timeout, sandbox, true)
 }
 
-func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, confirm ConfirmFn, args json.RawMessage) (string, error) {
+func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, confirm confirmFn, args json.RawMessage) (string, error) {
 	var a struct {
 		Pipe    []execpkg.PipeStep `json:"pipe"`
 		Timeout int                `json:"timeout"`
@@ -1012,7 +1010,7 @@ func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, confirm Confi
 	return e.Execute(ctx, code, "bash", timeout, sandbox, true)
 }
 
-func dispatchFileRead(confirm ConfirmFn, args json.RawMessage) (string, error) {
+func dispatchFileRead(confirm confirmFn, args json.RawMessage) (string, error) {
 	var a struct {
 		Path string `json:"path"`
 	}
@@ -1037,7 +1035,7 @@ func dispatchFileRead(confirm ConfirmFn, args json.RawMessage) (string, error) {
 	return strings.TrimRight(out.String(), "\n"), nil
 }
 
-func dispatchFileWrite(confirm ConfirmFn, args json.RawMessage) (string, error) {
+func dispatchFileWrite(confirm confirmFn, args json.RawMessage) (string, error) {
 	var a struct {
 		Path      string `json:"path"`
 		Content   string `json:"content"`

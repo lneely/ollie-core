@@ -1,4 +1,4 @@
-package core
+package agent
 
 import (
 	"context"
@@ -8,15 +8,15 @@ import (
 // ErrInterrupted is returned when the user cancels an agent turn (Ctrl-C).
 var ErrInterrupted = errors.New("interrupted")
 
-// Event is a typed output event emitted by the Core during an agent turn
-// or in response to a command.
+// Event is a typed output event emitted during an agent turn or in response
+// to a command.
 type Event struct {
 	Role    string
 	Name    string
 	Content string
 }
 
-// EventHandler receives events from the Core.
+// EventHandler receives events from the agent.
 type EventHandler func(Event)
 
 // Core is the interface between a frontend (TUI, HTTP handler, etc.) and the

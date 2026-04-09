@@ -18,7 +18,7 @@ type PersistedSession struct {
 }
 
 // SaveTo writes the full message history to path as JSON.
-func (s *Session) SaveTo(path, id, agentName string) error {
+func (s *Session) saveTo(path, id, agentName string) error {
 	ps := PersistedSession{
 		ID:       id,
 		Agent:    agentName,
@@ -32,9 +32,9 @@ func (s *Session) SaveTo(path, id, agentName string) error {
 }
 
 // RestoreSession reconstructs a Session from a persisted message list,
-// applying cfg to the ContextBuilder.
-func RestoreSession(messages []backend.Message, cfg ContextConfig) *Session {
-	s := &Session{ctx: NewContextBuilder(cfg)}
+// applying cfg to the contextBuilder.
+func RestoreSession(messages []backend.Message, ctxOverhead int) *Session {
+	s := &Session{ctx: newContextBuilder(contextConfig{FixedOverheadChars: ctxOverhead})}
 	for _, m := range messages {
 		s.ctx.Append(m)
 	}
@@ -50,26 +50,26 @@ func RestoreSession(messages []backend.Message, cfg ContextConfig) *Session {
 // Session is an ephemeral in-memory state backend.
 // It lives only for the duration of the process; nothing is persisted.
 //
-// History() returns a bounded context window via ContextBuilder to prevent
-// prompt explosion across multi-step agent loops. Use NewSessionWithConfig
+// History() returns a bounded context window via contextBuilder to prevent
+// prompt explosion across multi-step agent loops. Use newSessionWithConfig
 // to override the default limits.
 type Session struct {
 	goal     string
-	ctx      *ContextBuilder
+	ctx      *contextBuilder
 	complete bool
 }
 
-// NewSession creates a Session with default context window limits.
-func NewSession(goal string) *Session {
-	return NewSessionWithConfig(goal, ContextConfig{})
+// newSession creates a Session with default context window limits.
+func newSession(goal string) *Session {
+	return newSessionWithConfig(goal, contextConfig{})
 }
 
-// NewSessionWithConfig creates a Session with explicit context window limits.
-// Pass a zero-value ContextConfig to use all defaults.
-func NewSessionWithConfig(goal string, cfg ContextConfig) *Session {
+// newSessionWithConfig creates a Session with explicit context window limits.
+// Pass a zero-value contextConfig to use all defaults.
+func newSessionWithConfig(goal string, cfg contextConfig) *Session {
 	s := &Session{
 		goal: goal,
-		ctx:  NewContextBuilder(cfg),
+		ctx:  newContextBuilder(cfg),
 	}
 	s.ctx.Append(backend.Message{Role: "user", Content: goal})
 	return s
@@ -79,13 +79,13 @@ func (s *Session) Goal() string { return s.goal }
 
 // History returns the bounded history window safe for passing to the backend.
 // A compaction notice is injected when older messages have been evicted.
-func (s *Session) History() []backend.Message {
+func (s *Session) history() []backend.Message {
 	return s.ctx.BoundedHistoryWithNotice()
 }
 
-func (s *Session) IsComplete() bool { return s.complete }
+func (s *Session) isComplete() bool { return s.complete }
 
-func (s *Session) Update(assistant backend.Message, results []ToolResult) error {
+func (s *Session) update(assistant backend.Message, results []toolResult) error {
 	s.ctx.Append(assistant)
 	for _, r := range results {
 		s.ctx.Append(backend.Message{
@@ -97,7 +97,7 @@ func (s *Session) Update(assistant backend.Message, results []ToolResult) error 
 	return nil
 }
 
-func (s *Session) MarkComplete() error {
+func (s *Session) markComplete() error {
 	s.complete = true
 	return nil
 }
@@ -106,7 +106,7 @@ func (s *Session) MarkComplete() error {
 // an LLM call, replacing them with a single summary system message.
 // Unlike the previous eviction-based approach, this works for any session size.
 // Returns (n compacted, summary text, error); n==0 means nothing to compact.
-func (s *Session) Compact(ctx context.Context, b backend.Backend, model string) (int, string, error) {
+func (s *Session) compact(ctx context.Context, b backend.Backend, model string) (int, string, error) {
 	older := s.ctx.OlderMessages()
 	if len(older) == 0 {
 		return 0, "", nil
@@ -157,7 +157,7 @@ func (s *Session) Compact(ctx context.Context, b backend.Backend, model string) 
 
 // Rollback removes any trailing non-user messages from history, discarding
 // an incomplete assistant turn caused by an interruption.
-func (s *Session) Rollback() {
+func (s *Session) rollback() {
 	s.complete = false
 	msgs := s.ctx.Messages()
 	i := len(msgs)
@@ -167,22 +167,22 @@ func (s *Session) Rollback() {
 	s.ctx.Truncate(i)
 }
 // flag so the loop will run again on the next call to Loop.Run.
-func (s *Session) AppendUserMessage(content string) {
+func (s *Session) appendUserMessage(content string) {
 	s.complete = false
 	s.ctx.Append(backend.Message{Role: "user", Content: content})
 }
 
-// ContextStats returns stats about the current context window.
-func (s *Session) ContextStats() ContextStats {
+// contextStats returns stats about the current context window.
+func (s *Session) contextStats() contextStats {
 	return s.ctx.Stats()
 }
 
 // ContextStatsString returns a one-line human-readable context summary.
-func (s *Session) ContextStatsString() string {
+func (s *Session) contextStatsString() string {
 	return s.ctx.ContextStatsString()
 }
 
 // ContextDebug returns a multi-line breakdown of the bounded history.
-func (s *Session) ContextDebug() string {
+func (s *Session) contextDebug() string {
 	return s.ctx.FormatContextDebug()
 }

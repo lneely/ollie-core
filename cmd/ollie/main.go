@@ -2,18 +2,19 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
-	"ollie/internal/agent"
-	
 	"ollie/internal/backend"
 	"ollie/internal/config"
 	execpkg "ollie/internal/exec"
 	"ollie/internal/tui"
-	"ollie/pkg/core"
+	"ollie/pkg/agent"
 )
 
 func main() {
@@ -36,10 +37,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	backendName := agent.ResolveBackendName()
+	backendName := resolveBackendName()
 	modelName := os.Getenv("OLLIE_MODEL")
 	if modelName == "" {
-		modelName = agent.DefaultModelForBackend(backendName)
+		modelName = defaultModelForBackend(backendName)
 	}
 
 	builtinExec := execpkg.New(
@@ -52,7 +53,7 @@ func main() {
 		agentName = "default"
 	}
 
-	sessionID := agent.NewSessionID()
+	sessionID := newSessionID()
 	var resumeMessages []backend.Message
 	if *sessionFlag != "" {
 		sessionPath := sessionsDir + "/" + *sessionFlag + ".json"
@@ -76,15 +77,13 @@ func main() {
 		agentName = extraArgs[0]
 	}
 
-	cfgPath := agent.AgentConfigPath(agentsDir, agentName)
+	cfgPath := agentConfigPath(agentsDir, agentName)
 	cfg, cfgErr := config.Load(cfgPath)
 	env := agent.BuildAgentEnv(cfg, builtinExec)
 
 	var initialSession *agent.Session
 	if len(resumeMessages) > 0 {
-		initialSession = agent.RestoreSession(resumeMessages, agent.ContextConfig{
-			FixedOverheadChars: env.CtxOverhead,
-		})
+		initialSession = agent.RestoreSession(resumeMessages, env.CtxOverhead)
 	}
 
 	agentCore := agent.NewAgentCore(agent.AgentCoreConfig{
@@ -112,7 +111,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "session: %s\n", sessionID)
 	}
 
-	env.Hooks.Run(core.HookAgentSpawn)
+	env.Hooks.Run(agent.HookAgentSpawn)
 
 	if *promptFlag != "" {
 		agentCore.Submit(context.Background(), *promptFlag, tui.MakeOutputFn(os.Stdout))
@@ -120,4 +119,62 @@ func main() {
 	}
 
 	tui.New(agentCore).Run(context.Background())
+}
+
+func resolveBackendName() string {
+	which := os.Getenv("OLLIE_BACKEND")
+	if which == "" {
+		which = "ollama"
+	}
+	if which != "openai" {
+		return which
+	}
+	url := strings.ToLower(os.Getenv("OLLIE_OPENAI_URL"))
+	switch {
+	case strings.Contains(url, "openrouter"):
+		return "openrouter"
+	case strings.Contains(url, "together"):
+		return "together"
+	case strings.Contains(url, "groq"):
+		return "groq"
+	case strings.Contains(url, "mistral"):
+		return "mistral"
+	case strings.Contains(url, "anthropic"):
+		return "anthropic"
+	case strings.Contains(url, "localhost") || strings.Contains(url, "127.0.0.1"):
+		return "local"
+	default:
+		return "openai"
+	}
+}
+
+func defaultModelForBackend(name string) string {
+	switch name {
+	case "anthropic":
+		return "claude-sonnet-4-5"
+	case "openrouter":
+		return "deepseek/deepseek-v3.2"
+	case "kiro", "codewhisperer":
+		return "auto"
+	default:
+		return "qwen3.5:9b"
+	}
+}
+
+func newSessionID() string {
+	b := make([]byte, 3)
+	rand.Read(b) //nolint:errcheck
+	return time.Now().Format("20060102-150405") + "-" + fmt.Sprintf("%06x", b)
+}
+
+func agentConfigPath(agentsDir, name string) string {
+	p := agentsDir + "/" + name + ".json"
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	if name == "default" {
+		home, _ := os.UserHomeDir()
+		return home + "/.config/ollie/config.json"
+	}
+	return p
 }

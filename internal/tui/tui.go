@@ -13,7 +13,7 @@ import (
 	gotty "github.com/mattn/go-tty"
 	readline "github.com/nyaosorg/go-readline-ny"
 
-	"ollie/pkg/core"
+	"ollie/pkg/agent"
 )
 
 // recentHistory implements readline.IHistory for the multiline editor.
@@ -33,13 +33,13 @@ func (h *recentHistory) At(i int) string {
 
 // TUI is the terminal frontend. It owns all TUI state and drives a Core.
 type TUI struct {
-	core    core.Core
+	core    agent.Core
 	split   *splitInput
 	history recentHistory
 }
 
 // New creates a TUI backed by the given Core.
-func New(c core.Core) *TUI {
+func New(c agent.Core) *TUI {
 	return &TUI{core: c}
 }
 
@@ -80,7 +80,7 @@ func (t *TUI) Run(ctx context.Context) {
 	t.split = newSplitInput(tt, tt.Output(), t.core.Prompt(), nil)
 
 	appCtx, appCancel := context.WithCancelCause(ctx)
-	core.WatchSignals(appCancel, t.core, os.Stderr)
+	agent.WatchSignals(appCancel, t.core, os.Stderr)
 
 	var lastCtrlC time.Time
 	firstRead := true
@@ -101,7 +101,7 @@ func (t *TUI) Run(ctx context.Context) {
 			errs := err.Error()
 			if errs == "interrupted" || errs == "^C" {
 				now := time.Now()
-				if !lastCtrlC.IsZero() && now.Sub(lastCtrlC) <= core.CtrlCExitWindow {
+				if !lastCtrlC.IsZero() && now.Sub(lastCtrlC) <= agent.CtrlCExitWindow {
 					break
 				}
 				lastCtrlC = now
@@ -183,8 +183,8 @@ func (t *TUI) processInputWithSplit(ctx context.Context, input string, ed *multi
 
 // MakeOutputFn returns an EventHandler that renders events as text to out.
 // This is the TUI's bridge from typed events to terminal output.
-func MakeOutputFn(out io.Writer) core.EventHandler {
-	return func(em core.Event) {
+func MakeOutputFn(out io.Writer) agent.EventHandler {
+	return func(em agent.Event) {
 		switch em.Role {
 		case "assistant":
 			fmt.Fprint(out, em.Content)
