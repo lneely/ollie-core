@@ -32,10 +32,11 @@ The sandbox package is an implementation detail of `pkg/tools/execute`. It has n
 Consumers extend ollie by implementing or composing its interfaces:
 
 - **`backend.Backend`** — swap or add LLM backends
-- **`tools.Executor`** — replace the tool router (e.g. remote dispatcher, mock)
+- **`tools.Server`** — add a new tool server (built-in or MCP-backed); register with `MCPExecutor.AddServer`
+- **`tools.Executor`** — replace the tool router entirely (e.g. remote dispatcher, mock)
 - **`agent.Core`** — the agent's public API; frontends drive it without knowing internals
 
-`tools.NewExecutor()` returns a `*MCPExecutor` (concrete, for `AddServer` during setup), then is used as `tools.Executor` (interface) at runtime.
+`tools.NewExecutor()` returns a `*MCPExecutor` (concrete, for `AddServer` during setup), then is used as `tools.Executor` (interface) at runtime. `tools.NewMCPServer(client)` wraps an `mcp.Client` as a `tools.Server`.
 
 ## Data Flow
 
@@ -43,23 +44,30 @@ Consumers extend ollie by implementing or composing its interfaces:
 Frontend
   └── agent.Core.Submit(prompt)
         └── loop.run()
-              ├── backend.ChatStream()                   — LLM call
-              └── tools.Executor.Execute()               — tool dispatch (interface)
-                    ├── tools.MCPExecutor                — default impl: MCP server tools
-                    └── tools/execute.Executor.Execute() — built-in sandbox tools
+              ├── backend.ChatStream()                        — LLM call
+              └── tools.Executor.Execute(server, tool, args)  — tool dispatch (interface)
+                    └── tools.MCPExecutor                     — routes by server name
+                          ├── "builtin" → tools/execute.Executor — sandbox tools
+                          └── "<name>"  → tools.mcpServer        — MCP protocol tools
 ```
+
+All tool calls go through one `tools.Executor.Execute` path. Built-in tools implement `tools.Server` directly (no subprocess); MCP tools are wrapped in `mcpServer` which speaks the MCP protocol over stdio.
 
 ## Built-in Tools
 
-Three tools are registered by default:
+Five tools are registered under the `"builtin"` server by default:
 
 | Tool | What it does |
 |---|---|
 | `execute_code` | Runs inline bash in a landrun sandbox |
 | `execute_tool` | Reads a named script from `OLLIE_TOOLS_PATH` and runs it sandboxed |
 | `execute_pipe` | Chains steps, piping stdout of each into stdin of the next |
+| `file_read` | Reads a file with line numbers (required before `file_write`) |
+| `file_write` | Writes or patches a file by line range |
 
-`OLLIE_TOOLS_PATH` defaults to `~/.local/share/ollie/tools`. The directory can be a symlink or a 9pfuse mountpoint — `execute_tool` treats it as an ordinary filesystem path.
+`execute.Executor` implements `tools.Server` — built-in tools speak the same interface as MCP tools without running a subprocess. All dispatch logic lives in `pkg/tools/execute/dispatch.go`.
+
+`OLLIE_TOOLS_PATH` defaults to `~/.local/share/ollie/tools`. The directory can be a symlink or a mountpoint — `execute_tool` treats it as an ordinary filesystem path.
 
 ## Session and Context
 
