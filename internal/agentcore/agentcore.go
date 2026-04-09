@@ -220,7 +220,7 @@ type AgentEnv struct {
 	Tools            []backend.Tool
 	Exec             agent.ToolExecutor
 	Confirm          *agent.ConfirmFn
-	Hooks            map[string]string
+	Hooks            core.Hooks
 	SystemPrompt     string
 	GenParams        backend.GenerationParams
 	CtxOverhead      int
@@ -263,7 +263,7 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) AgentEnv {
 
 	allTools := append(mcpToolsToBackend(mcpTools), BuiltinTools...)
 
-	hooks := map[string]string{}
+	hooks := core.Hooks{}
 	agentPrompt := ""
 	trustedTools := map[string]struct{}{}
 	var genParams backend.GenerationParams
@@ -494,7 +494,7 @@ type AgentCoreConfig struct {
 type AgentCore struct {
 	session          *agent.Session
 	loopcfg          agent.Config
-	hooks            map[string]string
+	hooks            core.Hooks
 	modelName        string
 	backendName      string
 	agentName        string
@@ -582,9 +582,7 @@ func (s *AgentCore) Submit(ctx context.Context, input string, handler core.Event
 		return
 	}
 
-	if hook := s.hooks["userPromptSubmit"]; hook != "" {
-		exec.Command("sh", "-c", hook).Run() //nolint:errcheck
-	}
+	s.hooks.Run(core.HookUserPromptSubmit)
 
 	if s.session == nil {
 		s.session = agent.NewSessionWithConfig(BuildFirstPrompt(input), agent.ContextConfig{
@@ -601,9 +599,7 @@ func (s *AgentCore) Submit(ctx context.Context, input string, handler core.Event
 	s.loopcfg.Output = handler
 	*s.confirmPtr = nil // auto-approve all confirmations for now
 
-	if hook := s.hooks["agentSpawn"]; hook != "" {
-		exec.Command("sh", "-c", hook).Run() //nolint:errcheck
-	}
+	s.hooks.Run(core.HookAgentSpawn)
 
 	err := agent.Run(actCtx, s.loopcfg, s.session)
 	actCancel(nil)
@@ -616,9 +612,7 @@ func (s *AgentCore) Submit(ctx context.Context, input string, handler core.Event
 
 	handler(core.Event{Role: "newline"})
 
-	if hook := s.hooks["stop"]; hook != "" {
-		exec.Command("sh", "-c", hook).Run() //nolint:errcheck
-	}
+	s.hooks.Run(core.HookStop)
 
 	s.saveSession()
 }
