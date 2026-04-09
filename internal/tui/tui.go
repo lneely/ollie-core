@@ -80,7 +80,7 @@ func (t *TUI) Run(ctx context.Context) {
 	t.split = newSplitInput(tt, tt.Output(), t.core.Prompt(), nil)
 
 	appCtx, appCancel := context.WithCancelCause(ctx)
-	startSignalWatcher(appCancel, t.core, os.Stderr)
+	core.WatchSignals(appCancel, t.core, os.Stderr)
 
 	var lastCtrlC time.Time
 	firstRead := true
@@ -101,7 +101,7 @@ func (t *TUI) Run(ctx context.Context) {
 			errs := err.Error()
 			if errs == "interrupted" || errs == "^C" {
 				now := time.Now()
-				if !lastCtrlC.IsZero() && now.Sub(lastCtrlC) <= ctrlCExitWindow {
+				if !lastCtrlC.IsZero() && now.Sub(lastCtrlC) <= core.CtrlCExitWindow {
 					break
 				}
 				lastCtrlC = now

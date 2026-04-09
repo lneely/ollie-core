@@ -1,10 +1,10 @@
 //go:build !windows
 
-package tui
+package core
 
 import "syscall"
 
 const (
 	haveSIGTERM = true
-	SIGTERM     = syscall.SIGTERM
+	sigTERM     = syscall.SIGTERM
 )

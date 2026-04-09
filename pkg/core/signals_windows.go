@@ -1,9 +1,9 @@
 //go:build windows
 
-package tui
+package core
 
 import "os"
 
 const haveSIGTERM = false
 
-var SIGTERM = os.Signal(nil)
+var sigTERM = os.Signal(nil)
