@@ -1,5 +1,5 @@
 # Binaries
-ollie
+/ollie
 *.exe
 *.exe~
 *.dll
