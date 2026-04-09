@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"anvillm/pkg/sandbox"
+	"ollie/internal/sandbox"
 )
 
 const defaultMaxOutputChars = 8000
