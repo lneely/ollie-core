@@ -420,6 +420,20 @@ func newSessionID() string {
 	return time.Now().Format("20060102-150405") + "-" + fmt.Sprintf("%06x", b)
 }
 
+// defaultModelForBackend returns a sensible default model for the given backend label.
+func defaultModelForBackend(name string) string {
+	switch name {
+	case "anthropic":
+		return "claude-sonnet-4-5"
+	case "openrouter":
+		return "deepseek/deepseek-v3.2"
+	case "kiro", "codewhisperer":
+		return "auto"
+	default: // ollama, local, groq, mistral, together, etc.
+		return "qwen3.5:9b"
+	}
+}
+
 // resolveBackendName returns a short human-readable backend label.
 func resolveBackendName() string {
 	which := os.Getenv("OLLIE_BACKEND")
@@ -767,7 +781,9 @@ func (s *appState) handleCommand(ctx context.Context, input string, out io.Write
 		}
 		s.loopcfg.Backend = be
 		s.backendName = resolveBackendName()
-		fmt.Fprintf(out, "switched backend to: %s\n", s.backendName)
+		s.loopcfg.Model = defaultModelForBackend(s.backendName)
+		s.modelName = s.loopcfg.Model
+		fmt.Fprintf(out, "switched backend to: %s (model: %s)\n", s.backendName, s.modelName)
 		return true
 
 	case "/model":
@@ -956,6 +972,7 @@ func (s *appState) handleCommand(ctx context.Context, input string, out io.Write
 
 func main() {
 	sessionFlag := flag.String("session", "", "resume a session by ID")
+	promptFlag := flag.String("prompt", "", "run a single prompt non-interactively and exit")
 	flag.Parse()
 	extraArgs := flag.Args()
 
@@ -973,12 +990,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	backendName := resolveBackendName()
+
 	modelName := os.Getenv("OLLIE_MODEL")
 	if modelName == "" {
-		modelName = "qwen3.5:9b"
+		modelName = defaultModelForBackend(backendName)
 	}
-
-	backendName := resolveBackendName()
 	builtinExec := execpkg.New(
 		home+"/.local/state/ollie",
 		home+"/.cache/ollie/exec",
@@ -1066,6 +1083,11 @@ func main() {
 
 	if hook := env.hooks["agentSpawn"]; hook != "" {
 		exec.Command("sh", "-c", hook).Run() //nolint:errcheck
+	}
+
+	if *promptFlag != "" {
+		s.processInput(context.Background(), *promptFlag, os.Stdout)
+		return
 	}
 
 	s.runInteractiveTTY(context.Background())

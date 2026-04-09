@@ -16,9 +16,10 @@ import (
 // OpenAIBackend speaks the OpenAI /v1/chat/completions wire format.
 // Compatible with OpenRouter, OpenAI, and any other OpenAI-compatible API.
 type OpenAIBackend struct {
-	baseURL string
-	apiKey  string
-	client  *http.Client
+	baseURL      string
+	apiKey       string
+	client       *http.Client
+	extraHeaders map[string]string // optional; applied after Authorization
 }
 
 func NewOpenAI(baseURL, apiKey string) *OpenAIBackend {
@@ -160,6 +161,9 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, model string, messages [
 	httpReq.Header.Set("Content-Type", "application/json")
 	if b.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+b.apiKey)
+	}
+	for k, v := range b.extraHeaders {
+		httpReq.Header.Set(k, v)
 	}
 
 	resp, err := b.client.Do(httpReq)

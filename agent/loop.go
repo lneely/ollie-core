@@ -78,6 +78,7 @@ func Run(ctx context.Context, cfg Config, state State) error {
 		var content strings.Builder
 		var toolCalls []backend.ToolCall
 		var usage backend.Usage
+		var stopReason string
 		var done bool
 
 		for ev := range ch {
@@ -88,6 +89,7 @@ func Run(ctx context.Context, cfg Config, state State) error {
 			toolCalls = append(toolCalls, ev.ToolCalls...)
 			if ev.Done {
 				usage = ev.Usage
+				stopReason = ev.StopReason
 				done = true
 				break
 			}
@@ -95,6 +97,12 @@ func Run(ctx context.Context, cfg Config, state State) error {
 
 		if !done {
 			return fmt.Errorf("step %d: stream ended without done event", step)
+		}
+		switch stopReason {
+		case "stop", "tool_calls", "length", "":
+			// normal
+		default:
+			return fmt.Errorf("step %d: %s", step, stopReason)
 		}
 		totalToolCalls += len(toolCalls)
 
