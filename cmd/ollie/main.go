@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"ollie/internal/agent"
-	"ollie/internal/agentcore"
+	
 	"ollie/internal/backend"
 	"ollie/internal/config"
 	execpkg "ollie/internal/exec"
@@ -36,10 +36,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	backendName := agentcore.ResolveBackendName()
+	backendName := agent.ResolveBackendName()
 	modelName := os.Getenv("OLLIE_MODEL")
 	if modelName == "" {
-		modelName = agentcore.DefaultModelForBackend(backendName)
+		modelName = agent.DefaultModelForBackend(backendName)
 	}
 
 	builtinExec := execpkg.New(
@@ -52,7 +52,7 @@ func main() {
 		agentName = "default"
 	}
 
-	sessionID := agentcore.NewSessionID()
+	sessionID := agent.NewSessionID()
 	var resumeMessages []backend.Message
 	if *sessionFlag != "" {
 		sessionPath := sessionsDir + "/" + *sessionFlag + ".json"
@@ -76,9 +76,9 @@ func main() {
 		agentName = extraArgs[0]
 	}
 
-	cfgPath := agentcore.AgentConfigPath(agentsDir, agentName)
+	cfgPath := agent.AgentConfigPath(agentsDir, agentName)
 	cfg, cfgErr := config.Load(cfgPath)
-	env := agentcore.BuildAgentEnv(cfg, builtinExec)
+	env := agent.BuildAgentEnv(cfg, builtinExec)
 
 	var initialSession *agent.Session
 	if len(resumeMessages) > 0 {
@@ -87,7 +87,7 @@ func main() {
 		})
 	}
 
-	agentCore := agentcore.NewAgentCore(agentcore.AgentCoreConfig{
+	agentCore := agent.NewAgentCore(agent.AgentCoreConfig{
 		Backend:     be,
 		BackendName: backendName,
 		ModelName:   modelName,

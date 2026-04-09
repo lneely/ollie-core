@@ -1,4 +1,4 @@
-package agentcore
+package agent
 
 import (
 	"bytes"
@@ -16,7 +16,6 @@ import (
 
 	"crypto/rand"
 
-	"ollie/internal/agent"
 	"ollie/internal/backend"
 	"ollie/internal/config"
 	execpkg "ollie/internal/exec"
@@ -218,8 +217,8 @@ var BuiltinTools = []backend.Tool{
 type AgentEnv struct {
 	McpExec          *tools.Executor
 	Tools            []backend.Tool
-	Exec             agent.ToolExecutor
-	Confirm          *agent.ConfirmFn
+	Exec             ToolExecutor
+	Confirm          *ConfirmFn
 	Hooks            core.Hooks
 	SystemPrompt     string
 	GenParams        backend.GenerationParams
@@ -298,7 +297,7 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) AgentEnv {
 		builtinNames[t.Name] = struct{}{}
 	}
 
-	var confirmFn agent.ConfirmFn
+	var confirmFn ConfirmFn
 	confirmPtr := &confirmFn
 
 	fileReadCache := make(map[string]bool)
@@ -313,7 +312,7 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execpkg.Executor) AgentEnv {
 			return extractMCPText(raw), nil
 		}
 		if _, ok := builtinNames[name]; ok {
-			var cfn agent.ConfirmFn
+			var cfn ConfirmFn
 			if _, trusted := trustedTools[name]; !trusted {
 				cfn = *confirmPtr
 			}
@@ -484,7 +483,7 @@ type AgentCoreConfig struct {
 	AgentsDir   string
 	SessionsDir string
 	SessionID   string
-	Session     *agent.Session
+	Session     *Session
 	Env         AgentEnv
 	BuiltinExec *execpkg.Executor
 }
@@ -492,8 +491,8 @@ type AgentCoreConfig struct {
 // AgentCore is the Core implementation. It owns all agent and session state
 // but has no knowledge of how output is rendered.
 type AgentCore struct {
-	session          *agent.Session
-	loopcfg          agent.Config
+	session          *Session
+	loopcfg          Config
 	hooks            core.Hooks
 	modelName        string
 	backendName      string
@@ -503,7 +502,7 @@ type AgentCore struct {
 	sessionID        string
 	mcpExec          *tools.Executor
 	builtinExec      *execpkg.Executor
-	confirmPtr       *agent.ConfirmFn
+	confirmPtr       *ConfirmFn
 	ctxOverhead      int
 	invalidateCaches func()
 	currentAction    atomic.Pointer[actionHandle]
@@ -513,7 +512,7 @@ var _ core.Core = (*AgentCore)(nil) // compile-time interface check
 
 // NewAgentCore creates an AgentCore from the given configuration.
 func NewAgentCore(cfg AgentCoreConfig) *AgentCore {
-	loopcfg := agent.Config{
+	loopcfg := Config{
 		Backend:          cfg.Backend,
 		Model:            cfg.ModelName,
 		SystemPrompt:     cfg.Env.SystemPrompt,
@@ -585,7 +584,7 @@ func (s *AgentCore) Submit(ctx context.Context, input string, handler core.Event
 	s.hooks.Run(core.HookUserPromptSubmit)
 
 	if s.session == nil {
-		s.session = agent.NewSessionWithConfig(BuildFirstPrompt(input), agent.ContextConfig{
+		s.session = NewSessionWithConfig(BuildFirstPrompt(input), ContextConfig{
 			FixedOverheadChars: s.ctxOverhead,
 		})
 	} else {
@@ -601,7 +600,7 @@ func (s *AgentCore) Submit(ctx context.Context, input string, handler core.Event
 
 	s.hooks.Run(core.HookAgentSpawn)
 
-	err := agent.Run(actCtx, s.loopcfg, s.session)
+	err := Run(actCtx, s.loopcfg, s.session)
 	actCancel(nil)
 	s.currentAction.CompareAndSwap(handle, nil)
 
@@ -805,7 +804,7 @@ func (s *AgentCore) handleCommand(ctx context.Context, input string, handler cor
 			}
 			label := id
 			if data, readErr := os.ReadFile(s.sessionsDir + "/" + e.Name()); readErr == nil {
-				var ps agent.PersistedSession
+				var ps PersistedSession
 				if json.Unmarshal(data, &ps) == nil {
 					goal := ""
 					for _, msg := range ps.Messages {
@@ -884,7 +883,7 @@ func extractMCPText(raw json.RawMessage) string {
 	return strings.Join(parts, "\n")
 }
 
-func dispatchBuiltinExec(ctx context.Context, name string, e *execpkg.Executor, confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
+func dispatchBuiltinExec(ctx context.Context, name string, e *execpkg.Executor, confirm ConfirmFn, args json.RawMessage) (string, error) {
 	switch name {
 	case "file_read":
 		return dispatchFileRead(confirm, args)
@@ -925,7 +924,7 @@ func execArgs(args json.RawMessage) (code, language, sandbox string, timeout int
 	return
 }
 
-func dispatchExecuteCode(ctx context.Context, e *execpkg.Executor, confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
+func dispatchExecuteCode(ctx context.Context, e *execpkg.Executor, confirm ConfirmFn, args json.RawMessage) (string, error) {
 	code, language, sandbox, timeout, err := execArgs(args)
 	if err != nil {
 		return "", fmt.Errorf("execute_code: bad args: %w", err)
@@ -939,7 +938,7 @@ func dispatchExecuteCode(ctx context.Context, e *execpkg.Executor, confirm agent
 	return e.Execute(ctx, code, language, timeout, sandbox, false)
 }
 
-func dispatchExecuteTool(ctx context.Context, e *execpkg.Executor, confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
+func dispatchExecuteTool(ctx context.Context, e *execpkg.Executor, confirm ConfirmFn, args json.RawMessage) (string, error) {
 	var a struct {
 		Tool     string   `json:"tool"`
 		Args     []string `json:"args"`
@@ -983,7 +982,7 @@ func dispatchExecuteTool(ctx context.Context, e *execpkg.Executor, confirm agent
 	return e.Execute(ctx, code, language, timeout, sandbox, true)
 }
 
-func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
+func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, confirm ConfirmFn, args json.RawMessage) (string, error) {
 	var a struct {
 		Pipe    []execpkg.PipeStep `json:"pipe"`
 		Timeout int                `json:"timeout"`
@@ -1013,7 +1012,7 @@ func dispatchExecutePipe(ctx context.Context, e *execpkg.Executor, confirm agent
 	return e.Execute(ctx, code, "bash", timeout, sandbox, true)
 }
 
-func dispatchFileRead(confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
+func dispatchFileRead(confirm ConfirmFn, args json.RawMessage) (string, error) {
 	var a struct {
 		Path string `json:"path"`
 	}
@@ -1038,7 +1037,7 @@ func dispatchFileRead(confirm agent.ConfirmFn, args json.RawMessage) (string, er
 	return strings.TrimRight(out.String(), "\n"), nil
 }
 
-func dispatchFileWrite(confirm agent.ConfirmFn, args json.RawMessage) (string, error) {
+func dispatchFileWrite(confirm ConfirmFn, args json.RawMessage) (string, error) {
 	var a struct {
 		Path      string `json:"path"`
 		Content   string `json:"content"`

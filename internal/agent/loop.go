@@ -9,19 +9,12 @@ import (
 	"time"
 
 	"ollie/internal/backend"
+	"ollie/pkg/core"
 )
 
 const maxRateLimitRetries = 3
 
 type ToolExecutor func(ctx context.Context, name string, args json.RawMessage) (string, error)
-type OutputFn func(msg OutputMsg)
-
-type OutputMsg struct {
-	Role    string
-	Name    string
-	Content string
-	Usage   backend.Usage
-}
 
 type Config struct {
 	Backend          backend.Backend
@@ -30,7 +23,7 @@ type Config struct {
 	Exec             ToolExecutor
 	Confirm          ConfirmFn
 	MaxSteps         int
-	Output           OutputFn
+	Output           core.EventHandler
 	SystemPrompt     string
 	GenerationParams backend.GenerationParams
 }
@@ -77,18 +70,16 @@ func Run(ctx context.Context, cfg Config, state State) error {
 
 		var content strings.Builder
 		var toolCalls []backend.ToolCall
-		var usage backend.Usage
 		var stopReason string
 		var done bool
 
 		for ev := range ch {
 			if ev.Content != "" {
 				content.WriteString(ev.Content)
-				emit(cfg, OutputMsg{Role: "assistant", Content: ev.Content})
+				emit(cfg, core.Event{Role: "assistant", Content: ev.Content})
 			}
 			toolCalls = append(toolCalls, ev.ToolCalls...)
 			if ev.Done {
-				usage = ev.Usage
 				stopReason = ev.StopReason
 				done = true
 				break
@@ -120,7 +111,7 @@ func Run(ctx context.Context, cfg Config, state State) error {
 				})
 				continue
 			}
-			emit(cfg, OutputMsg{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
+			emit(cfg, core.Event{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
 
 			var result string
 			var isErr bool
@@ -143,13 +134,10 @@ func Run(ctx context.Context, cfg Config, state State) error {
 				Content:    result,
 				IsError:    isErr,
 			})
-			emit(cfg, OutputMsg{Role: "tool", Name: tc.Name, Content: result})
+			emit(cfg, core.Event{Role: "tool", Name: tc.Name, Content: result})
 		}
 
-		// Emit usage when we have real token counts.
-		if usage.InputTokens > 0 || usage.OutputTokens > 0 {
-			emit(cfg, OutputMsg{Role: "usage", Usage: usage})
-		}
+
 
 		if err := state.Update(msg, results); err != nil {
 			return fmt.Errorf("step %d update: %w", step, err)
@@ -169,13 +157,13 @@ func Run(ctx context.Context, cfg Config, state State) error {
 
 	// Surface stall: only when the step limit was hit without completing.
 	if hitLimit {
-		emit(cfg, OutputMsg{Role: "stalled", Content: "max steps"})
+		emit(cfg, core.Event{Role: "stalled", Content: "max steps"})
 	}
 
 	return nil
 }
 
-func emit(cfg Config, msg OutputMsg) {
+func emit(cfg Config, msg core.Event) {
 	if cfg.Output != nil {
 		cfg.Output(msg)
 	}
@@ -192,7 +180,7 @@ func retryCountdown(ctx context.Context, cfg Config, wait time.Duration) error {
 			return nil
 		}
 		secs := int(remaining.Seconds()) + 1
-		emit(cfg, OutputMsg{Role: "retry", Content: fmt.Sprintf("%d", secs)})
+		emit(cfg, core.Event{Role: "retry", Content: fmt.Sprintf("%d", secs)})
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

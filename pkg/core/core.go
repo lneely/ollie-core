@@ -3,8 +3,6 @@ package core
 import (
 	"context"
 	"errors"
-
-	"ollie/internal/agent"
 )
 
 // ErrInterrupted is returned when the user cancels an agent turn (Ctrl-C).
@@ -12,10 +10,14 @@ var ErrInterrupted = errors.New("interrupted")
 
 // Event is a typed output event emitted by the Core during an agent turn
 // or in response to a command.
-type Event = agent.OutputMsg
+type Event struct {
+	Role    string
+	Name    string
+	Content string
+}
 
 // EventHandler receives events from the Core.
-type EventHandler = agent.OutputFn
+type EventHandler func(Event)
 
 // Core is the interface between a frontend (TUI, HTTP handler, etc.) and the
 // agent engine. All output from the agent is delivered via EventHandler.
