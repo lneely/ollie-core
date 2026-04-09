@@ -20,7 +20,6 @@ import (
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
 	execute "ollie/pkg/tools/execute"
-	"ollie/pkg/tools/file"
 	"ollie/pkg/mcp"
 	"ollie/pkg/tools"
 )
@@ -181,17 +180,13 @@ func BuildAgentEnv(cfg *config.Config, builtinExec *execute.Executor) AgentEnv {
 	// Wire confirm through pointer so it can be updated after construction.
 	var cfn confirmFn
 	confirmPtr := &cfn
-	confirmClosure := func(prompt string) bool {
+	builtinExec.Confirm = func(prompt string) bool {
 		if *confirmPtr == nil {
 			return true
 		}
 		return (*confirmPtr)(prompt)
 	}
-	builtinExec.Confirm = confirmClosure
-	mcpExec.AddServer("builtin", builtinExec)
-
-	fileServer := &file.Server{Confirm: confirmClosure}
-	mcpExec.AddServer("file", fileServer)
+	mcpExec.AddServer("builtin", &tools.BuiltinServer{Exec: builtinExec})
 
 	allToolInfos, listErr := mcpExec.ListTools()
 	if listErr != nil {

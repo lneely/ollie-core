@@ -12,8 +12,9 @@ pkg/
   backend/       — Backend interface + implementations
   config/        — Agent config struct and loader
   mcp/           — MCP client (concrete)
-  tools/         — Executor interface + MCPExecutor
-  tools/execute/ — Built-in sandbox tools (execute_code, execute_tool, execute_pipe)
+  tools/         — Server/Executor interfaces, MCPExecutor, BuiltinServer, tool definitions
+  tools/execute/ — Sandbox runner (execute_code, execute_tool, execute_pipe)
+  tools/file/    — File operations (file_read, file_write)
 
 internal/
   sandbox/       — landrun sandbox config and command wrapper
@@ -47,11 +48,13 @@ Frontend
               ├── backend.ChatStream()                        — LLM call
               └── tools.Executor.Execute(server, tool, args)  — tool dispatch (interface)
                     └── tools.MCPExecutor                     — routes by server name
-                          ├── "builtin" → tools/execute.Executor — sandbox tools
+                          ├── "builtin" → tools.BuiltinServer    — all built-in tools
+                          │       ├── execute_* → execute.Executor.Dispatch()
+                          │       └── file_*    → file.Read / file.Write
                           └── "<name>"  → tools.mcpServer        — MCP protocol tools
 ```
 
-All tool calls go through one `tools.Executor.Execute` path. Built-in tools implement `tools.Server` directly (no subprocess); MCP tools are wrapped in `mcpServer` which speaks the MCP protocol over stdio.
+All tool calls go through one `tools.Executor.Execute` path. `BuiltinServer` in `pkg/tools/` is the single built-in server; `execute/` and `file/` are its implementation subpackages and do not implement `tools.Server` themselves. MCP tools are wrapped in `mcpServer`.
 
 ## Built-in Tools
 
@@ -65,7 +68,7 @@ Five tools are registered under the `"builtin"` server by default:
 | `file_read` | Reads a file with line numbers (required before `file_write`) |
 | `file_write` | Writes or patches a file by line range |
 
-`execute.Executor` implements `tools.Server` — built-in tools speak the same interface as MCP tools without running a subprocess. All dispatch logic lives in `pkg/tools/execute/dispatch.go`.
+`tools.BuiltinServer` in `pkg/tools/` is the single `tools.Server` for all built-in tools. Tool definitions (`ExecuteDefs`, `FileDefs`) and file dispatch live in `pkg/tools/builtin.go`; execute dispatch lives in `pkg/tools/execute/dispatch.go`.
 
 `OLLIE_TOOLS_PATH` defaults to `~/.local/share/ollie/tools`. The directory can be a symlink or a mountpoint — `execute_tool` treats it as an ordinary filesystem path.
 

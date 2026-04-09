@@ -1,26 +1,14 @@
 package file
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 )
 
-func read(confirm func(string) bool, args json.RawMessage) (string, error) {
-	var a struct {
-		Path string `json:"path"`
-	}
-	if err := json.Unmarshal(args, &a); err != nil {
-		return "", fmt.Errorf("file_read: bad args: %w", err)
-	}
-	if a.Path == "" {
-		return "", fmt.Errorf("file_read: 'path' is required")
-	}
-	if confirm != nil && !confirm(fmt.Sprintf("read %s", a.Path)) {
-		return "", fmt.Errorf("file_read: denied by user")
-	}
-	data, err := os.ReadFile(a.Path)
+// Read reads path and returns its contents with 1-based line numbers.
+func Read(path string) (string, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("file_read: %w", err)
 	}

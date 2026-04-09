@@ -5,97 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-
-	"ollie/pkg/tools"
 )
 
-// builtinToolDefs returns the tool definitions for all built-in tools.
-func builtinToolDefs() []tools.ToolInfo {
-	tp := ToolsPath()
-	return []tools.ToolInfo{
-		{
-			Name:        "execute_code",
-			Description: "Run inline code in a sandboxed environment.",
-			InputSchema: json.RawMessage(`{
-				"type": "object",
-				"required": ["code"],
-				"properties": {
-					"code":     {"type": "string",  "description": "Code to execute."},
-					"language": {"type": "string",  "description": "Language interpreter (default: bash)."},
-					"timeout":  {"type": "integer", "description": "Timeout in seconds (default: 30)."},
-					"sandbox":  {"type": "string",  "description": "Sandbox name (default: default)."}
-				}
-			}`),
-		},
-		{
-			Name:        "execute_tool",
-			Description: "Run a named tool script from " + tp + " in a sandboxed environment. Use this only for named scripts, not for inline shell commands.",
-			InputSchema: json.RawMessage(`{
-				"type": "object",
-				"required": ["tool"],
-				"properties": {
-					"tool":     {"type": "string", "description": "Name of the tool script (e.g. discover_skill.sh)."},
-					"args":     {"type": "array",  "items": {"type": "string"}, "description": "Arguments for the tool script."},
-					"timeout":  {"type": "integer", "description": "Timeout in seconds (default: 30)."},
-					"sandbox":  {"type": "string",  "description": "Sandbox name (default: default)."}
-				}
-			}`),
-		},
-		{
-			Name:        "execute_pipe",
-			Description: "Run a pipeline of steps, piping stdout of each into stdin of the next. Use {code: \"cmd --flags\"} for shell commands; use {tool, args} only for named scripts in " + tp + ".",
-			InputSchema: json.RawMessage(`{
-				"type": "object",
-				"required": ["pipe"],
-				"properties": {
-					"pipe": {
-						"type": "array",
-						"items": {
-							"type": "object",
-							"properties": {
-								"tool": {"type": "string"},
-								"args": {"type": "array", "items": {"type": "string"}},
-								"code": {"type": "string"}
-							}
-						}
-					},
-					"timeout": {"type": "integer", "description": "Timeout in seconds (default: 30)."},
-					"sandbox": {"type": "string",  "description": "Sandbox name (default: default)."}
-				}
-			}`),
-		},
-	}
-}
-
-// ListTools implements tools.Server.
-func (e *Executor) ListTools() ([]tools.ToolInfo, error) {
-	return builtinToolDefs(), nil
-}
-
-// CallTool implements tools.Server.
-func (e *Executor) CallTool(ctx context.Context, tool string, args json.RawMessage) (json.RawMessage, error) {
-	result, err := e.dispatch(ctx, tool, args)
-	if err != nil {
-		return json.Marshal(map[string]string{"error": err.Error()})
-	}
-	return json.Marshal(map[string]any{
-		"content": []map[string]string{{"type": "text", "text": result}},
-	})
-}
-
-// Close implements tools.Server (no-op).
-func (e *Executor) Close() {}
-
-func (e *Executor) dispatch(ctx context.Context, name string, args json.RawMessage) (string, error) {
+// Dispatch routes a named execute tool call. Called by tools.BuiltinServer.
+func (e *Executor) Dispatch(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	switch name {
-	case "execute_pipe":
-		return dispatchExecutePipe(ctx, e, args)
-	case "execute_tool":
-		return dispatchExecuteTool(ctx, e, args)
 	case "execute_code":
 		return dispatchExecuteCode(ctx, e, args)
+	case "execute_tool":
+		return dispatchExecuteTool(ctx, e, args)
+	case "execute_pipe":
+		return dispatchExecutePipe(ctx, e, args)
 	default:
-		return "", fmt.Errorf("unknown built-in tool: %s", name)
+		return "", fmt.Errorf("unknown execute tool: %s", name)
 	}
 }
 
@@ -141,11 +63,10 @@ func dispatchExecuteCode(ctx context.Context, e *Executor, args json.RawMessage)
 
 func dispatchExecuteTool(ctx context.Context, e *Executor, args json.RawMessage) (string, error) {
 	var a struct {
-		Tool     string   `json:"tool"`
-		Args     []string `json:"args"`
-		Language string   `json:"language"`
-		Timeout  int      `json:"timeout"`
-		Sandbox  string   `json:"sandbox"`
+		Tool    string   `json:"tool"`
+		Args    []string `json:"args"`
+		Timeout int      `json:"timeout"`
+		Sandbox string   `json:"sandbox"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("execute_tool: bad args: %w", err)
@@ -168,10 +89,6 @@ func dispatchExecuteTool(ctx context.Context, e *Executor, args json.RawMessage)
 		}
 		code = fmt.Sprintf("set -- %s\n%s", strings.Join(escaped, " "), code)
 	}
-	language := a.Language
-	if language == "" {
-		language = "bash"
-	}
 	timeout := a.Timeout
 	if timeout <= 0 {
 		timeout = 30
@@ -180,7 +97,7 @@ func dispatchExecuteTool(ctx context.Context, e *Executor, args json.RawMessage)
 	if sandbox == "" {
 		sandbox = "default"
 	}
-	return e.Execute(ctx, code, language, timeout, sandbox, true)
+	return e.Execute(ctx, code, "bash", timeout, sandbox, true)
 }
 
 func dispatchExecutePipe(ctx context.Context, e *Executor, args json.RawMessage) (string, error) {
