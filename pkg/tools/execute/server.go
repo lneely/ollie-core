@@ -7,6 +7,9 @@ import (
 	"ollie/pkg/tools"
 )
 
+// Decl is the default factory for an execute Server. Reassign to override.
+var Decl func() tools.Server = func() tools.Server { return New() }
+
 // ListTools implements tools.Server.
 func (e *Server) ListTools() ([]tools.ToolInfo, error) {
 	return tools.ExecuteDefs(ToolsPath()), nil

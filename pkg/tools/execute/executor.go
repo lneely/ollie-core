@@ -9,9 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -20,24 +18,8 @@ import (
 	"ollie/internal/sandbox"
 )
 
-const defaultMaxOutputChars = 8000
-
 // Server runs code in a sandboxed environment.
 type Server struct {
-	// LogDir is the directory for execution and security event logs.
-	// Defaults to ~/.local/state/exec when empty.
-	LogDir string
-
-	// WorkspaceBase is the parent directory for temporary execution workspaces.
-	// If set, each execution gets a fresh temp directory under WorkspaceBase.
-	// If empty, the current working directory is used directly.
-	WorkspaceBase string
-
-	// MaxOutputChars is the maximum number of characters returned from Execute.
-	// Set via OLLIE_TOOL_OUTPUT_CHARS env var or directly on the struct.
-	// Defaults to 8000.
-	MaxOutputChars int
-
 	// Confirm is an optional function called before executing sensitive operations.
 	// If it returns false, the operation is denied.
 	Confirm func(string) bool
@@ -49,30 +31,8 @@ type Server struct {
 	blockedUntil       time.Time
 }
 
-// New creates a new Server with the given log directory and workspace base.
-// MaxOutputChars is initialised from OLLIE_TOOL_OUTPUT_CHARS if set,
-// otherwise defaults to 8000.
-func New(logDir, workspaceBase string) *Server {
-	maxOutput := defaultMaxOutputChars
-	if s := os.Getenv("OLLIE_TOOL_OUTPUT_CHARS"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil && n > 0 {
-			maxOutput = n
-		}
-	}
-	return &Server{
-		LogDir:         logDir,
-		WorkspaceBase:  workspaceBase,
-		MaxOutputChars: maxOutput,
-	}
-}
-
-func (e *Server) logDir() string {
-	if e.LogDir != "" {
-		return e.LogDir
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "exec")
-}
+// New creates a new Server.
+func New() *Server { return &Server{} }
 
 var dangerousPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s*/(home|var|usr|etc|boot|root|bin|sbin|lib|opt|srv)?`),
@@ -126,11 +86,6 @@ func (e *Server) recordValidationFailure() {
 	if e.validationFailures >= maxFailures {
 		e.blockedUntil = now.Add(blockDuration)
 		e.validationFailures = 0
-		logSecurityEvent(e.logDir(), SecurityEvent{
-			Timestamp: now,
-			EventType: "rate_limit_triggered",
-			Details:   fmt.Sprintf("blocked for %v after %d failures", blockDuration, maxFailures),
-		})
 	}
 }
 
@@ -146,11 +101,6 @@ func (e *Server) ValidateCode(code string) error {
 	for _, pattern := range dangerousPatterns {
 		if pattern.MatchString(normalized) {
 			e.recordValidationFailure()
-			logSecurityEvent(e.logDir(), SecurityEvent{
-				Timestamp: time.Now(),
-				EventType: "validation_failure",
-				Details:   fmt.Sprintf("dangerous pattern: %s", pattern.String()),
-			})
 			return fmt.Errorf("dangerous pattern detected")
 		}
 	}
@@ -193,23 +143,12 @@ func loadLayeredConfig(name string) (*sandbox.Config, error) {
 
 // Execute runs code in a sandbox and returns combined stdout+stderr.
 func (e *Server) Execute(ctx context.Context, code, language string, timeout int, sandboxName string, trusted bool) (string, error) {
-	start := time.Now()
-
 	if timeout <= 0 {
 		timeout = 30
 	}
 
 	if !trusted {
 		if err := e.ValidateCode(code); err != nil {
-			logExecution(e.logDir(), ExecutionLog{
-				Timestamp:  start,
-				CodeHash:   hashCode(code),
-				Language:   language,
-				Duration:   time.Since(start),
-				Success:    false,
-				OutputSize: 0,
-				Error:      err.Error(),
-			})
 			return "", err
 		}
 	}
@@ -220,11 +159,6 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 	}
 
 	workDir, _ := os.Getwd()
-	var cleanupWorkDir bool
-
-	if cleanupWorkDir {
-		defer os.RemoveAll(workDir)
-	}
 
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
@@ -253,49 +187,17 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 
 	err = cmd.Run()
 	output := outputBuf.Bytes()
-
 	if lw.truncated {
 		output = append(output, []byte("\n[output truncated at 10MB]")...)
 	}
 
-	duration := time.Since(start)
-
-	execLog := ExecutionLog{
-		Timestamp:  start,
-		CodeHash:   hashCode(code),
-		Language:   language,
-		Duration:   duration,
-		Success:    err == nil && ctx.Err() != context.DeadlineExceeded,
-		OutputSize: len(output),
-	}
-
 	if ctx.Err() == context.DeadlineExceeded {
-		execLog.Error = fmt.Sprintf("execution timeout after %d seconds", timeout)
-		logExecution(e.logDir(), execLog)
-		logSecurityEvent(e.logDir(), SecurityEvent{
-			Timestamp: start,
-			EventType: "timeout",
-			Language:  language,
-			Details:   fmt.Sprintf("timeout after %d seconds", timeout),
-		})
 		return "", fmt.Errorf("execution timeout after %d seconds", timeout)
 	}
 	if err != nil {
-		execLog.Error = err.Error()
-		logExecution(e.logDir(), execLog)
 		return string(output), fmt.Errorf("execution failed: %v\nOutput: %s", err, string(output))
 	}
-
-	logExecution(e.logDir(), execLog)
-	result := string(output)
-	limit := e.MaxOutputChars
-	if limit <= 0 {
-		limit = defaultMaxOutputChars
-	}
-	if len(result) > limit {
-		result = result[:limit] + "\n... (output truncated)"
-	}
-	return result, nil
+	return string(output), nil
 }
 
 type limitedWriter struct {

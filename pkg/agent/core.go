@@ -228,8 +228,20 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher) AgentEnv {
 }
 
 
-// agentConfigPath resolves the config file path for a named agent.
-func agentConfigPath(agentsDir, name string) string {
+// DefaultAgentsDir returns the default directory for agent config files.
+func DefaultAgentsDir() string {
+	home, _ := os.UserHomeDir()
+	return home + "/.config/ollie/agents"
+}
+
+// DefaultSessionsDir returns the default directory for saved sessions.
+func DefaultSessionsDir() string {
+	home, _ := os.UserHomeDir()
+	return home + "/.config/ollie/sessions"
+}
+
+// AgentConfigPath resolves the config file path for a named agent.
+func AgentConfigPath(agentsDir, name string) string {
 	p := agentsDir + "/" + name + ".json"
 	if _, err := os.Stat(p); err == nil {
 		return p
@@ -241,8 +253,8 @@ func agentConfigPath(agentsDir, name string) string {
 	return p
 }
 
-// newSessionID generates a unique session identifier.
-func newSessionID() string {
+// NewSessionID generates a unique session identifier.
+func NewSessionID() string {
 	b := make([]byte, 3)
 	rand.Read(b) //nolint:errcheck
 	return time.Now().Format("20060102-150405") + "-" + fmt.Sprintf("%06x", b)
@@ -476,7 +488,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			return true
 		}
 		name := args[0]
-		cfgPath := agentConfigPath(s.agentsDir, name)
+		cfgPath := AgentConfigPath(s.agentsDir, name)
 		cfg, err := config.Load(cfgPath)
 		if err != nil {
 			handler(infoEvent(fmt.Sprintf("error: agent %q: %v", name, err)))
@@ -496,7 +508,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		s.ctxOverhead = env.CtxOverhead
 		s.agentName = name
 		s.session = nil
-		s.sessionID = newSessionID()
+		s.sessionID = NewSessionID()
 		for _, msg := range env.Messages {
 			handler(infoEvent(msg))
 		}
@@ -547,7 +559,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 
 	case "/clear":
 		s.session = nil
-		s.sessionID = newSessionID()
+		s.sessionID = NewSessionID()
 		handler(infoEvent("cleared"))
 		return true
 

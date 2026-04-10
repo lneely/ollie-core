@@ -43,6 +43,19 @@ func NewDispatcher() Dispatcher {
 	return &dispatcher{servers: make(map[string]Server)}
 }
 
+// NewDispatcherFunc returns a factory that builds a fresh Dispatcher on each
+// call, invoking each decl to create its Server. Pass the result to
+// agent.AgentCoreConfig.NewDispatcher.
+func NewDispatcherFunc(decls map[string]func() Server) func() Dispatcher {
+	return func() Dispatcher {
+		d := NewDispatcher()
+		for name, decl := range decls {
+			d.AddServer(name, decl())
+		}
+		return d
+	}
+}
+
 // AddServer registers a Server under the given name.
 func (d *dispatcher) AddServer(name string, s Server) {
 	d.servers[name] = s

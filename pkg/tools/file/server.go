@@ -15,9 +15,10 @@ type Server struct {
 }
 
 // New returns a file Server.
-func New() *Server {
-	return &Server{}
-}
+func New() *Server { return &Server{} }
+
+// Decl is the default factory for a file Server. Reassign to override.
+var Decl func() tools.Server = func() tools.Server { return New() }
 
 // ListTools implements tools.Server.
 func (s *Server) ListTools() ([]tools.ToolInfo, error) {
