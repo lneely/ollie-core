@@ -327,7 +327,17 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 		return
 	}
 
-	s.hooks.Run(HookUserPromptSubmit)
+	hookResult := s.hooks.Run(ctx, HookUserPromptSubmit, map[string]string{
+		"session_id": s.sessionID,
+		"prompt":     input,
+	})
+	if hookResult.Blocked {
+		handler(infoEvent("hook blocked prompt"))
+		return
+	}
+	if hookResult.Context != "" {
+		input += "\n" + hookResult.Context
+	}
 
 	if s.session == nil {
 		s.session = newSession(input)
@@ -355,7 +365,9 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 		}
 	}
 
-	s.hooks.Run(HookAgentSpawn)
+	s.hooks.Run(ctx, HookAgentSpawn, map[string]string{
+		"session_id": s.sessionID,
+	})
 
 	err := run(actCtx, s.loopcfg, s.session)
 	actCancel(nil)
@@ -367,9 +379,17 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 
 	handler(Event{Role: "newline"})
 
-	s.hooks.Run(HookStop)
+	stopResult := s.hooks.Run(ctx, HookStop, map[string]string{
+		"session_id": s.sessionID,
+	})
 
 	s.saveSession()
+
+	// Stop hook said "continue" — re-enter with the hook's context as the prompt.
+	if stopResult.Blocked && stopResult.Context != "" && ctx.Err() == nil {
+		s.Submit(ctx, stopResult.Context, handler)
+		return
+	}
 
 	// If an inject was pending but never consumed (e.g. text-only response
 	// with no tool calls), treat it as the next user message.
