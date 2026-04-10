@@ -31,6 +31,16 @@ func (b *AnthropicBackend) DefaultModel() string { return "claude-sonnet-4-5" }
 func (b *AnthropicBackend) Model() string        { return b.model }
 func (b *AnthropicBackend) SetModel(m string)    { b.model = m }
 
+func (b *AnthropicBackend) ContextLength(_ context.Context) int { return 200000 }
+
+func (b *AnthropicBackend) Models(_ context.Context) []string {
+	return []string{
+		"claude-sonnet-4-5",
+		"claude-opus-4",
+		"claude-3-5-haiku-latest",
+	}
+}
+
 // -- wire types --
 
 type anthropicRequest struct {

@@ -22,6 +22,14 @@ type OpenAIBackend struct {
 	model        string
 	client       *http.Client
 	extraHeaders map[string]string // optional; applied after Authorization
+	ctxLength    int               // cached; 0 = not yet fetched
+	ctxModel     string            // model the cached value is for
+	cachedModels []openAIModelInfo // cached model list
+}
+
+type openAIModelInfo struct {
+	ID            string `json:"id"`
+	ContextLength int    `json:"context_length"`
 }
 
 func NewOpenAI(name, baseURL, apiKey string) *OpenAIBackend {
@@ -35,7 +43,59 @@ func NewOpenAI(name, baseURL, apiKey string) *OpenAIBackend {
 
 func (b *OpenAIBackend) Name() string         { return b.name }
 func (b *OpenAIBackend) Model() string        { return b.model }
-func (b *OpenAIBackend) SetModel(m string)    { b.model = m }
+func (b *OpenAIBackend) SetModel(m string)    { b.model = m; b.ctxLength = 0 }
+
+func (b *OpenAIBackend) fetchModels(ctx context.Context) []openAIModelInfo {
+	if len(b.cachedModels) > 0 {
+		return b.cachedModels
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", b.baseURL+"/v1/models", nil)
+	if err != nil {
+		return nil
+	}
+	if b.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+b.apiKey)
+	}
+	resp, err := b.client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return nil
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Data []openAIModelInfo `json:"data"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&result) != nil {
+		return nil
+	}
+	b.cachedModels = result.Data
+	return b.cachedModels
+}
+
+func (b *OpenAIBackend) ContextLength(ctx context.Context) int {
+	if b.ctxLength > 0 && b.ctxModel == b.model {
+		return b.ctxLength
+	}
+	for _, m := range b.fetchModels(ctx) {
+		if m.ID == b.model {
+			b.ctxLength = m.ContextLength
+			b.ctxModel = b.model
+			return b.ctxLength
+		}
+	}
+	return 0
+}
+
+func (b *OpenAIBackend) Models(ctx context.Context) []string {
+	models := b.fetchModels(ctx)
+	ids := make([]string, len(models))
+	for i, m := range models {
+		ids[i] = m.ID
+	}
+	return ids
+}
 func (b *OpenAIBackend) DefaultModel() string {
 	switch b.name {
 	case "openrouter":

@@ -608,3 +608,70 @@ func (c *kiroOIDCClient) RefreshToken(ctx context.Context, req kiroRefreshTokenR
 	}
 	return &result, nil
 }
+
+// ── ListAvailableModels ───────────────────────────────────────────────────────
+
+const (
+	kiroListModelsTarget       = "AmazonCodeWhispererService.ListAvailableModels"
+	kiroListModelsUserAgent    = "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/linux lang/rust/1.92.0 md/appVersion-1.27.2 app/AmazonQ-For-CLI"
+	kiroListModelsAmzUserAgent = "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/linux lang/rust/1.92.0 m/F,C app/AmazonQ-For-CLI"
+)
+
+type kiroListModelsRequest struct {
+	Origin     string `json:"origin"`
+	ProfileARN string `json:"profileArn,omitempty"`
+}
+
+type kiroListModelsResponse struct {
+	DefaultModel *kiroAvailableModel  `json:"defaultModel,omitempty"`
+	Models       []kiroAvailableModel `json:"models,omitempty"`
+}
+
+type kiroAvailableModel struct {
+	ModelID     string           `json:"modelId,omitempty"`
+	TokenLimits *kiroTokenLimits `json:"tokenLimits,omitempty"`
+}
+
+type kiroTokenLimits struct {
+	MaxInputTokens  int `json:"maxInputTokens,omitempty"`
+	MaxOutputTokens int `json:"maxOutputTokens,omitempty"`
+}
+
+func (c *kiroAPIClient) ListModels(ctx context.Context, profileARN string) (*kiroListModelsResponse, error) {
+	body, err := json.Marshal(kiroListModelsRequest{
+		Origin:     kiroDefaultOrigin,
+		ProfileARN: profileARN,
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	invocationID, _ := kiroNewUUID()
+	req.Header.Set("Content-Type", "application/x-amz-json-1.0")
+	req.Header.Set("X-Amz-Target", kiroListModelsTarget)
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("User-Agent", kiroListModelsUserAgent)
+	req.Header.Set("X-Amz-User-Agent", kiroListModelsAmzUserAgent)
+	req.Header.Set("Amz-Sdk-Request", kiroAmzSDKRequest)
+	req.Header.Set("Amz-Sdk-Invocation-Id", invocationID)
+	for k, v := range c.extraHeaders {
+		req.Header.Set(k, v)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, kiroDecodeHTTPError(resp)
+	}
+	var result kiroListModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}

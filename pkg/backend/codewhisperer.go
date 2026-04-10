@@ -35,6 +35,7 @@ type CodeWhispererBackend struct {
 	authSource   kiroAuthSource
 	authInitErr  error
 	httpClient   *http.Client
+	ctxLength    int // cached
 }
 
 // NewCodeWhisperer returns a CodeWhisperer backend. See package doc for apiKey semantics.
@@ -56,6 +57,59 @@ func (b *CodeWhispererBackend) Name() string         { return "kiro" }
 func (b *CodeWhispererBackend) DefaultModel() string { return "auto" }
 func (b *CodeWhispererBackend) Model() string        { return b.model }
 func (b *CodeWhispererBackend) SetModel(m string)    { b.model = m }
+func (b *CodeWhispererBackend) Models(ctx context.Context) []string {
+	resp := b.fetchModels(ctx)
+	if resp == nil {
+		return nil
+	}
+	ids := make([]string, len(resp.Models))
+	for i, m := range resp.Models {
+		ids[i] = m.ModelID
+	}
+	return ids
+}
+
+func (b *CodeWhispererBackend) fetchModels(ctx context.Context) *kiroListModelsResponse {
+	if b.authInitErr != nil {
+		return nil
+	}
+	token, err := b.authSource.AccessToken(ctx)
+	if err != nil {
+		return nil
+	}
+	endpoint, err := b.resolveEndpoint(ctx)
+	if err != nil {
+		return nil
+	}
+	profileARN, _ := b.authSource.ProfileARN(ctx)
+	client := newKiroAPIClient(endpoint, token, b.extraHeaders, b.httpClient)
+	resp, err := client.ListModels(ctx, profileARN)
+	if err != nil {
+		return nil
+	}
+	return resp
+}
+
+func (b *CodeWhispererBackend) ContextLength(ctx context.Context) int {
+	if b.ctxLength > 0 {
+		return b.ctxLength
+	}
+	resp := b.fetchModels(ctx)
+	if resp == nil {
+		return 0
+	}
+	for _, m := range resp.Models {
+		if m.TokenLimits != nil && (b.model == "auto" || m.ModelID == b.model) {
+			b.ctxLength = m.TokenLimits.MaxInputTokens
+			return b.ctxLength
+		}
+	}
+	if resp.DefaultModel != nil && resp.DefaultModel.TokenLimits != nil {
+		b.ctxLength = resp.DefaultModel.TokenLimits.MaxInputTokens
+		return b.ctxLength
+	}
+	return 0
+}
 
 // ── Backend interface ─────────────────────────────────────────────────────────
 

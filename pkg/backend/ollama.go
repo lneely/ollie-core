@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // OllamaBackend speaks the Ollama /api/chat wire format.
 type OllamaBackend struct {
-	baseURL string
-	model   string
-	client  *http.Client
+	baseURL   string
+	model     string
+	client    *http.Client
+	ctxLength int
+	ctxModel  string
 }
 
 func NewOllama(baseURL string) *OllamaBackend {
@@ -29,7 +32,70 @@ func NewOllama(baseURL string) *OllamaBackend {
 func (b *OllamaBackend) Name() string         { return "ollama" }
 func (b *OllamaBackend) DefaultModel() string { return "qwen3.5:9b" }
 func (b *OllamaBackend) Model() string        { return b.model }
-func (b *OllamaBackend) SetModel(m string)    { b.model = m }
+func (b *OllamaBackend) SetModel(m string)    { b.model = m; b.ctxLength = 0 }
+
+func (b *OllamaBackend) Models(ctx context.Context) []string {
+	req, err := http.NewRequestWithContext(ctx, "GET", b.baseURL+"/api/tags", nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := b.client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return nil
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&result) != nil {
+		return nil
+	}
+	names := make([]string, len(result.Models))
+	for i, m := range result.Models {
+		names[i] = m.Name
+	}
+	return names
+}
+
+func (b *OllamaBackend) ContextLength(ctx context.Context) int {
+	if b.ctxLength > 0 && b.ctxModel == b.model {
+		return b.ctxLength
+	}
+	body, _ := json.Marshal(map[string]string{"name": b.model})
+	req, err := http.NewRequestWithContext(ctx, "POST", b.baseURL+"/api/show", bytes.NewReader(body))
+	if err != nil {
+		return 0
+	}
+	resp, err := b.client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return 0
+	}
+	defer resp.Body.Close()
+	var result struct {
+		ModelInfo map[string]any `json:"model_info"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&result) != nil {
+		return 0
+	}
+	for k, v := range result.ModelInfo {
+		if strings.HasSuffix(k, ".context_length") {
+			if f, ok := v.(float64); ok && f > 0 {
+				b.ctxLength = int(f)
+				b.ctxModel = b.model
+				return b.ctxLength
+			}
+		}
+	}
+	return 0
+}
 
 // -- wire types --
 

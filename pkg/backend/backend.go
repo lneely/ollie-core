@@ -86,4 +86,9 @@ type Backend interface {
 	Model() string
 	// SetModel changes the active model.
 	SetModel(model string)
+	// ContextLength returns the context window size in tokens for the active model.
+	// Returns 0 if unknown. May make an API call; results should be cached by the implementation.
+	ContextLength(ctx context.Context) int
+	// Models returns the list of available model IDs from the provider.
+	Models(ctx context.Context) []string
 }

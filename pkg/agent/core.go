@@ -253,6 +253,22 @@ func (s *agentCore) prompt() string {
 // Prompt returns the display prompt string for the current session state.
 func (s *agentCore) Prompt() string { return s.prompt() }
 
+// defaultContextLength is used when the backend cannot report the model's
+// actual context window (e.g. CodeWhisperer). 128k tokens is a safe default
+// for modern models.
+const defaultContextLength = 128000
+
+// autoCompactLimit returns the token threshold for auto-compaction.
+// Uses 75% of the model's context length, reserving room for output and the
+// compaction prompt.
+func (s *agentCore) autoCompactLimit(ctx context.Context) int {
+	ctxLen := s.loopcfg.Backend.ContextLength(ctx)
+	if ctxLen <= 0 {
+		ctxLen = defaultContextLength
+	}
+	return ctxLen * 3 / 4
+}
+
 func (s *agentCore) saveSession() {
 	if s.session == nil || s.sessionID == "" || s.sessionsDir == "" {
 		return
@@ -301,6 +317,14 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	s.currentAction.Store(handle)
 
 	s.loopcfg.Output = handler
+
+	// Auto-compact before the turn if approaching the context limit.
+	if s.session != nil {
+		if limit := s.autoCompactLimit(ctx); limit > 0 && s.session.estimateTokens() >= limit {
+			emit(s.loopcfg, Event{Role: "info", Content: "auto-compacting context...\n"})
+			s.session.compact(ctx, s.loopcfg.Backend) //nolint:errcheck
+		}
+	}
 
 	s.hooks.Run(HookAgentSpawn)
 
@@ -362,6 +386,22 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		}
 		s.loopcfg.Backend = be
 		handler(infoEvent(fmt.Sprintf("switched backend to: %s (model: %s)", be.Name(), be.Model())))
+		return true
+
+	case "/models":
+		models := s.loopcfg.Backend.Models(ctx)
+		if len(models) == 0 {
+			handler(infoEvent("no models available"))
+			return true
+		}
+		current := s.loopcfg.Backend.Model()
+		for _, m := range models {
+			marker := "  "
+			if m == current {
+				marker = "* "
+			}
+			handler(infoEvent(marker + m))
+		}
 		return true
 
 	case "/model":
@@ -536,6 +576,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			"  /agent [name]    - show or switch active agent",
 			"  /backend <type>  - switch backend (ollama, openai)",
 			"  /model <name>    - switch model",
+			"  /models          - list available models",
 			"  /queued [pop|clear] - manage queued prompts",
 			"  /compact         - summarize conversation and compact context",
 			"  /context         - show context window debug info",

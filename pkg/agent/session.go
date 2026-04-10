@@ -243,6 +243,11 @@ func (s *Session) appendUserMessage(content string) {
 
 // contextStatsString returns a one-line human-readable context summary.
 func (s *Session) contextStatsString() string {
+	return fmt.Sprintf("context: ~%d tokens (%d msgs)", s.estimateTokens(), len(s.messages))
+}
+
+// estimateTokens returns a rough token count (~4 chars per token).
+func (s *Session) estimateTokens() int {
 	chars := 0
 	for _, m := range s.messages {
 		chars += len(m.Content)
@@ -250,7 +255,7 @@ func (s *Session) contextStatsString() string {
 			chars += len(tc.Name) + len(tc.Arguments)
 		}
 	}
-	return fmt.Sprintf("context: ~%d tokens (%d msgs)", chars/4, len(s.messages))
+	return chars / 4
 }
 
 // contextDebug returns a multi-line breakdown of the history.
