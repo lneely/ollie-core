@@ -119,14 +119,16 @@ func buildFirstPrompt(input string) string {
 }
 
 // systemPrompt builds the full system prompt for a given tool set.
-func systemPrompt(allTools []backend.Tool) string {
-	cwd, _ := os.Getwd()
+func systemPrompt(allTools []backend.Tool, workdir string) string {
+	if workdir == "" {
+		workdir, _ = os.Getwd()
+	}
 	now := time.Now().Format("2006-01-02 15:04:05 MST")
 	names := make([]string, len(allTools))
 	for i, t := range allTools {
 		names[i] = t.Name
 	}
-	return systemPromptBase + "\n\nWorking directory: " + cwd +
+	return systemPromptBase + "\n\nWorking directory: " + workdir +
 		"\nCurrent time: " + now +
 		"\nAvailable tools: " + strings.Join(names, ", ")
 }
@@ -144,9 +146,10 @@ type AgentEnv struct {
 }
 
 // BuildAgentEnv constructs an AgentEnv from a pre-configured Dispatcher and
-// optional agent config. The caller is responsible for registering all servers
-// on d before calling this.
-func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher) AgentEnv {
+// optional agent config. workdir sets the working directory reported in the
+// system prompt; if empty, the process working directory is used.
+// The caller is responsible for registering all servers on d before calling this.
+func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, workdir string) AgentEnv {
 	var messages []string
 
 	if cfg != nil {
@@ -193,9 +196,9 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher) AgentEnv {
 		}
 	}
 
-	sp := systemPrompt(allTools)
+	sp := systemPrompt(allTools, workdir)
 	if agentPrompt != "" {
-		sp = systemPrompt(allTools) + "\n\n" + agentPrompt
+		sp = systemPrompt(allTools, workdir) + "\n\n" + agentPrompt
 	}
 
 	overhead := len(sp)
@@ -281,6 +284,7 @@ type AgentCoreConfig struct {
 	AgentsDir   string
 	SessionsDir string
 	SessionID   string
+	WorkDir     string // working directory for tool execution and system prompt
 	Session     *Session
 	Env           AgentEnv
 	NewDispatcher func() tools.Dispatcher
@@ -298,6 +302,7 @@ type agentCore struct {
 	sessionID     string
 	dispatcher    tools.Dispatcher
 	newDispatcher func() tools.Dispatcher
+	workdir       string
 	ctxOverhead   int
 	currentAction atomic.Pointer[actionHandle]
 }
@@ -325,6 +330,7 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		agentsDir:     cfg.AgentsDir,
 		sessionsDir:   cfg.SessionsDir,
 		sessionID:     cfg.SessionID,
+		workdir:       cfg.WorkDir,
 		dispatcher:    cfg.Env.dispatcher,
 		newDispatcher: cfg.NewDispatcher,
 		ctxOverhead:   cfg.Env.CtxOverhead,
@@ -500,7 +506,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			s.dispatcher.Close()
 		}
 		d := s.newDispatcher()
-		env := BuildAgentEnv(cfg, d)
+		env := BuildAgentEnv(cfg, d, s.workdir)
 		s.dispatcher = env.dispatcher
 		s.hooks = env.Hooks
 		s.loopcfg.systemPrompt = env.systemPrompt

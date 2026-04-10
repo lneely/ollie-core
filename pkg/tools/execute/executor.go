@@ -24,6 +24,10 @@ type Server struct {
 	// If it returns false, the operation is denied.
 	Confirm func(string) bool
 
+	// workdir is the working directory for sandboxed commands. If empty,
+	// the process working directory is used.
+	workdir string
+
 	// rate limiting state (per-Server)
 	rateLimitMu        sync.Mutex
 	validationFailures int
@@ -31,8 +35,8 @@ type Server struct {
 	blockedUntil       time.Time
 }
 
-// New creates a new Server.
-func New() *Server { return &Server{} }
+// New creates a new Server with the given working directory.
+func New(workdir string) *Server { return &Server{workdir: workdir} }
 
 var dangerousPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s*/(home|var|usr|etc|boot|root|bin|sbin|lib|opt|srv)?`),
@@ -158,7 +162,10 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 		return "", err
 	}
 
-	workDir, _ := os.Getwd()
+	workDir := e.workdir
+	if workDir == "" {
+		workDir, _ = os.Getwd()
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
