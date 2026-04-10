@@ -225,17 +225,6 @@ func flattenToolMessages(messages []backend.Message) []backend.Message {
 	return out
 }
 
-// Rollback removes any trailing non-user messages from history, discarding
-// an incomplete assistant turn caused by an interruption.
-func (s *Session) rollback() {
-	s.complete = false
-	i := len(s.messages)
-	for i > 0 && s.messages[i-1].Role != "user" {
-		i--
-	}
-	s.messages = s.messages[:i]
-}
-
 func (s *Session) appendUserMessage(content string) {
 	s.complete = false
 	s.messages = append(s.messages, backend.Message{Role: "user", Content: content})

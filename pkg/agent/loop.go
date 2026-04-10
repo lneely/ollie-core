@@ -48,11 +48,14 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 			if err == nil {
 				break
 			}
+			if ctx.Err() != nil {
+				recordInterruption(state, "request")
+				return ctx.Err()
+			}
 			var rlErr *backend.RateLimitError
 			if !errors.As(err, &rlErr) || attempt >= maxRateLimitRetries {
 				return fmt.Errorf("step %d: %w", step, err)
 			}
-			// Exponential backoff: 5s, 10s, 20s — unless the server told us exactly.
 			wait := rlErr.RetryAfter
 			if wait == 0 {
 				wait = time.Duration(5<<attempt) * time.Second
@@ -81,8 +84,22 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 		}
 
 		if !done {
-			return fmt.Errorf("step %d: stream ended without done event", step)
+			// Stream interrupted. Record whatever we got.
+			msg := backend.Message{Role: "assistant", Content: content.String(), ToolCalls: toolCalls}
+			var results []toolResult
+			for _, tc := range toolCalls {
+				results = append(results, toolResult{
+					ToolCallID: tc.ID,
+					Name:       tc.Name,
+					Content:    `{"status":"cancelled","error":"stream interrupted"}`,
+					IsError:    true,
+				})
+			}
+			state.update(msg, results) //nolint:errcheck
+			recordInterruption(state, "stream")
+			return fmt.Errorf("step %d: stream interrupted: %w", step, ctx.Err())
 		}
+
 		switch stopReason {
 		case "stop", "tool_calls", "length", "":
 			// normal
@@ -91,11 +108,12 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 		}
 		totalToolCalls += len(toolCalls)
 
-		// Announce and execute tool calls.
+		// Execute tool calls, handling mid-execution interruption.
 		msg := backend.Message{Role: "assistant", Content: content.String(), ToolCalls: toolCalls}
 		var results []toolResult
+		interrupted := false
 
-		for _, tc := range toolCalls {
+		for i, tc := range toolCalls {
 			if tc.Name == "" {
 				results = append(results, toolResult{
 					ToolCallID: tc.ID,
@@ -105,6 +123,22 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 				})
 				continue
 			}
+
+			// Check for cancellation before executing.
+			if ctx.Err() != nil {
+				// Fill synthetic results for this and all remaining tool calls.
+				for _, remaining := range toolCalls[i:] {
+					results = append(results, toolResult{
+						ToolCallID: remaining.ID,
+						Name:       remaining.Name,
+						Content:    `{"status":"cancelled","error":"interrupted"}`,
+						IsError:    true,
+					})
+				}
+				interrupted = true
+				break
+			}
+
 			emit(cfg, Event{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
 
 			var result string
@@ -114,6 +148,25 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 				if err != nil {
 					result = fmt.Sprintf("error: %v", err)
 					isErr = true
+					// If cancelled during execution, fill remaining and break.
+					if ctx.Err() != nil {
+						results = append(results, toolResult{
+							ToolCallID: tc.ID,
+							Name:       tc.Name,
+							Content:    result,
+							IsError:    true,
+						})
+						for _, remaining := range toolCalls[i+1:] {
+							results = append(results, toolResult{
+								ToolCallID: remaining.ID,
+								Name:       remaining.Name,
+								Content:    `{"status":"cancelled","error":"interrupted"}`,
+								IsError:    true,
+							})
+						}
+						interrupted = true
+						break
+					}
 				} else {
 					result = out
 				}
@@ -122,19 +175,24 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 				isErr = true
 			}
 
-			results = append(results, toolResult{
-				ToolCallID: tc.ID,
-				Name:       tc.Name,
-				Content:    result,
-				IsError:    isErr,
-			})
-			emit(cfg, Event{Role: "tool", Name: tc.Name, Content: result})
+			if !interrupted {
+				results = append(results, toolResult{
+					ToolCallID: tc.ID,
+					Name:       tc.Name,
+					Content:    result,
+					IsError:    isErr,
+				})
+				emit(cfg, Event{Role: "tool", Name: tc.Name, Content: result})
+			}
 		}
-
-
 
 		if err := state.update(msg, results); err != nil {
 			return fmt.Errorf("step %d update: %w", step, err)
+		}
+
+		if interrupted {
+			recordInterruption(state, "tools")
+			return ctx.Err()
 		}
 
 		if len(toolCalls) == 0 {
@@ -149,12 +207,27 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 		}
 	}
 
-	// Surface stall: only when the step limit was hit without completing.
 	if hitLimit {
 		emit(cfg, Event{Role: "stalled", Content: "max steps"})
 	}
 
 	return nil
+}
+
+// recordInterruption appends a note to history so the model knows what happened.
+func recordInterruption(state state, phase string) {
+	var note string
+	switch phase {
+	case "stream":
+		note = "Note: generation was interrupted before completion. Treat the previous assistant output as partial."
+	case "tools":
+		note = "Note: tool execution was interrupted before completion. Tool outputs may be missing or cancelled."
+	case "request":
+		note = "Note: the previous assistant turn was interrupted before any response was received."
+	default:
+		note = "Note: the previous assistant turn was interrupted."
+	}
+	state.update(backend.Message{Role: "assistant", Content: note}, nil) //nolint:errcheck
 }
 
 func emit(cfg loopConfig, msg Event) {
@@ -163,9 +236,6 @@ func emit(cfg loopConfig, msg Event) {
 	}
 }
 
-// retryCountdown emits one "retry" OutputMsg per second, counting down from
-// wait, so the UI can display a live countdown. Returns ctx.Err() if the
-// context is cancelled before the wait elapses.
 func retryCountdown(ctx context.Context, cfg loopConfig, wait time.Duration) error {
 	deadline := time.Now().Add(wait)
 	for {

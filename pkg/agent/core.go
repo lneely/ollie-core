@@ -334,7 +334,6 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrInterrupted) {
 		handler(Event{Role: "error", Content: err.Error()})
-		s.session.rollback()
 	}
 
 	handler(Event{Role: "newline"})
