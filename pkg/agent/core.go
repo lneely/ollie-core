@@ -10,11 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"crypto/rand"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"crypto/rand"
 
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
@@ -253,11 +253,13 @@ func AgentConfigPath(agentsDir, name string) string {
 	return p
 }
 
-// NewSessionID generates a unique session identifier.
+// NewSessionID generates a unique, lexicographically sortable session identifier.
+// Format: <unix-nanoseconds>-<random-hex> — sortable by creation time, unique
+// even if two sessions are created within the same nanosecond.
 func NewSessionID() string {
 	b := make([]byte, 3)
 	rand.Read(b) //nolint:errcheck
-	return time.Now().Format("20060102-150405") + "-" + fmt.Sprintf("%06x", b)
+	return strconv.FormatInt(time.Now().UnixNano(), 10) + "-" + fmt.Sprintf("%06x", b)
 }
 
 
