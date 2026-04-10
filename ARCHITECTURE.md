@@ -39,13 +39,15 @@ Consumers extend ollie by implementing or composing its interfaces:
 
 All tool servers implement the same `tools.Server` interface regardless of whether they are built-in or backed by MCP. There is no special "builtin" concept — `execute.Server` and `file.Server` are registered by name the same way MCP servers are, and are torn down and recreated on `/agent` switches just like MCP connections.
 
-Each built-in server package exports a `Decl` variable (`var Decl func() tools.Server`) — a factory that produces a fresh server instance. `tools.NewDispatcherFunc` takes a map of name→Decl and returns a `func() tools.Dispatcher` suitable for `agent.AgentCoreConfig.NewDispatcher`. `tools.NewServer(client)` wraps an `mcp.Client` as a `tools.Server`.
+Each built-in server package exports a `Decl` function (`func Decl(...) func() tools.Server`) — a parameterized factory that produces a fresh server instance. `tools.NewDispatcherFunc` takes a map of name→Decl result and returns a `func() tools.Dispatcher` suitable for `agent.AgentCoreConfig.NewDispatcher`. `tools.NewServer(client)` wraps an `mcp.Client` as a `tools.Server`.
+
+`execute.Decl(workdir string)` accepts a working directory that is set as `cmd.Dir` for sandboxed commands and used to expand `{CWD}` in the sandbox config. Pass `""` to fall back to `os.Getwd()`.
 
 **Adding a new tool server:**
 1. Implement `tools.Server` in a new package under `pkg/tools/`
-2. Export `var Decl func() tools.Server`
+2. Export `func Decl(...) func() tools.Server`
 3. Add tool definitions to `pkg/tools/builtin.go` (avoids import cycles)
-4. Register the Decl by name in `tools.NewDispatcherFunc` — no frontend changes needed
+4. Register the Decl result by name in `tools.NewDispatcherFunc` — no frontend changes needed
 
 ## Data Flow
 
@@ -84,21 +86,22 @@ Tool definitions (`ExecuteDefs`, `FileDefs`) live in `pkg/tools/builtin.go` to a
 
 ```go
 newDispatcher := tools.NewDispatcherFunc(map[string]func() tools.Server{
-    "execute": execute.Decl,
+    "execute": execute.Decl(workdir),  // "" falls back to os.Getwd()
     "file":    file.Decl,
 })
 
-env := agent.BuildAgentEnv(cfg, newDispatcher())  // also connects MCP servers from cfg
+env := agent.BuildAgentEnv(cfg, newDispatcher(), workdir)  // also connects MCP servers from cfg
 
 core := agent.NewAgentCore(agent.AgentCoreConfig{
     Backend:       be,
+    WorkDir:       workdir,
     Env:           env,
     NewDispatcher: newDispatcher,
     // ...
 })
 ```
 
-`BuildAgentEnv` adds MCP servers from the config on top of the pre-registered servers. On `/agent` switches, `NewDispatcher` is called to produce a fresh dispatcher — all servers (built-in and MCP) are torn down and recreated for the new agent config.
+`BuildAgentEnv` adds MCP servers from the config on top of the pre-registered servers. On `/agent` switches, `NewDispatcher` is called to produce a fresh dispatcher — all servers (built-in and MCP) are torn down and recreated for the new agent config. `WorkDir` is preserved across switches.
 
 ## Session and Context
 

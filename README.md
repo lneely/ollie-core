@@ -83,7 +83,7 @@ Five built-in tools across two servers:
 
 MCP server tools are discovered at startup and available alongside the built-ins.
 
-Each tool server exports a `Decl` variable (`var Decl func() tools.Server`) — a factory that creates a fresh server instance. Frontends register servers by passing Decls to `tools.NewDispatcherFunc`. Adding a new tool means implementing `tools.Server`, exporting `Decl`, and registering it — no frontend changes required.
+Each tool server exports a `Decl` function that returns a `func() tools.Server` factory. `execute.Decl(workdir)` accepts a working directory used as `cmd.Dir` for sandboxed commands and for `{CWD}` expansion in the sandbox config; pass `""` to fall back to `os.Getwd()`. Frontends register servers by passing Decl results to `tools.NewDispatcherFunc`. Adding a new tool means implementing `tools.Server`, exporting a `Decl` function, and registering it — no frontend changes required.
 
 ## Skills
 
