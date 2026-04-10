@@ -215,6 +215,8 @@ type agentCore struct {
 	newDispatcher func() tools.Dispatcher
 	workdir       string
 	currentAction atomic.Pointer[actionHandle]
+	fifo          PromptFIFO
+	pendingInject atomic.Pointer[string]
 }
 
 var _ Core = (*agentCore)(nil) // compile-time interface check
@@ -296,6 +298,27 @@ func (s *agentCore) Interrupt(cause error) bool {
 	return false
 }
 
+func (s *agentCore) Inject(prompt string) {
+	s.pendingInject.Store(&prompt)
+	// Cancel the current action so blocking tools (execute_code, etc.)
+	// are killed immediately and the model sees the interruption.
+	if cancel := s.getActionCancel(); cancel != nil {
+		cancel(ErrInterrupted)
+	}
+}
+
+func (s *agentCore) Queue(prompt string) {
+	s.fifo.Push(prompt)
+}
+
+func (s *agentCore) PopQueue() (string, bool) {
+	return s.fifo.Pop()
+}
+
+func (s *agentCore) IsRunning() bool {
+	return s.currentAction.Load() != nil
+}
+
 // Submit implements Core. It processes one line of user input: slash commands
 // and shell shortcuts are dispatched immediately via handler; any other input
 // starts an agent turn that streams events to handler.
@@ -317,6 +340,12 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	s.currentAction.Store(handle)
 
 	s.loopcfg.Output = handler
+	s.loopcfg.PopInject = func() string {
+		if p := s.pendingInject.Swap(nil); p != nil {
+			return *p
+		}
+		return ""
+	}
 
 	// Auto-compact before the turn if approaching the context limit.
 	if s.session != nil {
@@ -341,6 +370,22 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	s.hooks.Run(HookStop)
 
 	s.saveSession()
+
+	// If an inject was pending but never consumed (e.g. text-only response
+	// with no tool calls), treat it as the next user message.
+	if p := s.pendingInject.Swap(nil); p != nil && ctx.Err() == nil {
+		s.Submit(ctx, *p, handler)
+		return
+	}
+
+	// Drain the FIFO: run queued prompts sequentially.
+	for ctx.Err() == nil {
+		next, ok := s.fifo.Pop()
+		if !ok {
+			break
+		}
+		s.Submit(ctx, next, handler)
+	}
 }
 
 func (s *agentCore) handleCommand(ctx context.Context, input string, handler EventHandler) bool {

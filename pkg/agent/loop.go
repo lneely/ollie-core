@@ -23,6 +23,7 @@ type loopConfig struct {
 	Output           EventHandler
 	systemPrompt     string
 	GenerationParams backend.GenerationParams
+	PopInject        func() string // returns and clears pending inject, or ""
 }
 
 func run(ctx context.Context, cfg loopConfig, state state) error {
@@ -176,6 +177,12 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 			}
 
 			if !interrupted {
+				// Append any pending user interruption to the last tool result.
+				if i == len(toolCalls)-1 && cfg.PopInject != nil {
+					if injected := cfg.PopInject(); injected != "" {
+						result += "\n\n<system-user-interruption>\n" + injected + "\n</system-user-interruption>"
+					}
+				}
 				results = append(results, toolResult{
 					ToolCallID: tc.ID,
 					Name:       tc.Name,
