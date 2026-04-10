@@ -5,9 +5,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"ollie/pkg/backend"
+)
+
+const (
+	compactionPrompt = `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
+
+Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue
+
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work.`
+
+	compactionSummaryPrefix = `Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work.
+
+Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:`
+
+	// compactionUserTokenBudget is the approximate token budget for preserving
+	// recent user messages in the compacted history.
+	compactionUserTokenBudget = 20000
 )
 
 // PersistedSession is the on-disk format for a saved session.
@@ -82,35 +103,29 @@ func (s *Session) markComplete() error {
 	return nil
 }
 
-// Compact proactively summarizes older messages via an LLM call, replacing
-// them with a single summary system message plus recent messages.
+// PreCompactionSnapshot returns a copy of the current messages for persistence
+// before compaction. Call this before compact().
+func (s *Session) PreCompactionSnapshot() []backend.Message {
+	return slices.Clone(s.messages)
+}
+
+// Compact summarizes the conversation via an LLM call, replacing the history
+// with system messages + preserved user messages + a structured summary.
 // Returns (n compacted, summary text, error); n==0 means nothing to compact.
 func (s *Session) compact(ctx context.Context, b backend.Backend) (int, string, error) {
-	// Keep the last few conversational turns as the "tail".
-	const tailCount = 10
-	var system, rest []backend.Message
-	for _, m := range s.messages {
-		if m.Role == "system" {
-			system = append(system, m)
-		} else {
-			rest = append(rest, m)
-		}
-	}
-	if len(rest) <= tailCount {
+	if len(s.messages) <= 4 {
 		return 0, "", nil
 	}
-	older := rest[:len(rest)-tailCount]
-	tail := rest[len(rest)-tailCount:]
 
-	var sb strings.Builder
-	for _, m := range older {
-		fmt.Fprintf(&sb, "%s: %s\n", m.Role, m.Content)
-	}
-	prompt := "Summarize the following conversation history concisely, preserving key facts, decisions, and context:\n\n" + sb.String()
+	// Flatten tool calls into plain text so the compaction request
+	// doesn't need tool schemas.
+	flattened := flattenToolMessages(s.messages)
+	flattened = append(flattened, backend.Message{
+		Role:    "user",
+		Content: compactionPrompt,
+	})
 
-	ch, err := b.ChatStream(ctx, []backend.Message{
-		{Role: "user", Content: prompt},
-	}, nil, backend.GenerationParams{})
+	ch, err := b.ChatStream(ctx, flattened, nil, backend.GenerationParams{})
 	if err != nil {
 		return 0, "", fmt.Errorf("compact: %w", err)
 	}
@@ -126,16 +141,88 @@ func (s *Session) compact(ctx context.Context, b backend.Backend) (int, string, 
 	}
 
 	summaryText := strings.TrimSpace(summary.String())
+	if summaryText == "" {
+		return 0, "", fmt.Errorf("compact: empty summary")
+	}
 
-	// Rebuild: system messages + summary + tail.
-	s.messages = s.messages[:0]
-	s.messages = append(s.messages, system...)
-	s.messages = append(s.messages, backend.Message{
-		Role:    "system",
-		Content: "[conversation summary: " + summaryText + "]",
+	// Rebuild: system messages + preserved user messages + summary.
+	beforeCount := len(s.messages)
+	s.messages = buildCompactedHistory(s.messages, summaryText)
+	return beforeCount - len(s.messages), summaryText, nil
+}
+
+// buildCompactedHistory constructs the post-compaction message list:
+// system messages + recent user messages (within token budget) + summary.
+func buildCompactedHistory(history []backend.Message, summary string) []backend.Message {
+	var result []backend.Message
+	for _, m := range history {
+		if m.Role == "system" {
+			result = append(result, m)
+		}
+	}
+	result = append(result, selectUserMessages(history, compactionUserTokenBudget)...)
+	result = append(result, backend.Message{
+		Role:    "user",
+		Content: compactionSummaryPrefix + "\n" + strings.TrimSpace(summary),
 	})
-	s.messages = append(s.messages, tail...)
-	return len(older), summaryText, nil
+	return result
+}
+
+// selectUserMessages picks recent user messages (newest first) up to a token budget.
+func selectUserMessages(history []backend.Message, tokenBudget int) []backend.Message {
+	var selected []backend.Message
+	remaining := tokenBudget
+	for i := len(history) - 1; i >= 0; i-- {
+		m := history[i]
+		if m.Role != "user" {
+			continue
+		}
+		text := strings.TrimSpace(m.Content)
+		if text == "" || strings.HasPrefix(text, compactionSummaryPrefix) {
+			continue
+		}
+		tokens := (len(text) + 3) / 4
+		if tokens > remaining {
+			break
+		}
+		remaining -= tokens
+		selected = append(selected, backend.Message{Role: "user", Content: text})
+	}
+	slices.Reverse(selected)
+	return selected
+}
+
+// flattenToolMessages converts tool call/result sequences into plain text
+// so the compaction request doesn't include tool-specific structures that
+// the API may reject when no tools are defined.
+func flattenToolMessages(messages []backend.Message) []backend.Message {
+	out := make([]backend.Message, 0, len(messages))
+	for _, m := range messages {
+		switch {
+		case m.Role == "assistant" && len(m.ToolCalls) > 0:
+			var sb strings.Builder
+			if m.Content != "" {
+				sb.WriteString(m.Content)
+				sb.WriteString("\n\n")
+			}
+			for _, tc := range m.ToolCalls {
+				fmt.Fprintf(&sb, "[Tool call: %s(%s)]\n", tc.Name, string(tc.Arguments))
+			}
+			out = append(out, backend.Message{Role: "assistant", Content: sb.String()})
+		case m.Role == "tool":
+			text := m.Content
+			if len(text) > 4000 {
+				text = text[:4000] + "..."
+			}
+			out = append(out, backend.Message{
+				Role:    "user",
+				Content: fmt.Sprintf("[Tool result for %s]:\n%s", m.ToolCallID, text),
+			})
+		default:
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // Rollback removes any trailing non-user messages from history, discarding

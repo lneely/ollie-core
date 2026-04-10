@@ -434,17 +434,26 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			handler(infoEvent("nothing to compact"))
 			return true
 		}
-		n, summary, err := s.session.compact(ctx, s.loopcfg.Backend)
+		// Snapshot history before compaction for persistence.
+		snapshot := s.session.PreCompactionSnapshot()
+		n, _, err := s.session.compact(ctx, s.loopcfg.Backend)
 		if err != nil {
 			handler(infoEvent("compact error: " + err.Error()))
 		} else if n == 0 {
 			handler(infoEvent("nothing to compact"))
 		} else {
-			handler(infoEvent(fmt.Sprintf("compacted %d messages", n)))
-			if summary != "" {
-				handler(Event{Role: "newline"})
-				handler(infoEvent(summary))
+			// Persist pre-compaction history as append-only JSONL.
+			if s.sessionsDir != "" && s.sessionID != "" {
+				histPath := s.sessionsDir + "/" + s.sessionID + ".compaction.jsonl"
+				if data, err := json.Marshal(snapshot); err == nil {
+					f, err := os.OpenFile(histPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+					if err == nil {
+						f.Write(append(data, '\n')) //nolint:errcheck
+						f.Close()                   //nolint:errcheck
+					}
+				}
 			}
+			handler(infoEvent(fmt.Sprintf("compacted %d messages", n)))
 			s.saveSession()
 		}
 		return true
@@ -528,7 +537,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			"  /backend <type>  - switch backend (ollama, openai)",
 			"  /model <name>    - switch model",
 			"  /queued [pop|clear] - manage queued prompts",
-			"  /compact         - summarize evicted context messages",
+			"  /compact         - summarize conversation and compact context",
 			"  /context         - show context window debug info",
 			"  /history         - dump bounded message history",
 			"  /clear           - clear session",
