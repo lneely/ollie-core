@@ -319,6 +319,24 @@ func (s *agentCore) IsRunning() bool {
 	return s.currentAction.Load() != nil
 }
 
+func (s *agentCore) Usage() string {
+	if s.session == nil {
+		return "no active session"
+	}
+	ctxLen := s.loopcfg.Backend.ContextLength(context.Background())
+	if ctxLen <= 0 {
+		ctxLen = defaultContextLength
+	}
+	estimated := s.session.estimateTokens()
+	pct := estimated * 100 / ctxLen
+	return fmt.Sprintf("%d / %d (%d%%)", estimated, ctxLen, pct)
+}
+
+func (s *agentCore) ListModels() string {
+	models := s.loopcfg.Backend.Models(context.Background())
+	return strings.Join(models, "\n")
+}
+
 // Submit implements Core. It processes one line of user input: slash commands
 // and shell shortcuts are dispatched immediately via handler; any other input
 // starts an agent turn that streams events to handler.
@@ -577,6 +595,26 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		handler(infoEvent(strings.TrimRight(s.session.contextDebug(), "\n")))
 		return true
 
+	case "/usage":
+		if s.session == nil {
+			handler(infoEvent("no active session"))
+			return true
+		}
+		total := s.session.TotalInputTokens + s.session.TotalOutputTokens
+		ctxLen := s.loopcfg.Backend.ContextLength(ctx)
+		if ctxLen <= 0 {
+			ctxLen = defaultContextLength
+		}
+		estimated := s.session.estimateTokens()
+		pct := estimated * 100 / ctxLen
+		handler(infoEvent(fmt.Sprintf("~%d / %d tokens (%d%%) | %d in, %d out, %d requests",
+			estimated, ctxLen, pct,
+			s.session.TotalInputTokens, s.session.TotalOutputTokens, s.session.TotalRequests)))
+		if total == 0 {
+			handler(infoEvent("(backend does not report token usage)"))
+		}
+		return true
+
 	case "/history":
 		if s.session == nil {
 			handler(infoEvent("no active session"))
@@ -651,6 +689,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			"  /queued [pop|clear] - manage queued prompts",
 			"  /compact         - summarize conversation and compact context",
 			"  /context         - show context window debug info",
+			"  /usage           - show token usage and context percentage",
 			"  /history         - dump bounded message history",
 			"  /clear           - clear session",
 			"  /help            - show this help",

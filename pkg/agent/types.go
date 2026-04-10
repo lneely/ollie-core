@@ -50,6 +50,12 @@ type Core interface {
 
 	// IsRunning returns true if an agent turn is currently in progress.
 	IsRunning() bool
+
+	// Usage returns a one-line usage summary string.
+	Usage() string
+
+	// ListModels returns available model names, one per line.
+	ListModels() string
 }
 
 // PromptFIFO is a simple thread-safe FIFO for queued prompts.
