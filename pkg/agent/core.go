@@ -43,10 +43,14 @@ Tool call examples:
 
 // buildFirstPrompt seeds the first user message with the project file listing
 // and README so the agent has immediate context.
-func buildFirstPrompt(input string) string {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return input
+func buildFirstPrompt(input, workdir string) string {
+	cwd := workdir
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return input
+		}
 	}
 
 	var sb strings.Builder
@@ -382,7 +386,7 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	s.hooks.Run(HookUserPromptSubmit)
 
 	if s.session == nil {
-		s.session = newSessionWithConfig(buildFirstPrompt(input), contextConfig{
+		s.session = newSessionWithConfig(buildFirstPrompt(input, s.workdir), contextConfig{
 			FixedOverheadChars: s.ctxOverhead,
 		})
 	} else {
