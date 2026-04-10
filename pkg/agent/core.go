@@ -11,9 +11,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"crypto/rand"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"text/template"
 	"time"
 
 	"ollie/pkg/backend"
@@ -21,25 +23,6 @@ import (
 	"ollie/pkg/mcp"
 	"ollie/pkg/tools"
 )
-
-const systemPromptBase = `Use the fewest words possible. No preamble, filler, or narration ("Let me...", "I'll now...", "Great!"). No explanations of actions taken. No summaries of completed work. No reasoning unless asked. If the answer is one word, write one word.
-Call tools immediately and directly. Never describe what you are about to do — act.
-Complete tasks fully before stopping. Do not pause mid-task to narrate progress or request confirmation.
-Do not ask clarifying questions unless the task is genuinely ambiguous. Attempt the task; correct based on feedback.
-Do not restate tasks, hedge, or self-congratulate.
-Do not attempt tasks outside your tools.
-Do not use hedging language ("it looks like", "it appears", "it seems", "likely", "probably"). If you are uncertain, use tools to find out. Give definite answers based on evidence.
-Do not re-read or re-fetch any file or resource that already has a result in the conversation history. Use the existing result.
-Use tools to gather information before asking the user for clarification. Explore files, run commands, and investigate the environment first. Only ask when you have exhausted what you can discover on your own.
-Use execute_code for all shell commands and scripts. Use execute_tool only for named scripts (see execute_tool description for path). Use execute_pipe to chain steps: use {code: "cmd --flags"} for shell commands, {tool, args} only for named scripts.
-Use grep or execute_code to search and explore files. Use file_read only when you need to write — it reads the full file and is required before file_write. Never use shell commands to read or write files.
-
-Tool call examples:
-  Read a file:      {"path": "/home/user/foo.go"}
-  Run shell code:   {"code": "ls -la", "language": "bash"}
-  List directory:   {"code": "find . -maxdepth 2 -type f", "language": "bash"}
-  Run named tool:   {"tool": "discover_skill.sh", "args": ["keyword"]}
-  Pipeline:         {"pipe": [{"code": "cat file.txt"}, {"code": "grep foo"}]}`
 
 // buildFirstPrompt seeds the first user message with the project file listing
 // and README so the agent has immediate context.
@@ -123,18 +106,26 @@ func buildFirstPrompt(input, workdir string) string {
 }
 
 // systemPrompt builds the full system prompt for a given tool set.
-func systemPrompt(allTools []backend.Tool, workdir string) string {
+func systemPrompt(workdir string) string {
 	if workdir == "" {
 		workdir, _ = os.Getwd()
 	}
-	now := time.Now().Format("2006-01-02 15:04:05 MST")
-	names := make([]string, len(allTools))
-	for i, t := range allTools {
-		names[i] = t.Name
+	raw, err := os.ReadFile(DefaultPromptsDir() + "/SYSTEM_PROMPT.md")
+	if err != nil {
+		return "You are ollie, an agentic assistant."
 	}
-	return systemPromptBase + "\n\nWorking directory: " + workdir +
-		"\nCurrent time: " + now +
-		"\nAvailable tools: " + strings.Join(names, ", ")
+	tmpl, err := template.New("system").Parse(string(raw))
+	if err != nil {
+		return string(raw)
+	}
+	var buf bytes.Buffer
+	tmpl.Execute(&buf, map[string]string{
+		"WorkDir":   workdir,
+		"Platform":  runtime.GOOS,
+		"Date":      time.Now().Format("2006-01-02"),
+		"IsGitRepo": "unknown",
+	})
+	return buf.String()
 }
 
 // AgentEnv holds the runtime state derived from an agent config file.
@@ -200,9 +191,9 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, workdir string) Agent
 		}
 	}
 
-	sp := systemPrompt(allTools, workdir)
+	sp := systemPrompt(workdir)
 	if agentPrompt != "" {
-		sp = systemPrompt(allTools, workdir) + "\n\n" + agentPrompt
+		sp += "\n\n" + agentPrompt
 	}
 
 	overhead := len(sp)
@@ -239,6 +230,12 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, workdir string) Agent
 func DefaultAgentsDir() string {
 	home, _ := os.UserHomeDir()
 	return home + "/.config/ollie/agents"
+}
+
+// DefaultPromptsDir returns the default directory for prompt templates.
+func DefaultPromptsDir() string {
+	home, _ := os.UserHomeDir()
+	return home + "/.config/ollie/prompts"
 }
 
 // DefaultSessionsDir returns the default directory for saved sessions.
