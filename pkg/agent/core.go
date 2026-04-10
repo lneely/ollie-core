@@ -6,10 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"crypto/rand"
 	"runtime"
 	"strconv"
@@ -23,87 +21,6 @@ import (
 	"ollie/pkg/mcp"
 	"ollie/pkg/tools"
 )
-
-// buildFirstPrompt seeds the first user message with the project file listing
-// and README so the agent has immediate context.
-func buildFirstPrompt(input, workdir string) string {
-	cwd := workdir
-	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return input
-		}
-	}
-
-	var sb strings.Builder
-	sb.WriteString(input)
-
-	const maxListingBytes = 16 * 1024
-	const maxReadmeBytes = 8 * 1024
-
-	lsOut, err := exec.Command("git", "-C", cwd, "ls-files").Output()
-	if err == nil && len(lsOut) > 0 {
-		if len(lsOut) > maxListingBytes {
-			lsOut = lsOut[:maxListingBytes]
-			if i := bytes.LastIndexByte(lsOut, '\n'); i >= 0 {
-				lsOut = lsOut[:i+1]
-			}
-			lsOut = append(lsOut, []byte("...(truncated)\n")...)
-		}
-		sb.WriteString("\n\n--- files (git ls-files) ---\n")
-		sb.Write(lsOut)
-	} else {
-		var files []string
-		filepath.WalkDir(cwd, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return nil
-			}
-			rel := strings.TrimPrefix(path, cwd+"/")
-			if rel == "" {
-				return nil
-			}
-			if strings.HasPrefix(d.Name(), ".") {
-				if d.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !d.IsDir() {
-				files = append(files, rel)
-			}
-			return nil
-		})
-		if len(files) > 0 {
-			sb.WriteString("\n\n--- files ---\n")
-			written := 0
-			for _, f := range files {
-				line := f + "\n"
-				if written+len(line) > maxListingBytes {
-					sb.WriteString("...(truncated)\n")
-					break
-				}
-				sb.WriteString(line)
-				written += len(line)
-			}
-		}
-	}
-
-	readmeData, err := os.ReadFile(cwd + "/README.md")
-	if err == nil && len(readmeData) > 0 {
-		if len(readmeData) > maxReadmeBytes {
-			readmeData = readmeData[:maxReadmeBytes]
-			if i := bytes.LastIndexByte(readmeData, '\n'); i >= 0 {
-				readmeData = readmeData[:i+1]
-			}
-			readmeData = append(readmeData, []byte("...(truncated)\n")...)
-		}
-		sb.WriteString("\n--- README.md ---\n")
-		sb.Write(readmeData)
-	}
-
-	return sb.String()
-}
 
 // systemPrompt builds the full system prompt for a given tool set.
 func systemPrompt(workdir string) string {
@@ -374,7 +291,7 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	s.hooks.Run(HookUserPromptSubmit)
 
 	if s.session == nil {
-		s.session = newSession(buildFirstPrompt(input, s.workdir))
+		s.session = newSession(input)
 	} else {
 		s.session.appendUserMessage(input)
 	}
