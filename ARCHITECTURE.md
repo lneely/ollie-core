@@ -37,9 +37,15 @@ Consumers extend ollie by implementing or composing its interfaces:
 - **`tools.Dispatcher`** — replace the tool router entirely (e.g. remote dispatcher, mock)
 - **`agent.Core`** — the agent's public API; frontends drive it without knowing internals
 
-All tool servers implement the same `tools.Server` interface regardless of whether they are built-in or backed by MCP. There is no special "builtin" concept — `execute.Server` and `file.Server` are just servers registered by name, the same way MCP servers are.
+All tool servers implement the same `tools.Server` interface regardless of whether they are built-in or backed by MCP. There is no special "builtin" concept — `execute.Server` and `file.Server` are registered by name the same way MCP servers are, and are torn down and recreated on `/agent` switches just like MCP connections.
 
-`tools.NewDispatcher()` returns a `tools.Dispatcher`. Callers register servers with `d.AddServer(name, server)` before passing `d` to `agent.BuildAgentEnv`. `tools.NewServer(client)` wraps an `mcp.Client` as a `tools.Server`.
+Each built-in server package exports a `Decl` variable (`var Decl func() tools.Server`) — a factory that produces a fresh server instance. `tools.NewDispatcherFunc` takes a map of name→Decl and returns a `func() tools.Dispatcher` suitable for `agent.AgentCoreConfig.NewDispatcher`. `tools.NewServer(client)` wraps an `mcp.Client` as a `tools.Server`.
+
+**Adding a new tool server:**
+1. Implement `tools.Server` in a new package under `pkg/tools/`
+2. Export `var Decl func() tools.Server`
+3. Add tool definitions to `pkg/tools/builtin.go` (avoids import cycles)
+4. Register the Decl by name in `tools.NewDispatcherFunc` — no frontend changes needed
 
 ## Data Flow
 
@@ -77,15 +83,10 @@ Tool definitions (`ExecuteDefs`, `FileDefs`) live in `pkg/tools/builtin.go` to a
 ## Typical Consumer Setup
 
 ```go
-execServer := execute.New(logDir, workspaceBase)
-fileServer := file.New()
-
-newDispatcher := func() tools.Dispatcher {
-    d := tools.NewDispatcher()
-    d.AddServer("execute", execServer)
-    d.AddServer("file", fileServer)
-    return d
-}
+newDispatcher := tools.NewDispatcherFunc(map[string]func() tools.Server{
+    "execute": execute.Decl,
+    "file":    file.Decl,
+})
 
 env := agent.BuildAgentEnv(cfg, newDispatcher())  // also connects MCP servers from cfg
 
@@ -97,7 +98,7 @@ core := agent.NewAgentCore(agent.AgentCoreConfig{
 })
 ```
 
-`BuildAgentEnv` adds MCP servers from the config on top of the pre-registered servers. `NewDispatcher` is stored on the core so `/agent` switching can rebuild a fresh dispatcher — base servers plus new MCP connections from the new agent config — without `agent` needing to import `execute` or `file`.
+`BuildAgentEnv` adds MCP servers from the config on top of the pre-registered servers. On `/agent` switches, `NewDispatcher` is called to produce a fresh dispatcher — all servers (built-in and MCP) are torn down and recreated for the new agent config.
 
 ## Session and Context
 
