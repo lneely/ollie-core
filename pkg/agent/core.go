@@ -349,7 +349,14 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	handle := &actionHandle{cancel: actCancel}
 	s.currentAction.Store(handle)
 
-	s.loopcfg.Output = handler
+	s.loopcfg.Output = func(ev Event) {
+		if ev.Role == "usage" && s.session != nil {
+			var in, out int
+			fmt.Sscanf(ev.Content, "%d %d", &in, &out)
+			s.session.addUsage(backend.Usage{InputTokens: in, OutputTokens: out})
+		}
+		handler(ev)
+	}
 	s.loopcfg.PopInject = func() string {
 		if p := s.pendingInject.Swap(nil); p != nil {
 			return *p

@@ -69,6 +69,10 @@ type Session struct {
 	goal     string
 	messages []backend.Message
 	complete bool
+	// Cumulative usage tracking.
+	TotalInputTokens  int
+	TotalOutputTokens int
+	TotalRequests     int
 }
 
 // newSession creates a new Session with an initial user message.
@@ -85,6 +89,12 @@ func (s *Session) history() []backend.Message {
 }
 
 func (s *Session) isComplete() bool { return s.complete }
+
+func (s *Session) addUsage(u backend.Usage) {
+	s.TotalInputTokens += u.InputTokens
+	s.TotalOutputTokens += u.OutputTokens
+	s.TotalRequests++
+}
 
 func (s *Session) update(assistant backend.Message, results []toolResult) error {
 	s.messages = append(s.messages, assistant)

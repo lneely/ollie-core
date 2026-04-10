@@ -80,6 +80,12 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 			if ev.Done {
 				stopReason = ev.StopReason
 				done = true
+				if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 {
+					emit(cfg, Event{
+						Role:    "usage",
+						Content: fmt.Sprintf("%d %d", ev.Usage.InputTokens, ev.Usage.OutputTokens),
+					})
+				}
 				break
 			}
 		}

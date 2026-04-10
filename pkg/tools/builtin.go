@@ -90,3 +90,20 @@ func FileDefs() []ToolInfo {
 		},
 	}
 }
+
+// ReasoningDefs returns the ToolInfo definitions for the reasoning_* built-in tools.
+func ReasoningDefs() []ToolInfo {
+	return []ToolInfo{
+		{
+			Name:        "reasoning_think",
+			Description: "Internal reasoning tool for breaking down problems, planning approaches, analyzing constraints, and reasoning through multi-step solutions before acting. The thought content is not shown to the user.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"required": ["thought"],
+				"properties": {
+					"thought": {"type": "string", "description": "A reflective note or intermediate reasoning step."}
+				}
+			}`),
+		},
+	}
+}
