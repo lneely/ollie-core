@@ -136,7 +136,6 @@ type AgentEnv struct {
 	Hooks        Hooks
 	systemPrompt string
 	genParams    backend.GenerationParams
-	CtxOverhead  int
 	Messages     []string
 }
 
@@ -196,11 +195,6 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, workdir string) Agent
 		sp += "\n\n" + agentPrompt
 	}
 
-	overhead := len(sp)
-	for _, t := range allTools {
-		overhead += len(t.Name) + len(t.Description) + len(t.Parameters)
-	}
-
 	exec := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
 		server, ok := serverOf[name]
 		if !ok {
@@ -220,7 +214,6 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, workdir string) Agent
 		Hooks:        hooks,
 		systemPrompt: sp,
 		genParams:    genParams,
-		CtxOverhead:  overhead,
 		Messages:     messages,
 	}
 }
@@ -304,7 +297,6 @@ type agentCore struct {
 	dispatcher    tools.Dispatcher
 	newDispatcher func() tools.Dispatcher
 	workdir       string
-	ctxOverhead   int
 	currentAction atomic.Pointer[actionHandle]
 }
 
@@ -334,7 +326,6 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		workdir:       cfg.WorkDir,
 		dispatcher:    cfg.Env.dispatcher,
 		newDispatcher: cfg.NewDispatcher,
-		ctxOverhead:   cfg.Env.CtxOverhead,
 	}
 }
 
@@ -383,9 +374,7 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	s.hooks.Run(HookUserPromptSubmit)
 
 	if s.session == nil {
-		s.session = newSessionWithConfig(buildFirstPrompt(input, s.workdir), contextConfig{
-			FixedOverheadChars: s.ctxOverhead,
-		})
+		s.session = newSession(buildFirstPrompt(input, s.workdir))
 	} else {
 		s.session.appendUserMessage(input)
 	}
@@ -514,7 +503,6 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		s.loopcfg.Tools = env.tools
 		s.loopcfg.Exec = env.exec
 		s.loopcfg.GenerationParams = env.genParams
-		s.ctxOverhead = env.CtxOverhead
 		s.agentName = name
 		s.session = nil
 		s.sessionID = NewSessionID()

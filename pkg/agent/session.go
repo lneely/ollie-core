@@ -22,7 +22,7 @@ func (s *Session) saveTo(path, id, agentName string) error {
 	ps := PersistedSession{
 		ID:       id,
 		Agent:    agentName,
-		Messages: s.ctx.Messages(),
+		Messages: s.messages,
 	}
 	data, err := json.Marshal(ps)
 	if err != nil {
@@ -31,13 +31,9 @@ func (s *Session) saveTo(path, id, agentName string) error {
 	return os.WriteFile(path, data, 0600)
 }
 
-// RestoreSession reconstructs a Session from a persisted message list,
-// applying cfg to the contextBuilder.
-func RestoreSession(messages []backend.Message, ctxOverhead int) *Session {
-	s := &Session{ctx: newContextBuilder(contextConfig{FixedOverheadChars: ctxOverhead})}
-	for _, m := range messages {
-		s.ctx.Append(m)
-	}
+// RestoreSession reconstructs a Session from a persisted message list.
+func RestoreSession(messages []backend.Message) *Session {
+	s := &Session{messages: messages}
 	for _, m := range messages {
 		if m.Role == "user" {
 			s.goal = m.Content
@@ -48,47 +44,31 @@ func RestoreSession(messages []backend.Message, ctxOverhead int) *Session {
 }
 
 // Session is an ephemeral in-memory state backend.
-// It lives only for the duration of the process; nothing is persisted.
-//
-// History() returns a bounded context window via contextBuilder to prevent
-// prompt explosion across multi-step agent loops. Use newSessionWithConfig
-// to override the default limits.
 type Session struct {
 	goal     string
-	ctx      *contextBuilder
+	messages []backend.Message
 	complete bool
 }
 
-// newSession creates a Session with default context window limits.
+// newSession creates a new Session with an initial user message.
 func newSession(goal string) *Session {
-	return newSessionWithConfig(goal, contextConfig{})
-}
-
-// newSessionWithConfig creates a Session with explicit context window limits.
-// Pass a zero-value contextConfig to use all defaults.
-func newSessionWithConfig(goal string, cfg contextConfig) *Session {
-	s := &Session{
-		goal: goal,
-		ctx:  newContextBuilder(cfg),
-	}
-	s.ctx.Append(backend.Message{Role: "user", Content: goal})
+	s := &Session{goal: goal}
+	s.messages = append(s.messages, backend.Message{Role: "user", Content: goal})
 	return s
 }
 
 func (s *Session) Goal() string { return s.goal }
 
-// History returns the bounded history window safe for passing to the backend.
-// A compaction notice is injected when older messages have been evicted.
 func (s *Session) history() []backend.Message {
-	return s.ctx.BoundedHistoryWithNotice()
+	return s.messages
 }
 
 func (s *Session) isComplete() bool { return s.complete }
 
 func (s *Session) update(assistant backend.Message, results []toolResult) error {
-	s.ctx.Append(assistant)
+	s.messages = append(s.messages, assistant)
 	for _, r := range results {
-		s.ctx.Append(backend.Message{
+		s.messages = append(s.messages, backend.Message{
 			Role:       "tool",
 			Content:    r.Content,
 			ToolCallID: r.ToolCallID,
@@ -102,17 +82,26 @@ func (s *Session) markComplete() error {
 	return nil
 }
 
-// Compact proactively summarizes all messages older than the tail window via
-// an LLM call, replacing them with a single summary system message.
-// Unlike the previous eviction-based approach, this works for any session size.
+// Compact proactively summarizes older messages via an LLM call, replacing
+// them with a single summary system message plus recent messages.
 // Returns (n compacted, summary text, error); n==0 means nothing to compact.
 func (s *Session) compact(ctx context.Context, b backend.Backend) (int, string, error) {
-	older := s.ctx.OlderMessages()
-	if len(older) == 0 {
+	// Keep the last few conversational turns as the "tail".
+	const tailCount = 10
+	var system, rest []backend.Message
+	for _, m := range s.messages {
+		if m.Role == "system" {
+			system = append(system, m)
+		} else {
+			rest = append(rest, m)
+		}
+	}
+	if len(rest) <= tailCount {
 		return 0, "", nil
 	}
+	older := rest[:len(rest)-tailCount]
+	tail := rest[len(rest)-tailCount:]
 
-	// Build a prompt asking the model to summarize the older messages.
 	var sb strings.Builder
 	for _, m := range older {
 		fmt.Fprintf(&sb, "%s: %s\n", m.Role, m.Content)
@@ -139,19 +128,13 @@ func (s *Session) compact(ctx context.Context, b backend.Backend) (int, string, 
 	summaryText := strings.TrimSpace(summary.String())
 
 	// Rebuild: system messages + summary + tail.
-	system := s.ctx.SystemMessages()
-	tail := s.ctx.TailWindow()
-	s.ctx.Truncate(0)
-	for _, m := range system {
-		s.ctx.Append(m)
-	}
-	s.ctx.Append(backend.Message{
+	s.messages = s.messages[:0]
+	s.messages = append(s.messages, system...)
+	s.messages = append(s.messages, backend.Message{
 		Role:    "system",
 		Content: "[conversation summary: " + summaryText + "]",
 	})
-	for _, m := range tail {
-		s.ctx.Append(m)
-	}
+	s.messages = append(s.messages, tail...)
 	return len(older), summaryText, nil
 }
 
@@ -159,30 +142,44 @@ func (s *Session) compact(ctx context.Context, b backend.Backend) (int, string, 
 // an incomplete assistant turn caused by an interruption.
 func (s *Session) rollback() {
 	s.complete = false
-	msgs := s.ctx.Messages()
-	i := len(msgs)
-	for i > 0 && msgs[i-1].Role != "user" {
+	i := len(s.messages)
+	for i > 0 && s.messages[i-1].Role != "user" {
 		i--
 	}
-	s.ctx.Truncate(i)
+	s.messages = s.messages[:i]
 }
-// flag so the loop will run again on the next call to Loop.Run.
+
 func (s *Session) appendUserMessage(content string) {
 	s.complete = false
-	s.ctx.Append(backend.Message{Role: "user", Content: content})
+	s.messages = append(s.messages, backend.Message{Role: "user", Content: content})
 }
 
-// contextStats returns stats about the current context window.
-func (s *Session) contextStats() contextStats {
-	return s.ctx.Stats()
-}
-
-// ContextStatsString returns a one-line human-readable context summary.
+// contextStatsString returns a one-line human-readable context summary.
 func (s *Session) contextStatsString() string {
-	return s.ctx.ContextStatsString()
+	chars := 0
+	for _, m := range s.messages {
+		chars += len(m.Content)
+		for _, tc := range m.ToolCalls {
+			chars += len(tc.Name) + len(tc.Arguments)
+		}
+	}
+	return fmt.Sprintf("context: ~%d tokens (%d msgs)", chars/4, len(s.messages))
 }
 
-// ContextDebug returns a multi-line breakdown of the bounded history.
+// contextDebug returns a multi-line breakdown of the history.
 func (s *Session) contextDebug() string {
-	return s.ctx.FormatContextDebug()
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("=== %d messages ===\n", len(s.messages)))
+	for i, m := range s.messages {
+		preview := m.Content
+		if len(preview) > 80 {
+			preview = preview[:80] + "..."
+		}
+		chars := len(m.Content)
+		for _, tc := range m.ToolCalls {
+			chars += len(tc.Name) + len(tc.Arguments)
+		}
+		sb.WriteString(fmt.Sprintf("  [%d] role=%-10s chars=%-6d %q\n", i, m.Role, chars, preview))
+	}
+	return sb.String()
 }
