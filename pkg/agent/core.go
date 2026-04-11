@@ -91,6 +91,16 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, workdir string) Agent
 
 	allTools := mcpToolsToBackend(allToolInfos)
 
+	// Wire task backend to the reasoning server if task_create is available.
+	// The reasoning server degrades gracefully when no backend is present.
+	if taskServer, ok := serverOf["task_create"]; ok {
+		if rs, ok := d.GetServer("reasoning"); ok {
+			if setter, ok := rs.(tools.PlanBackendSetter); ok {
+				setter.SetPlanBackend(&dispatchPlanBackend{d: d, server: taskServer})
+			}
+		}
+	}
+
 	hooks := Hooks{}
 	agentPrompt := ""
 	var genParams backend.GenerationParams
@@ -335,6 +345,64 @@ func (s *agentCore) Usage() string {
 func (s *agentCore) ListModels() string {
 	models := s.loopcfg.Backend.Models(context.Background())
 	return strings.Join(models, "\n")
+}
+
+func (s *agentCore) ListServers() string {
+	if s.dispatcher == nil {
+		return "no dispatcher"
+	}
+	allTools, err := s.dispatcher.ListTools()
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	if len(allTools) == 0 {
+		return "no servers registered"
+	}
+
+	// Group tools by server, preserving first-seen order.
+	type serverEntry struct {
+		name  string
+		tools []tools.ToolInfo
+	}
+	index := map[string]int{}
+	var servers []serverEntry
+	for _, t := range allTools {
+		i, ok := index[t.Server]
+		if !ok {
+			i = len(servers)
+			index[t.Server] = i
+			servers = append(servers, serverEntry{name: t.Server})
+		}
+		servers[i].tools = append(servers[i].tools, t)
+	}
+
+	var sb strings.Builder
+	for si, srv := range servers {
+		if si > 0 {
+			sb.WriteByte('\n')
+		}
+		fmt.Fprintf(&sb, "%s\n", srv.name)
+		for _, t := range srv.tools {
+			desc := firstSentence(t.Description)
+			fmt.Fprintf(&sb, "  %-22s %s\n", t.Name, desc)
+		}
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// firstSentence returns the first sentence of s (up to the first period or
+// newline), trimmed. Falls back to s truncated at 80 chars if no sentence end
+// is found.
+func firstSentence(s string) string {
+	for i, r := range s {
+		if r == '.' || r == '\n' {
+			return strings.TrimSpace(s[:i+1])
+		}
+	}
+	if len(s) > 80 {
+		return s[:77] + "..."
+	}
+	return s
 }
 
 // Submit implements Core. It processes one line of user input: slash commands
@@ -677,6 +745,10 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		}
 		return true
 
+	case "/mcp":
+		handler(infoEvent(s.ListServers()))
+		return true
+
 	case "/help":
 		lines := []string{
 			"Available commands:",
@@ -686,6 +758,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			"  /backend <type>  - switch backend (ollama, openai)",
 			"  /model <name>    - switch model",
 			"  /models          - list available models",
+			"  /mcp             - list registered tool servers and their tools",
 			"  /queued [pop|clear] - manage queued prompts",
 			"  /compact         - summarize conversation and compact context",
 			"  /context         - show context window debug info",

@@ -68,7 +68,7 @@ All tool calls go through one `tools.Dispatcher.Dispatch` path. Every registered
 
 ## Built-in Tools
 
-Five tools are registered across two servers:
+Seven tools are registered across three servers:
 
 | Server | Tool | What it does |
 |---|---|---|
@@ -77,10 +77,22 @@ Five tools are registered across two servers:
 | `execute` | `execute_pipe` | Chains steps, piping stdout of each into stdin of the next |
 | `file` | `file_read` | Reads a file with line numbers (required before `file_write`) |
 | `file` | `file_write` | Writes or patches a file by line range |
+| `reasoning` | `reasoning_think` | Externalizes intermediate reasoning (no-op, recorded in history) |
+| `reasoning` | `reasoning_plan` | Decomposes a goal into ordered steps; persists to task backend if available |
 
-Tool definitions (`ExecuteDefs`, `FileDefs`) live in `pkg/tools/builtin.go` to avoid import cycles — the subpackages import `pkg/tools`, so `pkg/tools` cannot import them back.
+Tool definitions live in `pkg/tools/builtin.go` to avoid import cycles — the subpackages import `pkg/tools`, so `pkg/tools` cannot import them back.
 
 `OLLIE_TOOLS_PATH` defaults to `~/.local/share/ollie/tools`. The directory can be a symlink or a mountpoint — `execute_tool` treats it as an ordinary filesystem path.
+
+## Planning and Task Persistence
+
+`reasoning_plan` is a meta-cognitive tool for executive planning. It decomposes a goal into a dependency graph of steps before execution begins. If a task backend is available, the plan is committed to persistent storage.
+
+The task backend is any MCP server that exposes a `task_create` tool. `BuildAgentEnv` scans available tools after connecting MCP servers: if `task_create` is found, it wires a `dispatchPlanBackend` to the reasoning server's `Plan` field via the `tools.PlanBackendSetter` interface. If not found, `reasoning_plan` produces an in-context plan only — degraded but functional.
+
+The reference task backend is [9beads-mcp](https://github.com/lneely/9beads-mcp), which wraps the [9beads](https://github.com/lneely/9beads) 9P task server. Any MCP server that exposes `task_create` (and optionally `task_list`, `task_read`, `task_update`) satisfies the interface.
+
+See [doc/PLANNING.md](doc/PLANNING.md) for the full design rationale.
 
 ## Typical Consumer Setup
 

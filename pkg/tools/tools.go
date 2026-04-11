@@ -28,6 +28,7 @@ type Server interface {
 // Dispatcher routes tool calls to the server that owns them.
 type Dispatcher interface {
 	AddServer(name string, s Server)
+	GetServer(name string) (Server, bool)
 	ListTools() ([]ToolInfo, error)
 	Dispatch(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error)
 	Close()
@@ -61,6 +62,12 @@ func (d *dispatcher) AddServer(name string, s Server) {
 	d.servers[name] = s
 }
 
+// GetServer returns the Server registered under the given name, if any.
+func (d *dispatcher) GetServer(name string) (Server, bool) {
+	s, ok := d.servers[name]
+	return s, ok
+}
+
 // Close shuts down all registered servers.
 func (d *dispatcher) Close() {
 	for _, s := range d.servers {
@@ -91,6 +98,25 @@ func (d *dispatcher) Dispatch(ctx context.Context, server, tool string, args jso
 		return nil, fmt.Errorf("server not found: %s", server)
 	}
 	return s.CallTool(ctx, tool, args)
+}
+
+// PlanStep is a single step in a plan produced by reasoning_plan.
+type PlanStep struct {
+	Title string
+	Body  string
+	After []int // 0-based indices of steps this step depends on (must be < this step's index)
+}
+
+// PlanBackend persists plans to a task backend. Used by reasoning_plan.
+// Nil is a valid value; reasoning_plan degrades gracefully when no backend is wired.
+type PlanBackend interface {
+	CreatePlan(ctx context.Context, goal string, steps []PlanStep) ([]string, error)
+}
+
+// PlanBackendSetter is implemented by tool servers that accept an optional
+// PlanBackend. BuildAgentEnv wires this after connecting MCP servers.
+type PlanBackendSetter interface {
+	SetPlanBackend(PlanBackend)
 }
 
 // NewServer wraps an mcp.Client as a Server.

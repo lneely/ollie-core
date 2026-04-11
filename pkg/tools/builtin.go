@@ -105,5 +105,33 @@ func ReasoningDefs() []ToolInfo {
 				}
 			}`),
 		},
+		{
+			Name:        "reasoning_plan",
+			Description: "Executive planning tool. Before beginning multi-step work, decompose the goal into ordered steps with explicit dependencies. If a task backend is available (task_create), steps are committed to persistent storage and assigned IDs. Otherwise the plan exists in context only. Use reasoning_think for moment-to-moment reflection; use reasoning_plan to lay out a complete work breakdown before acting. Steps may only depend on earlier steps (lower index).",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"required": ["goal", "steps"],
+				"properties": {
+					"goal": {"type": "string", "description": "Top-level goal or objective."},
+					"steps": {
+						"type": "array",
+						"description": "Ordered work steps. Each step may only list earlier steps (by 0-based index) in 'after'.",
+						"items": {
+							"type": "object",
+							"required": ["title"],
+							"properties": {
+								"title": {"type": "string", "description": "Short step title."},
+								"body":  {"type": "string", "description": "Optional detail or acceptance criteria."},
+								"after": {
+									"type": "array",
+									"items": {"type": "integer"},
+									"description": "0-based indices of steps that must complete before this one."
+								}
+							}
+						}
+					}
+				}
+			}`),
+		},
 	}
 }
