@@ -283,6 +283,7 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		agentPrompt:   cfg.Env.agentPrompt,
 		dispatcher:    cfg.Env.dispatcher,
 		newDispatcher: cfg.NewDispatcher,
+		state:         "idle",
 	}
 }
 
@@ -513,7 +514,6 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	}
 
 	s.mu.Lock()
-	s.reply = ""
 	s.state = "thinking"
 	s.mu.Unlock()
 
@@ -526,6 +526,11 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 		switch ev.Role {
 		case "assistant":
 			replyBuf.WriteString(ev.Content)
+		case "newline":
+			s.mu.Lock()
+			s.reply = replyBuf.String()
+			s.mu.Unlock()
+			replyBuf.Reset()
 		case "call":
 			s.mu.Lock()
 			s.state = "calling: " + ev.Name
@@ -566,7 +571,6 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	s.currentAction.CompareAndSwap(handle, nil)
 
 	s.mu.Lock()
-	s.reply = replyBuf.String()
 	s.state = "idle"
 	s.mu.Unlock()
 
