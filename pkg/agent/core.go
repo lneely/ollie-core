@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"text/template"
 	"time"
@@ -251,6 +252,9 @@ type agentCore struct {
 	currentAction atomic.Pointer[actionHandle]
 	fifo          PromptFIFO
 	pendingInject atomic.Pointer[string]
+	mu            sync.RWMutex
+	state         string // "idle", "thinking", "calling: <tool>"
+	reply         string // assistant text from the most recently completed turn
 }
 
 var _ Core = (*agentCore)(nil) // compile-time interface check
@@ -288,6 +292,22 @@ func (s *agentCore) prompt() string {
 
 // Prompt returns the display prompt string for the current session state.
 func (s *agentCore) Prompt() string { return s.prompt() }
+
+func (s *agentCore) AgentName() string   { return s.agentName }
+func (s *agentCore) BackendName() string { return s.loopcfg.Backend.Name() }
+func (s *agentCore) ModelName() string   { return s.loopcfg.Backend.Model() }
+
+func (s *agentCore) State() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state
+}
+
+func (s *agentCore) Reply() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.reply
+}
 
 // WorkDir returns the current working directory for tool execution.
 func (s *agentCore) WorkDir() string {
@@ -492,11 +512,29 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 		s.session.appendUserMessage(input)
 	}
 
+	s.mu.Lock()
+	s.reply = ""
+	s.state = "thinking"
+	s.mu.Unlock()
+
 	actCtx, actCancel := context.WithCancelCause(ctx)
 	handle := &actionHandle{cancel: actCancel}
 	s.currentAction.Store(handle)
 
+	var replyBuf strings.Builder
 	s.loopcfg.Output = func(ev Event) {
+		switch ev.Role {
+		case "assistant":
+			replyBuf.WriteString(ev.Content)
+		case "call":
+			s.mu.Lock()
+			s.state = "calling: " + ev.Name
+			s.mu.Unlock()
+		case "tool":
+			s.mu.Lock()
+			s.state = "thinking"
+			s.mu.Unlock()
+		}
 		if ev.Role == "usage" && s.session != nil {
 			var in, out int
 			fmt.Sscanf(ev.Content, "%d %d", &in, &out)
@@ -526,6 +564,11 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	err := run(actCtx, s.loopcfg, s.session)
 	actCancel(nil)
 	s.currentAction.CompareAndSwap(handle, nil)
+
+	s.mu.Lock()
+	s.reply = replyBuf.String()
+	s.state = "idle"
+	s.mu.Unlock()
 
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrInterrupted) {
 		handler(Event{Role: "error", Content: err.Error()})

@@ -51,6 +51,22 @@ type Core interface {
 	// IsRunning returns true if an agent turn is currently in progress.
 	IsRunning() bool
 
+	// State returns the current agent state: "idle", "thinking", or "calling: <tool>".
+	State() string
+
+	// Reply returns the assistant text from the most recently completed turn.
+	// Cleared when a new prompt is submitted.
+	Reply() string
+
+	// AgentName returns the name of the active agent.
+	AgentName() string
+
+	// BackendName returns the name of the active backend (e.g. "anthropic", "ollama").
+	BackendName() string
+
+	// ModelName returns the name of the active model.
+	ModelName() string
+
 	// Usage returns a one-line usage summary string.
 	Usage() string
 
