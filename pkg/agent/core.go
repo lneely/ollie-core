@@ -244,7 +244,6 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		systemPrompt:     cfg.Env.systemPrompt,
 		Tools:            cfg.Env.tools,
 		Exec:             cfg.Env.exec,
-		MaxSteps:         20,
 		GenerationParams: cfg.Env.genParams,
 	}
 	return &agentCore{

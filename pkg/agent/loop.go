@@ -19,7 +19,6 @@ type loopConfig struct {
 	Backend          backend.Backend
 	Tools            []backend.Tool
 	Exec             toolExecutor
-	MaxSteps         int
 	Output           EventHandler
 	systemPrompt     string
 	GenerationParams backend.GenerationParams
@@ -27,15 +26,10 @@ type loopConfig struct {
 }
 
 func run(ctx context.Context, cfg loopConfig, state state) error {
-	maxSteps := cfg.MaxSteps
-	if maxSteps <= 0 {
-		maxSteps = 1
-	}
-
 	var totalToolCalls int
-	hitLimit := false
+	var step int
 
-	for step := range maxSteps {
+	for {
 		history := state.history()
 		if cfg.systemPrompt != "" {
 			history = append([]backend.Message{{Role: "system", Content: cfg.systemPrompt}}, history...)
@@ -214,14 +208,8 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 			}
 			break
 		}
-		if step >= maxSteps-1 {
-			hitLimit = true
-			break
-		}
-	}
-
-	if hitLimit {
-		emit(cfg, Event{Role: "stalled", Content: "max steps"})
+		
+		step++
 	}
 
 	return nil
