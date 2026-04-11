@@ -97,7 +97,23 @@ Tool definitions live in `pkg/tools/builtin.go` to avoid import cycles — the s
 
 The task backend is any MCP server that exposes a `task_create` tool. `BuildAgentEnv` scans available tools after connecting MCP servers: if `task_create` is found, it wires a `dispatchPlanBackend` to the reasoning server's `Plan` field via the `tools.PlanBackendSetter` interface. If not found, `reasoning_plan` produces an in-context plan only — degraded but functional.
 
-The reference task backend is [9beads-mcp](https://github.com/lneely/9beads-mcp), which wraps the [9beads](https://github.com/lneely/9beads) 9P task server. Any MCP server that exposes `task_create` (and optionally `task_list`, `task_read`, `task_update`) satisfies the interface.
+The reference task backend is [9beads-mcp](https://github.com/lneely/9beads-mcp), which wraps the [9beads](https://github.com/lneely/9beads) 9P task server.
+
+### Task interface contract
+
+Auto-wiring requires only `task_create`. The minimum viable contract is:
+
+| Tool | Required | Purpose |
+|---|---|---|
+| `task_create` | yes | Create a task; must return a plain-text ID |
+| `task_delete` | recommended | Remove tasks when a plan is aborted or superseded |
+| `task_list` | optional | Orient the agent across sessions |
+| `task_read` | optional | Inspect a specific task |
+| `task_update` | optional | Claim, complete, fail, defer, label tasks |
+| `task_edit` | optional | Revise title, body, or parent of an existing task |
+| `task_dep` | optional | Add or remove blocking dependencies between tasks |
+
+Ollie degrades gracefully: if a tool is absent, the agent falls back to `execute_code` (shell-out) or skips that lifecycle step. The only hard requirement for persistent planning is `task_create` returning an ID in the `{"content": [{"type": "text", "text": "<id>"}]}` format.
 
 See [doc/PLANNING.md](doc/PLANNING.md) for the full design rationale.
 

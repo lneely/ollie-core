@@ -48,9 +48,12 @@ The convention (the interface contract) is:
 | Tool | Required | Description |
 |---|---|---|
 | `task_create` | yes | Create a task; return its ID as plain text |
+| `task_delete` | recommended | Remove tasks when a plan is aborted or superseded |
 | `task_list` | no | List tasks by status |
 | `task_read` | no | Read a task by ID |
 | `task_update` | no | Update task status/metadata |
+| `task_edit` | no | Revise title, body, or parent of an existing task |
+| `task_dep` | no | Add or remove blocking dependencies between tasks |
 
 `task_create` must return a plain-text ID in the standard MCP content format:
 `{"content": [{"type": "text", "text": "<id>"}]}`.
@@ -81,9 +84,10 @@ formatted plan, proceed. The persistence difference is transparent.
 ### Shell-out for everything else
 
 Queries, comments, bulk operations, event watching — all of these belong in
-`execute_code`, not in built-in tools. The `task_*` MCP tools cover the planning
-and execution loop (create, list, read, update). Advanced 9beads operations are
-accessible via shell: `cat $TASK_DIR/list`, `grep`, etc.
+`execute_code`, not in built-in tools. The `task_*` MCP tools cover the full
+planning and execution lifecycle (create, list, read, update, edit, delete,
+dependency management). For example, advanced 9beads operations are accessible
+via shell: `cat $TASK_DIR/list`, `grep`, etc.
 
 This keeps the built-in surface minimal and relies on `execute_code` for
 flexibility.
@@ -96,7 +100,7 @@ server as an MCP server. It:
 - Resolves the project mount from `$PWD` (passed explicitly in the MCP server
   env config, since MCP subprocesses run in a minimal environment)
 - Auto-mounts the project directory if not already mounted
-- Exposes `task_create`, `task_list`, `task_read`, `task_update`
+- Exposes `task_create`, `task_list`, `task_read`, `task_update`, `task_edit`, `task_delete`, `task_dep`
 
 Agent config example:
 
