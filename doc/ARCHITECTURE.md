@@ -36,7 +36,7 @@ Consumers extend ollie by implementing or composing its interfaces:
 - **`backend.Backend`** — swap or add LLM backends
 - **`tools.Server`** — add a new tool server (built-in or MCP-backed); all servers are equal
 - **`tools.Dispatcher`** — replace the tool router entirely (e.g. remote dispatcher, mock)
-- **`tools.PlanBackend`** — optional persistence backend for `reasoning_plan`; implement and wire via `tools.PlanBackendSetter` to persist plans to any task store
+- **task backend (MCP)** — any MCP server that exposes `task_create` is automatically wired as the persistence backend for `reasoning_plan` by `BuildAgentEnv`; no consumer code required. See [9beads-mcp](https://github.com/lneely/9beads-mcp) for the reference implementation and the interface contract.
 - **`agent.Core`** — the agent's public API; frontends drive it without knowing internals
 
 All tool servers implement the same `tools.Server` interface regardless of whether they are built-in or backed by MCP. There is no special "builtin" concept — `execute.Server` and `file.Server` are registered by name the same way MCP servers are, and are torn down and recreated on `/agent` switches just like MCP connections.
