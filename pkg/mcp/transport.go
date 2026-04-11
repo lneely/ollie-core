@@ -47,9 +47,8 @@ func (t *STDIOTransport) Connect() (*Client, error) {
 	}); err != nil {
 		return nil, fmt.Errorf("initialize: %w", err)
 	}
-	if _, err := client.Call("notifications/initialized", nil); err != nil {
-		// Some servers don't respond to this notification; ignore errors.
-		_ = err
+	if err := client.Notify("notifications/initialized", nil); err != nil {
+		return nil, fmt.Errorf("notifications/initialized: %w", err)
 	}
 
 	return client, nil

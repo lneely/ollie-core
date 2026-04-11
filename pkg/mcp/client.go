@@ -65,6 +65,24 @@ func (c *Client) Close() error {
 	return err
 }
 
+// Notify sends a JSON-RPC notification (no ID, no response expected).
+func (c *Client) Notify(method string, params interface{}) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	msg := Message{
+		JSONRPC: "2.0",
+		Method:  method,
+		Params:  params,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(c.w, "%s\n", data)
+	return err
+}
+
 // Call sends a JSON-RPC request and returns the result.
 func (c *Client) Call(method string, params interface{}) (json.RawMessage, error) {
 	c.mu.Lock()
