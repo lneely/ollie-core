@@ -27,7 +27,7 @@ func ExecuteDefs(toolsPath string) []ToolInfo {
 				"type": "object",
 				"required": ["tool"],
 				"properties": {
-					"tool":     {"type": "string", "description": "Name of the tool script (e.g. discover_skill.sh)."},
+					"tool":     {"type": "string", "description": "Name of the tool script in the tools directory."},
 					"args":     {"type": "array",  "items": {"type": "string"}, "description": "Arguments for the tool script."},
 					"timeout":  {"type": "integer", "description": "Timeout in seconds (default: 30)."},
 					"sandbox":  {"type": "string",  "description": "Sandbox name (default: default)."}
