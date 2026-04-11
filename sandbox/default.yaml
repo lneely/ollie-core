@@ -98,6 +98,7 @@ filesystem:
 env:
   - AGENT_SKILLS_PATH
   - NAMESPACE
+  - OLLIE_9MOUNT
   - HOME
   - TMPDIR
   - AGENT_ID

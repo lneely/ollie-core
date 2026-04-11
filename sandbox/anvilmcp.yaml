@@ -24,11 +24,13 @@ filesystem:
     - "{XDG_RUNTIME_DIR}/superpowerd"
   rwx:
     - "{CWD}"
+    - "{HOME}/mnt/ollie"
     - "{HOME}/mnt/anvillm"
     - "{HOME}/mnt/beads"
     - "{HOME}/mnt/denote"
 env:
   - NAMESPACE
+  - OLLIE_9MOUNT
   - PATH
   - HOME
   - PLAN9

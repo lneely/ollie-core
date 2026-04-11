@@ -89,12 +89,18 @@ Each tool server exports a `Decl` function that returns a `func() tools.Server` 
 
 ## Skills
 
-Skills are domain-specific tool scripts and knowledge discoverable at runtime:
+Skills are domain-specific knowledge files served from the ollie 9P mount (`sk/` directory).
 
-```bash
-{"tool": "discover_skill.sh", "args": ["keyword"]}
-{"tool": "load_skill.sh",     "args": ["skill-name"]}
+```sh
+# Discover
+ls ${OLLIE_9MOUNT:-$HOME/mnt/ollie}/sk/
+grep -li <keyword> ${OLLIE_9MOUNT:-$HOME/mnt/ollie}/sk/*.md
+
+# Load
+cat ${OLLIE_9MOUNT:-$HOME/mnt/ollie}/sk/<name>.md
 ```
+
+Skills are sourced from `OLLIE_SKILLS_PATH` (default: `~/.config/ollie/skills/`). The `sk/` directory in the mount exposes them as flat `<name>.md` files.
 
 ## Integrations
 
