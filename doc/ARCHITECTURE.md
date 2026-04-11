@@ -97,7 +97,7 @@ Tool definitions live in `pkg/tools/builtin.go` to avoid import cycles — the s
 
 The task backend is any MCP server that exposes a `task_create` tool. `BuildAgentEnv` scans available tools after connecting MCP servers: if `task_create` is found, it wires a `dispatchPlanBackend` to the reasoning server's `Plan` field via the `tools.PlanBackendSetter` interface. If not found, it falls back to any `PlanBackend` supplied via `WithFallbackPlanBackend`. If neither is present, `reasoning_plan` produces an in-context plan only.
 
-ollie-9p supplies a `queuePlanBackend` fallback for every session: when `task_create` is absent, plan steps are enqueued to the session's `enqueue` file in topological order and returned as placeholder IDs (`q1`, `q2`, …).
+ollie-9p supplies a `queuePlanBackend` fallback for every session: when `task_create` is absent, plan steps are enqueued to the session's `enqueue` file in topological order and returned as placeholder IDs (`q1`, `q2`, …). This implementation lives in `9p` because it has a hard dependency on the 9P filesystem layout; the extension point itself (`tools.PlanBackend` + `WithFallbackPlanBackend`) remains in core.
 
 The reference task backend is [9beads-mcp](https://github.com/lneely/9beads-mcp), which wraps the [9beads](https://github.com/lneely/9beads) 9P task server.
 

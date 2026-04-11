@@ -103,6 +103,9 @@ formatted plan, proceed. The persistence difference is transparent.
 ollie-9p registers a `queuePlanBackend` as the fallback for every session. When
 `task_create` is absent, `reasoning_plan` writes each step as a queued prompt to
 the session's `enqueue` file in topological order (blockers before dependents).
+The implementation lives in `9p` (not core) because it has a hard dependency on
+the 9P filesystem layout — the extension point is the interface, not this
+specific implementation.
 
 Steps are returned as placeholder IDs (`q1`, `q2`, …) so the agent can refer to
 them in subsequent `reasoning_think` calls. The queue persists independently of
