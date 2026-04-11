@@ -181,20 +181,24 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 	defer cancel()
 
 	var cmd *exec.Cmd
+	var interpreter []string
 	switch language {
 	case "bash", "":
-		wrapped := sandbox.WrapCommand(cfg, []string{"bash", "-c", code}, workDir)
-		cmd = exec.CommandContext(ctx, wrapped[0], wrapped[1:]...)
-		cmd.Dir = workDir
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.Cancel = func() error {
-			if cmd.Process != nil {
-				syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			}
-			return nil
-		}
+		interpreter = []string{"bash", "-c", code}
+	case "python3", "python":
+		interpreter = []string{"python3", "-c", code}
 	default:
-		return "", fmt.Errorf("unsupported language: %s (supported: bash)", language)
+		return "", fmt.Errorf("unsupported language: %s (supported: bash, python3)", language)
+	}
+	wrapped := sandbox.WrapCommand(cfg, interpreter, workDir)
+	cmd = exec.CommandContext(ctx, wrapped[0], wrapped[1:]...)
+	cmd.Dir = workDir
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
 	}
 
 	var outputBuf bytes.Buffer

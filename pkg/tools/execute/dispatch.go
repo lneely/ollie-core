@@ -81,13 +81,10 @@ func dispatchExecuteTool(ctx context.Context, e *Server, args json.RawMessage) (
 	if err != nil {
 		return "", err
 	}
+	language := detectLanguage(toolCode)
 	code := toolCode
 	if len(a.Args) > 0 {
-		var escaped []string
-		for _, arg := range a.Args {
-			escaped = append(escaped, "'"+strings.ReplaceAll(arg, "'", "'\\''")+"'")
-		}
-		code = fmt.Sprintf("set -- %s\n%s", strings.Join(escaped, " "), code)
+		code = injectArgs(language, a.Tool, a.Args, toolCode)
 	}
 	timeout := a.Timeout
 	if timeout <= 0 {
@@ -97,7 +94,7 @@ func dispatchExecuteTool(ctx context.Context, e *Server, args json.RawMessage) (
 	if sandbox == "" {
 		sandbox = "default"
 	}
-	return e.Execute(ctx, code, "bash", timeout, sandbox, true)
+	return e.Execute(ctx, code, language, timeout, sandbox, true)
 }
 
 func dispatchExecutePipe(ctx context.Context, e *Server, args json.RawMessage) (string, error) {

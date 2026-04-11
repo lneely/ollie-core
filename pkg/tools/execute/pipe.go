@@ -38,15 +38,20 @@ func BuildPipeline(steps []PipeStep) (string, bool, error) {
 		} else {
 			return "", false, fmt.Errorf("each pipe step requires either 'tool' or 'code'")
 		}
+		language := "bash"
+		if step.Tool != "" {
+			language = detectLanguage(code)
+		}
 		if len(step.Args) > 0 {
-			var escaped []string
-			for _, arg := range step.Args {
-				escaped = append(escaped, "'"+strings.ReplaceAll(arg, "'", "'\\''")+"'")
-			}
-			parts = append(parts, fmt.Sprintf("( set -- %s\n%s )", strings.Join(escaped, " "), code))
-		} else {
+			code = injectArgs(language, step.Tool, step.Args, code)
+		}
+		switch language {
+		case "python3":
+			parts = append(parts, fmt.Sprintf("( python3 -c $'%s' )", ansiCEscape(code)))
+		default:
 			parts = append(parts, fmt.Sprintf("(\n%s\n)", code))
 		}
 	}
 	return strings.Join(parts, " |\n"), true, nil
+
 }

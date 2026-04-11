@@ -22,7 +22,7 @@ func ExecuteDefs(toolsPath string) []ToolInfo {
 		},
 		{
 			Name:        "execute_tool",
-			Description: "Run a named tool script from " + toolsPath + " in a sandboxed environment. Use this only for named scripts, not for inline shell commands.",
+			Description: "Run a named tool script from " + toolsPath + " in a sandboxed environment. Supported languages: bash, python3 (detected from shebang). Use this only for named scripts, not for inline shell commands.",
 			InputSchema: json.RawMessage(`{
 				"type": "object",
 				"required": ["tool"],
