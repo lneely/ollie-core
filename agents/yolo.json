@@ -9,6 +9,14 @@
 				"HOME": "$HOME",
 				"BEADS_9MOUNT": "$BEADS_9MOUNT"
 			}
+		},
+		"memory": {
+			"command": "denote-mcp",
+			"args": [],
+			"env": {
+				"HOME": "$HOME",
+				"DENOTE_9MOUNT": "$DENOTE_9MOUNT"
+			}
 		}
 	},
 	"trustedTools": [
