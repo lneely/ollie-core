@@ -57,11 +57,29 @@ type AgentEnv struct {
 	Messages     []string
 }
 
+// EnvOption is a functional option for BuildAgentEnv.
+type EnvOption func(*envOptions)
+
+type envOptions struct {
+	fallbackPlan tools.PlanBackend
+}
+
+// WithFallbackPlanBackend sets a PlanBackend used when no task_create MCP tool
+// is available. When task_create IS available, it takes priority and this
+// fallback is ignored.
+func WithFallbackPlanBackend(b tools.PlanBackend) EnvOption {
+	return func(o *envOptions) { o.fallbackPlan = b }
+}
+
 // BuildAgentEnv constructs an AgentEnv from a pre-configured Dispatcher and
 // optional agent config. workdir sets the working directory reported in the
 // system prompt; if empty, the process working directory is used.
 // The caller is responsible for registering all servers on d before calling this.
-func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, workdir string) AgentEnv {
+func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, workdir string, opts ...EnvOption) AgentEnv {
+	var eo envOptions
+	for _, o := range opts {
+		o(&eo)
+	}
 	var messages []string
 
 	if cfg != nil {
@@ -92,12 +110,15 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, workdir string) Agent
 
 	allTools := mcpToolsToBackend(allToolInfos)
 
-	// Wire task backend to the reasoning server if task_create is available.
-	// The reasoning server degrades gracefully when no backend is present.
-	if taskServer, ok := serverOf["task_create"]; ok {
-		if rs, ok := d.GetServer("reasoning"); ok {
-			if setter, ok := rs.(tools.PlanBackendSetter); ok {
+	// Wire plan backend to the reasoning server.
+	// If task_create is available, use the dispatch backend (primary).
+	// Otherwise fall back to the caller-supplied backend, if any.
+	if rs, ok := d.GetServer("reasoning"); ok {
+		if setter, ok := rs.(tools.PlanBackendSetter); ok {
+			if taskServer, ok := serverOf["task_create"]; ok {
 				setter.SetPlanBackend(&dispatchPlanBackend{d: d, server: taskServer})
+			} else if eo.fallbackPlan != nil {
+				setter.SetPlanBackend(eo.fallbackPlan)
 			}
 		}
 	}
