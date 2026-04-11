@@ -52,6 +52,7 @@ type AgentEnv struct {
 	exec         toolExecutor
 	Hooks        Hooks
 	systemPrompt string
+	agentPrompt  string // agent-specific suffix appended after the base system prompt
 	genParams    backend.GenerationParams
 	Messages     []string
 }
@@ -140,6 +141,7 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, workdir string) Agent
 		exec:         exec,
 		Hooks:        hooks,
 		systemPrompt: sp,
+		agentPrompt:  agentPrompt,
 		genParams:    genParams,
 		Messages:     messages,
 	}
@@ -224,6 +226,7 @@ type agentCore struct {
 	dispatcher    tools.Dispatcher
 	newDispatcher func() tools.Dispatcher
 	workdir       string
+	agentPrompt   string // agent-specific prompt suffix; kept for system prompt rebuilds
 	currentAction atomic.Pointer[actionHandle]
 	fifo          PromptFIFO
 	pendingInject atomic.Pointer[string]
@@ -253,6 +256,7 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		sessionsDir:   cfg.SessionsDir,
 		sessionID:     cfg.SessionID,
 		workdir:       cfg.WorkDir,
+		agentPrompt:   cfg.Env.agentPrompt,
 		dispatcher:    cfg.Env.dispatcher,
 		newDispatcher: cfg.NewDispatcher,
 	}
@@ -264,6 +268,41 @@ func (s *agentCore) prompt() string {
 
 // Prompt returns the display prompt string for the current session state.
 func (s *agentCore) Prompt() string { return s.prompt() }
+
+// WorkDir returns the current working directory for tool execution.
+func (s *agentCore) WorkDir() string {
+	if s.workdir != "" {
+		return s.workdir
+	}
+	wd, _ := os.Getwd()
+	return wd
+}
+
+// SetWorkDir changes the working directory for tool execution and updates the
+// system prompt. Returns an error if the path does not exist.
+func (s *agentCore) SetWorkDir(dir string) error {
+	if dir != "" {
+		if _, err := os.Stat(dir); err != nil {
+			return fmt.Errorf("workdir: %w", err)
+		}
+	}
+	s.workdir = dir
+	// Propagate to any tool server that knows how to handle it (e.g. execute).
+	if s.dispatcher != nil {
+		if srv, ok := s.dispatcher.GetServer("execute"); ok {
+			if ws, ok := srv.(tools.WorkDirSetter); ok {
+				ws.SetWorkDir(dir)
+			}
+		}
+	}
+	// Rebuild system prompt so it reflects the new workdir.
+	sp := systemPrompt(dir)
+	if s.agentPrompt != "" {
+		sp += "\n\n" + s.agentPrompt
+	}
+	s.loopcfg.systemPrompt = sp
+	return nil
+}
 
 // defaultContextLength is used when the backend cannot report the model's
 // actual context window (e.g. CodeWhisperer). 128k tokens is a safe default
@@ -617,6 +656,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		s.loopcfg.Tools = env.tools
 		s.loopcfg.Exec = env.exec
 		s.loopcfg.GenerationParams = env.genParams
+		s.agentPrompt = env.agentPrompt
 		s.agentName = name
 		s.session = nil
 		s.sessionID = NewSessionID()
@@ -745,6 +785,19 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		}
 		return true
 
+	case "/cwd":
+		if len(args) == 0 {
+			handler(infoEvent("workdir: " + s.WorkDir()))
+			return true
+		}
+		dir := strings.Join(args, " ")
+		if err := s.SetWorkDir(dir); err != nil {
+			handler(infoEvent("error: " + err.Error()))
+			return true
+		}
+		handler(infoEvent("workdir: " + dir))
+		return true
+
 	case "/mcp":
 		handler(infoEvent(s.ListServers()))
 		return true
@@ -759,6 +812,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			"  /model <name>    - switch model",
 			"  /models          - list available models",
 			"  /mcp             - list registered tool servers and their tools",
+			"  /cwd [path]      - show or change working directory",
 			"  /queued [pop|clear] - manage queued prompts",
 			"  /compact         - summarize conversation and compact context",
 			"  /context         - show context window debug info",

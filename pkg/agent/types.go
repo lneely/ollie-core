@@ -60,6 +60,13 @@ type Core interface {
 	// ListServers returns all registered tool servers and their tools,
 	// grouped by server name.
 	ListServers() string
+
+	// WorkDir returns the current working directory used for tool execution.
+	WorkDir() string
+
+	// SetWorkDir changes the working directory for tool execution and
+	// updates the system prompt. Returns an error if the path does not exist.
+	SetWorkDir(dir string) error
 }
 
 // PromptFIFO is a simple thread-safe FIFO for queued prompts.

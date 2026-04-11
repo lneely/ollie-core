@@ -26,6 +26,7 @@ type Server struct {
 
 	// workdir is the working directory for sandboxed commands. If empty,
 	// the process working directory is used.
+	wdMu    sync.RWMutex
 	workdir string
 
 	// rate limiting state (per-Server)
@@ -37,6 +38,13 @@ type Server struct {
 
 // New creates a new Server with the given working directory.
 func New(workdir string) *Server { return &Server{workdir: workdir} }
+
+// SetWorkDir updates the working directory used for subsequent command executions.
+func (e *Server) SetWorkDir(dir string) {
+	e.wdMu.Lock()
+	e.workdir = dir
+	e.wdMu.Unlock()
+}
 
 var dangerousPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s*/(home|var|usr|etc|boot|root|bin|sbin|lib|opt|srv)?`),
@@ -162,7 +170,9 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 		return "", err
 	}
 
+	e.wdMu.RLock()
 	workDir := e.workdir
+	e.wdMu.RUnlock()
 	if workDir == "" {
 		workDir, _ = os.Getwd()
 	}

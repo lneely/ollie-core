@@ -119,6 +119,12 @@ type PlanBackendSetter interface {
 	SetPlanBackend(PlanBackend)
 }
 
+// WorkDirSetter is implemented by tool servers that accept a dynamic working
+// directory. SetWorkDir updates the directory used for subsequent tool calls.
+type WorkDirSetter interface {
+	SetWorkDir(string)
+}
+
 // NewServer wraps an mcp.Client as a Server.
 func NewServer(client *mcp.Client) Server {
 	return &mcpServer{client: client}
