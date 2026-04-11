@@ -7,6 +7,13 @@
 			"env": {
 				"SUPERPOWERD_SESSION_TOKEN": "${SUPERPOWERD_SESSION_TOKEN}"
 			}
+		},
+		"task": {
+			"command": "9beads-mcp",
+			"args": [],
+			"env": {
+				"PWD": "$PWD"
+			}
 		}
 	},
 	"trustedTools": [
@@ -14,7 +21,14 @@
 		"execute_tool",
 		"execute_pipe",
 		"file_read",
-		"file_write"
+		"file_write",
+		"task_create",
+		"task_list",
+		"task_read",
+		"task_update",
+		"task_edit",
+		"task_delete",
+		"task_dep"
 	],
 	"hooks": {
 		"agentSpawn": "anvillm-hook agentSpawn",
