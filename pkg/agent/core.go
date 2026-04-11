@@ -472,6 +472,8 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 		return
 	}
 
+	handler(Event{Role: "user", Content: input})
+
 	hookResult := s.hooks.Run(ctx, HookUserPromptSubmit, map[string]string{
 		"session_id": s.sessionID,
 		"prompt":     input,
