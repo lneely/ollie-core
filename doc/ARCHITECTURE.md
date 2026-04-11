@@ -36,6 +36,7 @@ Consumers extend ollie by implementing or composing its interfaces:
 - **`tools.Server`** — add a new tool server (built-in or MCP-backed); all servers are equal
 - **`tools.Dispatcher`** — replace the tool router entirely (e.g. remote dispatcher, mock)
 - **task backend (MCP)** — any MCP server that exposes `task_create` is automatically wired as the persistence backend for `reasoning_plan` by `BuildAgentEnv`; no consumer code required. See [9beads-mcp](https://github.com/lneely/9beads-mcp) for the reference implementation and the interface contract.
+- **fallback plan backend** — consumers can supply a `tools.PlanBackend` via `agent.WithFallbackPlanBackend` that is used when no `task_create` MCP tool is found. ollie-9p uses this to enqueue plan steps into the session queue.
 - **`agent.Core`** — the agent's public API; frontends drive it without knowing internals
 
 All tool servers implement the same `tools.Server` interface regardless of whether they are built-in or backed by MCP. There is no special "builtin" concept — `execute.Server` and `file.Server` are registered by name the same way MCP servers are, and are torn down and recreated on `/agent` switches just like MCP connections.
@@ -63,8 +64,10 @@ Frontend
                     ├── "reasoning" → tools.Server
                     │       reasoning_think
                     │       reasoning_plan
-                    │         └── tools.PlanBackend (optional)
-                    │               task_create / ... (any MCP task server)
+                    │         └── tools.PlanBackend (optional, priority order)
+                    │               1. dispatchPlanBackend → task_create (MCP)
+                    │               2. WithFallbackPlanBackend (e.g. queuePlanBackend)
+                    │               3. nil → in-context plan only
                     └── "<servername>"  → tools.Server
 ```
 
@@ -92,7 +95,9 @@ Tool definitions live in `pkg/tools/builtin.go` to avoid import cycles — the s
 
 `reasoning_plan` is a meta-cognitive tool for executive planning. It decomposes a goal into a dependency graph of steps before execution begins. If a task backend is available, the plan is committed to persistent storage.
 
-The task backend is any MCP server that exposes a `task_create` tool. `BuildAgentEnv` scans available tools after connecting MCP servers: if `task_create` is found, it wires a `dispatchPlanBackend` to the reasoning server's `Plan` field via the `tools.PlanBackendSetter` interface. If not found, `reasoning_plan` produces an in-context plan only — degraded but functional.
+The task backend is any MCP server that exposes a `task_create` tool. `BuildAgentEnv` scans available tools after connecting MCP servers: if `task_create` is found, it wires a `dispatchPlanBackend` to the reasoning server's `Plan` field via the `tools.PlanBackendSetter` interface. If not found, it falls back to any `PlanBackend` supplied via `WithFallbackPlanBackend`. If neither is present, `reasoning_plan` produces an in-context plan only.
+
+ollie-9p supplies a `queuePlanBackend` fallback for every session: when `task_create` is absent, plan steps are enqueued to the session's `enqueue` file in topological order and returned as placeholder IDs (`q1`, `q2`, …).
 
 The reference task backend is [9beads-mcp](https://github.com/lneely/9beads-mcp), which wraps the [9beads](https://github.com/lneely/9beads) 9P task server.
 
@@ -135,7 +140,7 @@ core := agent.NewAgentCore(agent.AgentCoreConfig{
 
 `BuildAgentEnv` adds MCP servers from the config on top of the pre-registered servers. On `/agent` switches, `NewDispatcher` is called to produce a fresh dispatcher — all servers (built-in and MCP) are torn down and recreated for the new agent config. `WorkDir` is preserved across switches.
 
-After connecting MCP servers, `BuildAgentEnv` scans the tool list for `task_create`. If found, it wires a `dispatchPlanBackend` to the reasoning server's `Plan` field via `tools.PlanBackendSetter`. This auto-wiring runs on every agent start and `/agent` switch.
+After connecting MCP servers, `BuildAgentEnv` scans the tool list for `task_create`. If found, it wires a `dispatchPlanBackend` to the reasoning server's `Plan` field via `tools.PlanBackendSetter`. If not found, it wires any fallback passed via `WithFallbackPlanBackend`. This auto-wiring runs on every agent start and `/agent` switch.
 
 `Core.ListServers()` returns all registered tool servers and their tools, grouped by server name. Accessible via the `/mcp` command or `ollie/s/{sid}/mcp` in ollie-9p.
 

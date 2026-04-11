@@ -79,7 +79,7 @@ Five built-in tools across two servers:
 - `execute_tool` — run a named tool script from `OLLIE_TOOLS_PATH` (default: `~/.local/share/ollie/tools`)
 - `execute_pipe` — chain steps as a pipeline
 - `reasoning_think` — externalize intermediate reasoning
-- `reasoning_plan` — decompose a goal into ordered steps; persists to task backend if available
+- `reasoning_plan` — decompose a goal into ordered steps; persists to task backend if available, otherwise queued via fallback backend or in-context only
 
 File operations go through `execute_code` using standard shell tools (`cat`, `grep`, `sed`, `ed`, `ssam` if plan9port is available, etc.).
 
