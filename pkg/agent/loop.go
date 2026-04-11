@@ -151,6 +151,11 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 					isErr = true
 					// If cancelled during execution, fill remaining and break.
 					if ctx.Err() != nil {
+						if cfg.PopInject != nil {
+							if injected := cfg.PopInject(); injected != "" {
+								result += "\n\n<system-user-interruption>\n" + injected + "\n</system-user-interruption>"
+							}
+						}
 						results = append(results, toolResult{
 							ToolCallID: tc.ID,
 							Name:       tc.Name,
@@ -177,8 +182,7 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 			}
 
 			if !interrupted {
-				// Append any pending user interruption to the last tool result.
-				if i == len(toolCalls)-1 && cfg.PopInject != nil {
+				if cfg.PopInject != nil {
 					if injected := cfg.PopInject(); injected != "" {
 						result += "\n\n<system-user-interruption>\n" + injected + "\n</system-user-interruption>"
 					}

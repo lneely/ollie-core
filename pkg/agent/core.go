@@ -389,12 +389,20 @@ func (s *agentCore) Interrupt(cause error) bool {
 }
 
 func (s *agentCore) Inject(prompt string) {
-	s.pendingInject.Store(&prompt)
-	// Cancel the current action so blocking tools (execute_code, etc.)
-	// are killed immediately and the model sees the interruption.
-	if cancel := s.getActionCancel(); cancel != nil {
-		cancel(ErrInterrupted)
+	// If an inject is already pending, fall back to the normal FIFO so nothing
+	// is lost. Use CompareAndSwap to avoid a race between the nil check and store.
+	if !s.pendingInject.CompareAndSwap(nil, &prompt) {
+		s.fifo.Push(prompt)
+		return
 	}
+	emit(s.loopcfg, Event{Role: "info", Content: "\n"})
+	emit(s.loopcfg, Event{Role: "user", Content: prompt})
+}
+
+func (s *agentCore) injectRewrite(prompt string) {
+	s.pendingInject.Store(&prompt)
+	emit(s.loopcfg, Event{Role: "info", Content: "\n"})
+	emit(s.loopcfg, Event{Role: "user", Content: prompt})
 }
 
 func (s *agentCore) Queue(prompt string) {
@@ -487,9 +495,15 @@ func firstSentence(s string) string {
 
 // Submit implements Core. It processes one line of user input: slash commands
 // and shell shortcuts are dispatched immediately via handler; any other input
-// starts an agent turn that streams events to handler.
+// starts an agent turn that streams events to handler. If a turn is already
+// in progress the prompt is queued as an in-stream interruption instead.
 func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandler) {
 	if s.handleCommand(ctx, input, handler) {
+		return
+	}
+
+	if s.IsRunning() {
+		s.Inject(input)
 		return
 	}
 
@@ -635,6 +649,15 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 	args := parts[1:]
 
 	switch cmd {
+	case "/irw":
+		prompt := strings.Join(args, " ")
+		if prompt == "" {
+			handler(infoEvent("error: /irw requires a prompt"))
+			return true
+		}
+		s.injectRewrite(prompt)
+		return true
+
 	case "/backend":
 		if len(args) == 0 {
 			handler(infoEvent("error: /backend requires an argument (e.g., /backend ollama)"))
