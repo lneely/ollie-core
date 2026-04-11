@@ -98,16 +98,6 @@ Skills are domain-specific tool scripts and knowledge discoverable at runtime:
 
 **[9beads-mcp](https://github.com/lneely/9beads-mcp)** provides task persistence using **[9beads](https://github.com/lneely/9beads)** — enabling the agent to track, list, and manage tasks across sessions.
 
-## Credits
-
-Many sources of inspiration:
-
-- [Plan 9 from Bell Labs](https://9fans.net) — for an interesting system
-- [@9fans](https://github.com/9fans) — for the Plan 9 port
-- [Suckless](https://suckless.org) — for articulating good software development principles
-- [@simonfxr](https://github.com/simonfxr) — for a solid agent baseline to "borrow" from, and other nifty ideas
-- [@aws](https://github.com/aws/amazon-q-developer-cli) — for a solid open-source agent implementation
-
 ## License
 
 GPLv3
