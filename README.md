@@ -9,13 +9,13 @@ The reference frontend is [ollie-tui](https://github.com/lneely/ollie-tui), a te
 ## Packages
 
 ```
-pkg/agent/         — Core interface, agent loop, session management
-pkg/backend/       — Backend interface + implementations (Ollama, OpenAI, Anthropic, Copilot, Kiro)
-pkg/config/        — Config struct and loader
-pkg/mcp/           — MCP client
-pkg/tools/         — Server and Dispatcher interfaces; tool definitions
-pkg/tools/execute/ — execute.Server: execute_code, execute_tool, execute_pipe
-pkg/tools/file/    — file.Server: file_read, file_write
+pkg/agent/           — Core interface, agent loop, session management
+pkg/backend/         — Backend interface + implementations (Ollama, OpenAI, Anthropic, Copilot, Kiro)
+pkg/config/          — Config struct and loader
+pkg/mcp/             — MCP client
+pkg/tools/           — Server and Dispatcher interfaces; tool definitions
+pkg/tools/execute/   — execute.Server: execute_code, execute_tool, execute_pipe
+pkg/tools/reasoning/ — reasoning.Server: reasoning_think, reasoning_plan
 ```
 
 ## Install
@@ -78,8 +78,10 @@ Five built-in tools across two servers:
 - `execute_code` — run inline shell code in a sandbox
 - `execute_tool` — run a named tool script from `OLLIE_TOOLS_PATH` (default: `~/.local/share/ollie/tools`)
 - `execute_pipe` — chain steps as a pipeline
-- `file_read` — read a file with line numbers (required before `file_write`)
-- `file_write` — write or patch a file by line range
+- `reasoning_think` — externalize intermediate reasoning
+- `reasoning_plan` — decompose a goal into ordered steps; persists to task backend if available
+
+File operations go through `execute_code` using standard shell tools (`cat`, `grep`, `sed`, `ed`, `ssam` if plan9port is available, etc.).
 
 MCP server tools are discovered at startup and available alongside the built-ins.
 

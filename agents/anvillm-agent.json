@@ -22,8 +22,6 @@
 		"execute_code",
 		"execute_tool",
 		"execute_pipe",
-		"file_read",
-		"file_write",
 		"task_create",
 		"task_list",
 		"task_read",

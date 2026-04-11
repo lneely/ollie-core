@@ -14,7 +14,6 @@ pkg/
   mcp/           — MCP client (concrete)
   tools/         — Server and Dispatcher interfaces, tool definitions (builtin.go)
   tools/execute/   — execute.Server: execute_code, execute_tool, execute_pipe
-  tools/file/      — file.Server: file_read, file_write
   tools/reasoning/ — reasoning.Server: reasoning_think, reasoning_plan
 
 internal/
@@ -61,8 +60,6 @@ Frontend
               └── tools.Dispatcher.Dispatch(...)   — tool dispatch
                     ├── "execute"   → tools.Server
                     │       execute_code / execute_tool / execute_pipe
-                    ├── "file"      → tools.Server
-                    │       file_read / file_write
                     ├── "reasoning" → tools.Server
                     │       reasoning_think
                     │       reasoning_plan
@@ -75,17 +72,17 @@ All tool calls go through one `tools.Dispatcher.Dispatch` path. Every registered
 
 ## Built-in Tools
 
-Seven tools are registered across three servers:
+Five tools are registered across two servers:
 
 | Server | Tool | What it does |
 |---|---|---|
 | `execute` | `execute_code` | Runs inline bash in a landrun sandbox |
 | `execute` | `execute_tool` | Reads a named script from `OLLIE_TOOLS_PATH` and runs it sandboxed |
 | `execute` | `execute_pipe` | Chains steps, piping stdout of each into stdin of the next |
-| `file` | `file_read` | Reads a file with line numbers (required before `file_write`) |
-| `file` | `file_write` | Writes or patches a file by line range |
 | `reasoning` | `reasoning_think` | Externalizes intermediate reasoning (no-op, recorded in history) |
 | `reasoning` | `reasoning_plan` | Decomposes a goal into ordered steps; persists to task backend if available |
+
+File operations go through `execute_code` using standard shell tools (`cat`, `grep`, `sed`, `ed`, `ssam` if plan9port is available, etc.).
 
 Tool definitions live in `pkg/tools/builtin.go` to avoid import cycles — the subpackages import `pkg/tools`, so `pkg/tools` cannot import them back.
 
@@ -121,8 +118,8 @@ See [doc/PLANNING.md](doc/PLANNING.md) for the full design rationale.
 
 ```go
 newDispatcher := tools.NewDispatcherFunc(map[string]func() tools.Server{
-    "execute": execute.Decl(workdir),  // "" falls back to os.Getwd()
-    "file":    file.Decl,
+    "execute":   execute.Decl(workdir),  // "" falls back to os.Getwd()
+    "reasoning": reasoning.Decl(),
 })
 
 env := agent.BuildAgentEnv(cfg, newDispatcher(), workdir)  // also connects MCP servers from cfg

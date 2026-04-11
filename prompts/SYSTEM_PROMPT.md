@@ -19,7 +19,7 @@ Be truthful. If the user is wrong, say so — do not soften, hedge, or dance aro
 
 # Tool preferences
 
-- Prefer `grep`/`execute_code` for searching and exploring. Use `file_read` when you need the full file.
+- Use `execute_code` to run shell commands: grep, cat, sed, ed, and other standard tools for reading and editing files.
 - Make independent tool calls in parallel when there are no dependencies between them.
 
 # Environment
