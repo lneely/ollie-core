@@ -17,10 +17,10 @@ type dispatchPlanBackend struct {
 
 // CreatePlan creates a top-level goal bead and one child bead per step,
 // wiring dependency edges from the After indices.
-func (b *dispatchPlanBackend) CreatePlan(ctx context.Context, goal string, steps []tools.PlanStep) ([]string, error) {
+func (b *dispatchPlanBackend) CreatePlan(ctx context.Context, goal string, steps []tools.PlanStep) ([]string, string, error) {
 	goalID, err := b.create(ctx, goal, "", "")
 	if err != nil {
-		return nil, fmt.Errorf("create goal bead: %w", err)
+		return nil, "", fmt.Errorf("create goal bead: %w", err)
 	}
 
 	ids := make([]string, len(steps))
@@ -33,11 +33,11 @@ func (b *dispatchPlanBackend) CreatePlan(ctx context.Context, goal string, steps
 		}
 		id, err := b.create(ctx, step.Title, step.Body, goalID, blockers...)
 		if err != nil {
-			return nil, fmt.Errorf("create step %d: %w", i, err)
+			return nil, "", fmt.Errorf("create step %d: %w", i, err)
 		}
 		ids[i] = id
 	}
-	return ids, nil
+	return ids, "", nil
 }
 
 func (b *dispatchPlanBackend) create(ctx context.Context, title, body, parent string, blockers ...string) (string, error) {

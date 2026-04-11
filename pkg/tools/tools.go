@@ -109,8 +109,14 @@ type PlanStep struct {
 
 // PlanBackend persists plans to a task backend. Used by reasoning_plan.
 // Nil is a valid value; reasoning_plan degrades gracefully when no backend is wired.
+//
+// CreatePlan returns the assigned IDs, an optional response message, and an
+// error. If the message is non-empty, the reasoning server uses it as the tool
+// response instead of the default formatted plan summary. Backends that want
+// the agent to stop after planning (e.g. queue-based) return a yield
+// instruction here; backends that want the agent to continue return "".
 type PlanBackend interface {
-	CreatePlan(ctx context.Context, goal string, steps []PlanStep) ([]string, error)
+	CreatePlan(ctx context.Context, goal string, steps []PlanStep) (ids []string, msg string, err error)
 }
 
 // PlanBackendSetter is implemented by tool servers that accept an optional

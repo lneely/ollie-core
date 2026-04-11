@@ -81,12 +81,19 @@ func (s *Server) plan(ctx context.Context, args json.RawMessage) (string, error)
 	}
 
 	var ids []string
+	var backendMsg string
 	var persistErr error
 	if s.Plan != nil {
-		ids, persistErr = s.Plan.CreatePlan(ctx, a.Goal, steps)
+		ids, backendMsg, persistErr = s.Plan.CreatePlan(ctx, a.Goal, steps)
 		if persistErr != nil {
 			ids = nil // degrade to in-context plan
 		}
+	}
+
+	// If the backend supplied a response message, use it directly — the backend
+	// knows best how the agent should proceed (e.g. yield after queuing).
+	if backendMsg != "" {
+		return backendMsg, nil
 	}
 
 	var sb strings.Builder
