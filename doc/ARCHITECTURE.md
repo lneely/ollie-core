@@ -13,8 +13,9 @@ pkg/
   config/        — Agent config struct and loader
   mcp/           — MCP client (concrete)
   tools/         — Server and Dispatcher interfaces, tool definitions (builtin.go)
-  tools/execute/ — execute.Server: execute_code, execute_tool, execute_pipe
-  tools/file/    — file.Server: file_read, file_write
+  tools/execute/   — execute.Server: execute_code, execute_tool, execute_pipe
+  tools/file/      — file.Server: file_read, file_write
+  tools/reasoning/ — reasoning.Server: reasoning_think, reasoning_plan
 
 internal/
   sandbox/       — landrun sandbox config and command wrapper
@@ -35,6 +36,7 @@ Consumers extend ollie by implementing or composing its interfaces:
 - **`backend.Backend`** — swap or add LLM backends
 - **`tools.Server`** — add a new tool server (built-in or MCP-backed); all servers are equal
 - **`tools.Dispatcher`** — replace the tool router entirely (e.g. remote dispatcher, mock)
+- **`tools.PlanBackend`** — optional persistence backend for `reasoning_plan`; implement and wire via `tools.PlanBackendSetter` to persist plans to any task store
 - **`agent.Core`** — the agent's public API; frontends drive it without knowing internals
 
 All tool servers implement the same `tools.Server` interface regardless of whether they are built-in or backed by MCP. There is no special "builtin" concept — `execute.Server` and `file.Server` are registered by name the same way MCP servers are, and are torn down and recreated on `/agent` switches just like MCP connections.
@@ -57,10 +59,15 @@ Frontend
         └── loop.run()
               ├── backend.ChatStream()              — LLM call
               └── tools.Dispatcher.Dispatch(...)   — tool dispatch
-                    ├── "execute" → tools.Server
+                    ├── "execute"   → tools.Server
                     │       execute_code / execute_tool / execute_pipe
-                    ├── "file"    → tools.Server
+                    ├── "file"      → tools.Server
                     │       file_read / file_write
+                    ├── "reasoning" → tools.Server
+                    │       reasoning_think
+                    │       reasoning_plan
+                    │         └── tools.PlanBackend (optional)
+                    │               task_create / ... (any MCP task server)
                     └── "<servername>"  → tools.Server
 ```
 
@@ -114,6 +121,10 @@ core := agent.NewAgentCore(agent.AgentCoreConfig{
 ```
 
 `BuildAgentEnv` adds MCP servers from the config on top of the pre-registered servers. On `/agent` switches, `NewDispatcher` is called to produce a fresh dispatcher — all servers (built-in and MCP) are torn down and recreated for the new agent config. `WorkDir` is preserved across switches.
+
+After connecting MCP servers, `BuildAgentEnv` scans the tool list for `task_create`. If found, it wires a `dispatchPlanBackend` to the reasoning server's `Plan` field via `tools.PlanBackendSetter`. This auto-wiring runs on every agent start and `/agent` switch.
+
+`Core.ListServers()` returns all registered tool servers and their tools, grouped by server name. Accessible via the `/mcp` command or `ollie/s/{sid}/mcp` in ollie-9p.
 
 ## Session and Context
 
