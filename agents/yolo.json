@@ -5,7 +5,9 @@
 			"command": "9beads-mcp",
 			"args": [],
 			"env": {
-				"PWD": "$PWD"
+				"PWD": "$PWD",
+				"HOME": "$HOME",
+				"BEADS_9MOUNT": "$BEADS_9MOUNT"
 			}
 		}
 	},
