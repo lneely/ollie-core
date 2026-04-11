@@ -21,6 +21,7 @@ import (
 	"ollie/pkg/config"
 	"ollie/pkg/mcp"
 	"ollie/pkg/tools"
+	"ollie/pkg/tools/reasoning"
 )
 
 // systemPrompt builds the full system prompt for a given tool set.
@@ -120,6 +121,17 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, workdir string, opts 
 				setter.SetPlanBackend(&dispatchPlanBackend{d: d, server: taskServer})
 			} else if eo.fallbackPlan != nil {
 				setter.SetPlanBackend(eo.fallbackPlan)
+			}
+		}
+
+		// Wire memory backend to the reasoning server.
+		// If memory_remember is available via MCP, use the dispatch backend.
+		// Otherwise fall back to the flat-dir backend (always available).
+		if setter, ok := rs.(tools.MemoryBackendSetter); ok {
+			if memServer, ok := serverOf["memory_remember"]; ok {
+				setter.SetMemoryBackend(&dispatchMemoryBackend{d: d, server: memServer})
+			} else {
+				setter.SetMemoryBackend(reasoning.NewFlatDirBackend(""))
 			}
 		}
 	}

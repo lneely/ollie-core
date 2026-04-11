@@ -60,6 +60,36 @@ func ExecuteDefs(toolsPath string) []ToolInfo {
 	}
 }
 
+// MemoryDefs returns the ToolInfo definitions for the memory_* built-in tools.
+func MemoryDefs() []ToolInfo {
+	return []ToolInfo{
+		{
+			Name:        "memory_remember",
+			Description: "Save a memory that persists across sessions. Provide a descriptive title, relevant tags, and a concise body. Choose tags carefully — they are the primary recall mechanism. Prefer specific, stable terms over generic ones.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"required": ["title", "tags", "body"],
+				"properties": {
+					"title": {"type": "string", "description": "Descriptive title. Should answer 'what is this about' on its own."},
+					"tags":  {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "Tags for recall. Use specific, stable terms you would search for later."},
+					"body":  {"type": "string", "description": "Memory content. Write concisely — key facts, decisions, and context. Not a transcript."}
+				}
+			}`),
+		},
+		{
+			Name:        "memory_recall",
+			Description: "Search memories by keyword. Matches against titles and tags only — body content is not searched. Use specific terms likely to appear in titles or tags at write time.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"required": ["query"],
+				"properties": {
+					"query": {"type": "string", "description": "Keyword to search for in memory titles and tags."}
+				}
+			}`),
+		},
+	}
+}
+
 // ReasoningDefs returns the ToolInfo definitions for the reasoning_* built-in tools.
 func ReasoningDefs() []ToolInfo {
 	return []ToolInfo{

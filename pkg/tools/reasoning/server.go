@@ -17,14 +17,21 @@ type Server struct {
 	// Plan is the optional task persistence backend. When nil, reasoning_plan
 	// produces an in-context plan only.
 	Plan tools.PlanBackend
+
+	// Memory is the memory persistence backend. Always non-nil after
+	// BuildAgentEnv wires it; defaults to a FlatDirBackend.
+	Memory tools.MemoryBackend
 }
 
 // SetPlanBackend implements tools.PlanBackendSetter.
 func (s *Server) SetPlanBackend(b tools.PlanBackend) { s.Plan = b }
 
+// SetMemoryBackend implements tools.MemoryBackendSetter.
+func (s *Server) SetMemoryBackend(b tools.MemoryBackend) { s.Memory = b }
+
 // ListTools implements tools.Server.
 func (s *Server) ListTools() ([]tools.ToolInfo, error) {
-	return tools.ReasoningDefs(), nil
+	return append(tools.ReasoningDefs(), tools.MemoryDefs()...), nil
 }
 
 // CallTool implements tools.Server.
@@ -42,6 +49,18 @@ func (s *Server) CallTool(ctx context.Context, tool string, args json.RawMessage
 	case "reasoning_plan":
 		var err error
 		text, err = s.plan(ctx, args)
+		if err != nil {
+			text = "error: " + err.Error()
+		}
+	case "memory_remember":
+		var err error
+		text, err = s.remember(ctx, args)
+		if err != nil {
+			text = "error: " + err.Error()
+		}
+	case "memory_recall":
+		var err error
+		text, err = s.recall(ctx, args)
 		if err != nil {
 			text = "error: " + err.Error()
 		}
@@ -130,5 +149,46 @@ func (s *Server) plan(ctx context.Context, args json.RawMessage) (string, error)
 	return sb.String(), nil
 }
 
+func (s *Server) remember(ctx context.Context, args json.RawMessage) (string, error) {
+	var a struct {
+		Title string   `json:"title"`
+		Tags  []string `json:"tags"`
+		Body  string   `json:"body"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", fmt.Errorf("bad args: %w", err)
+	}
+	if a.Title == "" {
+		return "", fmt.Errorf("'title' is required")
+	}
+	if len(a.Tags) == 0 {
+		return "", fmt.Errorf("'tags' must be non-empty")
+	}
+	if a.Body == "" {
+		return "", fmt.Errorf("'body' is required")
+	}
+	if s.Memory == nil {
+		return "", fmt.Errorf("no memory backend configured")
+	}
+	return s.Memory.Remember(ctx, a.Title, a.Tags, a.Body)
+}
+
+func (s *Server) recall(ctx context.Context, args json.RawMessage) (string, error) {
+	var a struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", fmt.Errorf("bad args: %w", err)
+	}
+	if a.Query == "" {
+		return "", fmt.Errorf("'query' is required")
+	}
+	if s.Memory == nil {
+		return "", fmt.Errorf("no memory backend configured")
+	}
+	return s.Memory.Recall(ctx, a.Query)
+}
+
 var _ tools.Server = (*Server)(nil)
 var _ tools.PlanBackendSetter = (*Server)(nil)
+var _ tools.MemoryBackendSetter = (*Server)(nil)

@@ -125,6 +125,19 @@ type PlanBackendSetter interface {
 	SetPlanBackend(PlanBackend)
 }
 
+// MemoryBackend persists and retrieves memories. Used by memory_remember and
+// memory_recall. A flat-file fallback is always available; denotesrv is
+// preferred when its mount is accessible.
+type MemoryBackend interface {
+	Remember(ctx context.Context, title string, tags []string, body string) (string, error)
+	Recall(ctx context.Context, query string) (string, error)
+}
+
+// MemoryBackendSetter is implemented by tool servers that accept a MemoryBackend.
+type MemoryBackendSetter interface {
+	SetMemoryBackend(MemoryBackend)
+}
+
 // WorkDirSetter is implemented by tool servers that accept a dynamic working
 // directory. SetWorkDir updates the directory used for subsequent tool calls.
 type WorkDirSetter interface {
