@@ -17,15 +17,24 @@ import (
 
 var ToolGlob = tools.ToolInfo{
 	Name: "file_glob",
-	Description: `Fast file pattern matching. Find files by name/path patterns.
+	Description: `Find files by name/path patterns.
 
 Usage:
-- Works with any codebase size
-- Results sorted by modification time
-- ripgrep respects .gitignore and .ignore files by default
-- Use ** for recursive path matches (for example, **/*.js)
-- Use instead of find or ls in Bash
-- Can speculatively launch multiple Glob calls in parallel`,
+- Fast pattern matching for any codebase size
+- Results sorted by modification time (newest first)
+- Respects .gitignore and .ignore files by default
+- Use instead of find or ls commands
+
+Patterns:
+- **/*.js: all JavaScript files recursively
+- src/**/*.ts: TypeScript files in src/ and subdirectories
+- *.go: Go files in current directory
+- **/test_*.py: Python test files recursively
+
+Notes:
+- Returns absolute file paths
+- Use for discovering project structure
+- Combine with file_grep for content search`,
 	InputSchema: json.RawMessage(`{
 		"type": "object",
 		"required": ["pattern"],

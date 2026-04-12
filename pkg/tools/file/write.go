@@ -11,14 +11,19 @@ import (
 
 var ToolWrite = tools.ToolInfo{
 	Name: "file_write",
-	Description: `Writes a file to the local filesystem.
+	Description: `Write or overwrite a file.
 
 Usage:
-- This tool will overwrite the existing file if there is one at the provided path.
-- If this is an existing file, you MUST use the Read tool first to read the file's contents. This tool will fail if you did not read the file first.
-- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
-- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.`,
+- Creates new file or overwrites existing file
+- File path must be absolute (not relative)
+- For existing files: must read with file_read first
+- Overwrites entire file content
+
+Notes:
+- Prefer file_edit for modifying existing files
+- Only create new files when explicitly required
+- Write permissions required for target location
+- Creates parent directories if needed`,
 	InputSchema: json.RawMessage(`{
 		"type": "object",
 		"required": ["file_path", "content"],

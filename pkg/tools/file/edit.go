@@ -12,15 +12,25 @@ import (
 
 var ToolEdit = tools.ToolInfo{
 	Name: "file_edit",
-	Description: `Performs exact string replacements in files.
+	Description: `Perform exact string replacement in a file.
 
 Usage:
-- You must use your ` + "`" + `Read` + "`" + ` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
-- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the leading "+" prefix. Never include the leading "+" in old_string or new_string.
-- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-- The edit will FAIL if ` + "`" + `old_string` + "`" + ` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use ` + "`" + `replace_all` + "`" + ` to change every instance of ` + "`" + `old_string` + "`" + `.
-- Use ` + "`" + `replace_all` + "`" + ` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.`,
+- File path must be absolute (not relative)
+- Must read file with file_read before editing
+- old_string must be unique in file (or use replace_all)
+- Preserve exact indentation from file_read output
+- old_string and new_string must be different
+
+Parameters:
+- replace_all: replace all occurrences (for renaming)
+- old_string: text to find (exact match)
+- new_string: replacement text
+
+Notes:
+- file_read returns diff format: exclude leading "+" from old_string
+- For non-unique old_string: use larger context or replace_all
+- Prefer over file_write for modifications
+- Line endings preserved`,
 	InputSchema: json.RawMessage(`{
 		"type": "object",
 		"required": ["file_path", "old_string", "new_string"],

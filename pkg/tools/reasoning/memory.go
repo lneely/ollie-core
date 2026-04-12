@@ -17,9 +17,37 @@ func (s *Server) SetMemoryBackend(b tools.MemoryBackend) { s.Memory = b }
 
 var ToolRemember = tools.ToolInfo{
 	Name: "memory_remember",
-	Description: `Save a memory that persists across sessions.
+	Description: `Save a persistent memory across sessions.
 
-Provide a descriptive title, relevant tags, and a concise body. Choose tags carefully because they strongly influence later recall. Prefer specific, stable terms over generic ones. Store durable facts, decisions, preferences, or context — not raw transcripts or temporary chatter.`,
+Usage:
+- Store key facts, decisions, preferences, or context
+- Memories persist for future recall
+- Use descriptive titles and specific tags
+- Keep body concise and actionable
+
+Title Requirements:
+- Descriptive, stands alone
+- Answers "what is this about?"
+- Minimum 3 characters
+
+Tag Guidelines:
+- Specific, stable terms (not generic)
+- Concrete topics, people, projects
+- Influences recall accuracy
+- Minimum 2 characters per tag
+- Unique within memory
+
+Body Content:
+- Key facts and essential context
+- Decisions made or preferences
+- Not raw transcripts or chatter
+- Minimum 8 characters
+
+Examples:
+- Project structure decisions
+- User preferences or constraints
+- Code patterns or conventions
+- Important discoveries or insights`,
 	InputSchema: json.RawMessage(`{
 		"type": "object",
 		"additionalProperties": false,
@@ -50,9 +78,27 @@ Provide a descriptive title, relevant tags, and a concise body. Choose tags care
 }
 var ToolRecall = tools.ToolInfo{
 	Name: "memory_recall",
-	Description: `Search saved memories by keyword.
+	Description: `Search previously saved memories.
 
-Search matches titles and tags only; body content is not searched. Use short, specific terms likely to appear literally in titles or tags at write time. Prefer names, project identifiers, stable topics, or exact tags over full sentences or vague descriptions.`,
+Usage:
+- Find memories by keyword search
+- Searches titles and tags only (not body content)
+- Use specific, literal terms from original tags/titles
+- Returns matching memories with full details
+
+Search Tips:
+- Use exact tags or project names
+- Prefer specific terms over vague descriptions
+- Minimum query length: 2 characters
+- Case-insensitive matching
+
+Examples:
+- Project name: "ollie" or "core"
+- Topic: "authentication" or "database"
+- Person: "user" or specific username
+- Decision type: "architecture" or "api-design"
+
+Note: Body content is not searched - only titles and tags.`,
 	InputSchema: json.RawMessage(`{
 		"type": "object",
 		"additionalProperties": false,

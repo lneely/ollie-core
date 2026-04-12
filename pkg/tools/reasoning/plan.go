@@ -7,37 +7,36 @@ import (
 
 var ToolPlan = tools.ToolInfo{
 	Name: "reasoning_plan",
-	Description: `Executive planning tool.
+	Description: `Create an execution plan for multi-step tasks.
 
-Use this tool before taking action whenever the task is non-trivial: specifically, when it requires multiple steps, has dependencies, may produce side effects, benefits from persistence/resumption, or the correct order is not obvious.
+Usage:
+- Use for non-trivial tasks requiring multiple steps
+- Plan before acting when order matters or there are dependencies
+- Creates task records if task backend available
+- Execute steps sequentially based on dependencies
 
-First, create a complete ordered plan for the current goal. The plan must:
-- Break the goal into concrete, outcome-oriented steps
-- Order steps by execution sequence
-- Record explicit dependencies
-- Allow dependencies only on earlier steps (lower index)
-- Keep steps small enough to execute or verify independently
-- Avoid redundant or purely decorative steps
+Plan Structure:
+- goal: top-level objective
+- steps: array of ordered steps
+- Each step: title, description, depends_on, acceptance_criteria
+- depends_on: earlier step indexes (0-based)
+- Execute steps only after dependencies complete
 
-Each step should include:
-- index
-- short title
-- description
-- depends_on (list of earlier step indexes only)
-- acceptance_criteria
+When to Plan:
+- Multiple steps required
+- Steps have dependencies
+- Task benefits from persistence
+- Execution order not obvious
 
-If a task backend is available via ` + "`task_create`" + `, persist the plan and steps there and use returned task IDs in subsequent updates. If no backend is available, maintain the same ordered plan in memory and execute it sequentially.
+Re-plan If:
+- Step fails
+- New information changes constraints
+- Dependencies incorrect
+- Better decomposition possible
 
-Use ` + "`reasoning_plan`" + `only to create or revise the overall work breakdown. Use ` + "`reasoning_think`" + ` for short, local reflection during execution. Do not substitute moment-to-moment reasoning for a full plan when planning is required.
-
-Re-plan only if:
-- a step fails,
-- new information changes the goal or constraints,
-- dependencies were incorrect or incomplete,
-- or a better decomposition becomes necessary.
-
-Do not begin executing dependent work until its dependencies are complete.
-`,
+Examples:
+- Code modification: read → analyze → edit → test
+- Project exploration: list files → examine structure → read key files`,
 	InputSchema: json.RawMessage(`{
 		"type": "object",
 		"additionalProperties": false,

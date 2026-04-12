@@ -43,8 +43,24 @@ func Decl(workdir string) func() tools.Server {
 func (e *Server) ListTools() ([]tools.ToolInfo, error) {
 	return []tools.ToolInfo{
 		{
-			Name:        "execute_code",
-			Description: "Run inline code in a sandboxed environment.",
+			Name: "execute_code",
+			Description: `Run inline shell code in a sandboxed environment.
+
+Usage:
+- Run shell commands: grep, cat, sed, find, etc.
+- Default timeout: 30 seconds
+- Default language: bash
+- Output includes stdout, stderr, and exit code
+
+Security:
+- Dangerous commands blocked: rm -rf, fork bombs, sudo, etc.
+- File system access limited to sandbox
+- Network access restricted
+
+Examples:
+- List files: code='ls -la'
+- Search content: code='grep -r "TODO" ./src/'
+- Count lines: code='wc -l file.txt'`,
 			InputSchema: json.RawMessage(`{
 				"type": "object",
 				"required": ["code"],
@@ -57,8 +73,22 @@ func (e *Server) ListTools() ([]tools.ToolInfo, error) {
 			}`),
 		},
 		{
-			Name:        "execute_tool",
-			Description: "Run a named tool script from " + ToolsPath() + " in a sandboxed environment. Supported languages: bash, python3 (detected from shebang). Use this only for named scripts, not for inline shell commands.",
+			Name: "execute_tool",
+			Description: `Run a named tool script from the tools directory.
+
+Usage:
+- Scripts located in: ` + ToolsPath() + `
+- Supported languages: bash, python3 (detected from shebang)
+- Use for named scripts, not inline shell commands
+- Default timeout: 30 seconds
+
+Tool Discovery:
+- List tools: \`execute_code('ls ' + \"" + ToolsPath() + "\")\`
+- Check script permissions before execution
+
+Examples:
+- Run bash tool: tool='script.sh', args=['arg1', 'arg2']
+- Run python tool: tool='process.py', args=['--input', 'data.txt']`,
 			InputSchema: json.RawMessage(`{
 				"type": "object",
 				"required": ["tool"],
@@ -71,8 +101,24 @@ func (e *Server) ListTools() ([]tools.ToolInfo, error) {
 			}`),
 		},
 		{
-			Name:        "execute_pipe",
-			Description: "Run a pipeline of steps, piping stdout of each into stdin of the next. Use {code: \"cmd --flags\"} for shell commands; use {tool, args} only for named scripts in " + ToolsPath() + ".",
+			Name: "execute_pipe",
+			Description: `Run a pipeline of commands, chaining stdout to stdin.
+
+Usage:
+- Pipe output between multiple commands
+- Each step: {code: "cmd"} or {tool: "name", args: [...]}
+- Default timeout: 30 seconds per pipeline
+- Steps execute sequentially
+
+Structure:
+- pipe: array of step objects
+- Step with code: shell command string
+- Step with tool: named script from tools directory
+- Use code for shell commands, tool for scripts
+
+Examples:
+- Filter and count: pipe=[{code: "grep error log.txt"}, {code: "wc -l"}]
+- Process with script: pipe=[{tool: "parse.py", args: ["data.json"]}, {code: "jq .result"}]`,
 			InputSchema: json.RawMessage(`{
 				"type": "object",
 				"required": ["pipe"],

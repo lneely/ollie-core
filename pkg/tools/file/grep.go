@@ -14,15 +14,25 @@ import (
 
 var ToolGrep = tools.ToolInfo{
 	Name: "file_grep",
-	Description: `Search file contents using ripgrep. The primary content search tool.
+	Description: `Search file contents using ripgrep.
 
 Usage:
-- Always use Grep instead of grep or rg in Bash
-- Uses ripgrep syntax (not GNU grep); literal braces need escaping as \{ and \}
-- ripgrep respects .gitignore and .ignore files by default
-- files_with_matches is the default mode (just file paths)
-- multiline: true is needed for patterns spanning lines
-- Supports pagination via offset + head_limit`,
+- Primary content search tool (use instead of grep in execute_code)
+- Respects .gitignore and .ignore files by default
+- Default output: file paths only (files_with_matches)
+- Use output_mode: 'content' for matching lines with context
+- Use output_mode: 'count' for match counts only
+
+Syntax:
+- Uses ripgrep regex syntax (not GNU grep)
+- Escape literal braces: \{ and \}
+- multiline: true for patterns spanning lines
+- Case insensitive: -i=true
+
+Examples:
+- Find TODOs: pattern='TODO', output_mode='content'
+- Search specific files: glob='*.go', pattern='func main'
+- With context: pattern='error', context=3, output_mode='content'`,
 	InputSchema: json.RawMessage(`{
 		"type": "object",
 		"required": ["pattern"],
