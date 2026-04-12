@@ -11,7 +11,7 @@ import (
 )
 
 var ToolEdit = tools.ToolInfo{
-	Name: "Edit",
+	Name: "file_edit",
 	Description: `Performs exact string replacements in files.
 
 Usage:

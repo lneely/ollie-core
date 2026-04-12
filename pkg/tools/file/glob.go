@@ -16,7 +16,7 @@ import (
 )
 
 var ToolGlob = tools.ToolInfo{
-	Name: "Glob",
+	Name: "file_glob",
 	Description: `Fast file pattern matching. Find files by name/path patterns.
 
 Usage:

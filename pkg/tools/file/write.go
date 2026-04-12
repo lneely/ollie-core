@@ -10,7 +10,7 @@ import (
 )
 
 var ToolWrite = tools.ToolInfo{
-	Name: "Write",
+	Name: "file_write",
 	Description: `Writes a file to the local filesystem.
 
 Usage:

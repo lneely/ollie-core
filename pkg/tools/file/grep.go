@@ -13,7 +13,7 @@ import (
 )
 
 var ToolGrep = tools.ToolInfo{
-	Name: "Grep",
+	Name: "file_grep",
 	Description: `Search file contents using ripgrep. The primary content search tool.
 
 Usage:

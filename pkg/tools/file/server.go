@@ -54,15 +54,15 @@ func (s *Server) CallTool(ctx context.Context, tool string, args json.RawMessage
 		err  error
 	)
 	switch tool {
-	case "Read":
+	case "file_read":
 		text, err = s.dispatchRead(ctx, args)
-	case "Write":
+	case "file_write":
 		text, err = s.dispatchWrite(ctx, args)
-	case "Edit":
+	case "file_edit":
 		text, err = s.dispatchEdit(ctx, args)
-	case "Grep":
+	case "file_grep":
 		text, err = s.dispatchGrep(ctx, args)
-	case "Glob":
+	case "file_glob":
 		text, err = s.dispatchGlob(ctx, args)
 	default:
 		text = "unknown tool: " + tool
