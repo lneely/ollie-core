@@ -1,6 +1,11 @@
 package execute
 
+// execute_pipe constructs a pipeline of execute_code and execute_tool calls
+// to enable the composition of tools and arbitrary code.
+
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -54,4 +59,34 @@ func BuildPipeline(steps []PipeStep) (string, bool, error) {
 	}
 	return strings.Join(parts, " |\n"), true, nil
 
+}
+
+func dispatchExecutePipe(ctx context.Context, e *Server, args json.RawMessage) (string, error) {
+	var a struct {
+		Pipe    []PipeStep `json:"pipe"`
+		Timeout int        `json:"timeout"`
+		Sandbox string     `json:"sandbox"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", fmt.Errorf("execute_pipe: bad args: %w", err)
+	}
+	if len(a.Pipe) == 0 {
+		return "", fmt.Errorf("execute_pipe: 'pipe' is required")
+	}
+	code, _, err := BuildPipeline(a.Pipe)
+	if err != nil {
+		return "", err
+	}
+	if e.Confirm != nil && !e.Confirm(fmt.Sprintf("execute_pipe: %s", code)) {
+		return "", fmt.Errorf("execute_pipe: denied by user")
+	}
+	timeout := a.Timeout
+	if timeout <= 0 {
+		timeout = 30
+	}
+	sandbox := a.Sandbox
+	if sandbox == "" {
+		sandbox = "default"
+	}
+	return e.Execute(ctx, code, "bash", timeout, sandbox, true)
 }

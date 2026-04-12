@@ -15,7 +15,9 @@ func Decl() func() tools.Server { return func() tools.Server { return &Server{} 
 // Server implements tools.Server for reasoning tools.
 type Server struct {
 	// Plan is the optional task persistence backend. When nil, reasoning_plan
-	// produces an in-context plan only.
+	// produces an in-context plan only. This in-context plan queues each step
+	// of the plan, in order, as prompts for the model to execute when the
+	// planning turn finishes.
 	Plan tools.PlanBackend
 
 	// Memory is the memory persistence backend. Always non-nil after
@@ -23,22 +25,21 @@ type Server struct {
 	Memory tools.MemoryBackend
 }
 
-// SetPlanBackend implements tools.PlanBackendSetter.
-func (s *Server) SetPlanBackend(b tools.PlanBackend) { s.Plan = b }
-
-// SetMemoryBackend implements tools.MemoryBackendSetter.
-func (s *Server) SetMemoryBackend(b tools.MemoryBackend) { s.Memory = b }
-
 // ListTools implements tools.Server.
 func (s *Server) ListTools() ([]tools.ToolInfo, error) {
-	return append(tools.ReasoningDefs(), tools.MemoryDefs()...), nil
+	return []tools.ToolInfo{
+		ToolThink,
+		ToolPlan,
+		ToolRemember,
+		ToolRecall,
+	}, nil
 }
 
 // CallTool implements tools.Server.
 func (s *Server) CallTool(ctx context.Context, tool string, args json.RawMessage) (json.RawMessage, error) {
 	var text string
 	switch tool {
-	case "reasoning_think":
+	case ToolThink.Name:
 		var a struct {
 			Thought string `json:"thought"`
 		}
@@ -46,19 +47,19 @@ func (s *Server) CallTool(ctx context.Context, tool string, args json.RawMessage
 			text = "error: missing required field 'thought'"
 		}
 		// No-op: the thought is recorded in conversation history by the loop.
-	case "reasoning_plan":
+	case ToolPlan.Name:
 		var err error
 		text, err = s.plan(ctx, args)
 		if err != nil {
 			text = "error: " + err.Error()
 		}
-	case "memory_remember":
+	case ToolRemember.Name:
 		var err error
 		text, err = s.remember(ctx, args)
 		if err != nil {
 			text = "error: " + err.Error()
 		}
-	case "memory_recall":
+	case ToolRecall.Name:
 		var err error
 		text, err = s.recall(ctx, args)
 		if err != nil {
@@ -189,6 +190,7 @@ func (s *Server) recall(ctx context.Context, args json.RawMessage) (string, erro
 	return s.Memory.Recall(ctx, a.Query)
 }
 
+// Compile-time interface checks
 var _ tools.Server = (*Server)(nil)
 var _ tools.PlanBackendSetter = (*Server)(nil)
 var _ tools.MemoryBackendSetter = (*Server)(nil)

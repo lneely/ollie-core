@@ -2,13 +2,70 @@ package reasoning
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"ollie/pkg/tools"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 )
+
+// SetMemoryBackend implements tools.MemoryBackendSetter.
+func (s *Server) SetMemoryBackend(b tools.MemoryBackend) { s.Memory = b }
+
+var ToolRemember = tools.ToolInfo{
+	Name: "memory_remember",
+	Description: `Save a memory that persists across sessions.
+
+Provide a descriptive title, relevant tags, and a concise body. Choose tags carefully because they strongly influence later recall. Prefer specific, stable terms over generic ones. Store durable facts, decisions, preferences, or context — not raw transcripts or temporary chatter.`,
+	InputSchema: json.RawMessage(`{
+		"type": "object",
+		"additionalProperties": false,
+		"required": ["title", "tags", "body"],
+		"properties": {
+			"title": {
+				"type": "string",
+				"minLength": 3,
+				"description": "Descriptive title that can stand alone and answer 'what is this about?'"
+			},
+			"tags": {
+				"type": "array",
+				"minItems": 1,
+				"uniqueItems": true,
+				"items": {
+					"type": "string",
+					"minLength": 2
+				},
+				"description": "Specific, stable recall tags you would search for later. Prefer concrete topics, people, projects, decisions, or preferences."
+			},
+			"body": {
+				"type": "string",
+				"minLength": 8,
+				"description": "Concise memory content: key facts, decisions, preferences, and essential context. Not a transcript."
+			}
+		}
+	}`),
+}
+var ToolRecall = tools.ToolInfo{
+	Name: "memory_recall",
+	Description: `Search saved memories by keyword.
+
+Search matches titles and tags only; body content is not searched. Use short, specific terms likely to appear literally in titles or tags at write time. Prefer names, project identifiers, stable topics, or exact tags over full sentences or vague descriptions.`,
+	InputSchema: json.RawMessage(`{
+		"type": "object",
+		"additionalProperties": false,
+		"required": ["query"],
+		"properties": {
+			"query": {
+				"type": "string",
+				"minLength": 2,
+				"description": "Short keyword or phrase to search for in memory titles and tags. Prefer literal terms such as names, projects, topics, or exact tags."
+			}
+		}
+	}`),
+}
 
 // FlatDirBackend implements tools.MemoryBackend using a plain directory of
 // markdown files. Filenames follow a denote-like convention:
