@@ -703,7 +703,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 
 	case "/model":
 		if len(args) == 0 {
-			handler(infoEvent("error: /model requires an argument (e.g., /model qwen3:8b)"))
+			handler(infoEvent(s.loopcfg.Backend.Model()))
 			return true
 		}
 		s.loopcfg.Backend.SetModel(args[0])
@@ -910,7 +910,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			"  /sessions        - list saved sessions",
 			"  /agent [name]    - show or switch active agent",
 			"  /backend <type>  - switch backend (ollama, openai)",
-			"  /model <name>    - switch model",
+			"  /model [name]    - show current model, or switch to <name>",
 			"  /models          - list available models",
 			"  /mcp             - list registered tool servers and their tools",
 			"  /cwd [path]      - show or change working directory",
