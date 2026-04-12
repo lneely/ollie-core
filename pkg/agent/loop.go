@@ -26,7 +26,6 @@ type loopConfig struct {
 }
 
 func run(ctx context.Context, cfg loopConfig, state state) error {
-	var totalToolCalls int
 	var step int
 
 	for {
@@ -107,7 +106,6 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 		default:
 			return fmt.Errorf("step %d: %s", step, stopReason)
 		}
-		totalToolCalls += len(toolCalls)
 
 		// Execute tool calls, handling mid-execution interruption.
 		msg := backend.Message{Role: "assistant", Content: content.String(), ToolCalls: toolCalls}
@@ -212,7 +210,7 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 			}
 			break
 		}
-		
+
 		step++
 	}
 
