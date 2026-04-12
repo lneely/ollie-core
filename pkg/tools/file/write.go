@@ -47,10 +47,19 @@ func (s *Server) dispatchWrite(_ context.Context, raw json.RawMessage) (string, 
 		return errText("existing file must be read first. Use the Read tool to examine the file contents."), nil
 	}
 
+	var oldContent string
+	if exists {
+		oldContent, _ = readFileChecked(a.FilePath)
+	}
+
 	if err := os.WriteFile(a.FilePath, []byte(a.Content), 0644); err != nil { //nolint:gosec
 		return "", fmt.Errorf("writing file: %w", err)
 	}
 
 	s.markRead(a.FilePath)
-	return "File written successfully", nil
+
+	if !exists {
+		return plusLines(a.Content), nil
+	}
+	return unifiedDiff(a.FilePath, oldContent, a.Content), nil
 }

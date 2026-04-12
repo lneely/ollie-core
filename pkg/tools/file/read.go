@@ -22,7 +22,7 @@ Usage:
 - By default, it reads up to 2000 lines starting from the beginning of the file
 - You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters
 - Any lines longer than 2000 characters will be truncated
-- Results are returned with line numbers in the format: line number + "| " + content, starting at 1
+- Results are returned in diff format: existing content lines have no prefix
 - This tool can only read files, not directories. To read a directory, use an ls command via the Bash tool.
 - You can call multiple tools in a single response. It is always better to speculatively read multiple potentially useful files in parallel.
 - If you read a file that exists but has empty contents "(empty file)" will be returned.`,
@@ -82,7 +82,7 @@ func (s *Server) dispatchRead(_ context.Context, raw json.RawMessage) (string, e
 			if len(line) > maxLineLen {
 				line = line[:maxLineLen] + "..."
 			}
-			lines = append(lines, fmt.Sprintf("%05d| %s", lineNum, line))
+			lines = append(lines, line)
 		}
 		lineNum++
 		if lineNum > off+lim {
@@ -97,7 +97,7 @@ func (s *Server) dispatchRead(_ context.Context, raw json.RawMessage) (string, e
 	}
 
 	s.markRead(a.FilePath)
-	return strings.Join(lines, "\n"), nil
+	return strings.Join(lines, "\n") + "\n", nil
 }
 
 // openChecked validates and opens a regular file within size limits.

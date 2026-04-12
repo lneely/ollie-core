@@ -16,7 +16,7 @@ var ToolEdit = tools.ToolInfo{
 
 Usage:
 - You must use your ` + "`" + `Read` + "`" + ` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
-- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + "| ". Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
+- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the leading "+" prefix. Never include the leading "+" in old_string or new_string.
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
 - The edit will FAIL if ` + "`" + `old_string` + "`" + ` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use ` + "`" + `replace_all` + "`" + ` to change every instance of ` + "`" + `old_string` + "`" + `.
@@ -67,7 +67,7 @@ func (s *Server) dispatchEdit(_ context.Context, raw json.RawMessage) (string, e
 		return "", fmt.Errorf("writing file: %w", err)
 	}
 
-	return "File edited successfully", nil
+	return unifiedDiff(a.FilePath, original, newContent), nil
 }
 
 // robustReplace tries exact → whitespace-normalized → indentation-flexible → trimmed-boundary.
