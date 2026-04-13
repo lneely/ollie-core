@@ -86,6 +86,11 @@ func New() (Backend, error) {
 	}
 }
 
+// Backends returns the list of supported backend names.
+func Backends() []string {
+	return []string{"ollama", "openai", "openrouter", "anthropic", "copilot", "kiro"}
+}
+
 // openAIName derives a short backend label from the OLLIE_BACKEND value and
 // the base URL, so openai-compatible endpoints self-identify correctly.
 func openAIName(which, url string) string {
