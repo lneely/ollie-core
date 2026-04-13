@@ -634,6 +634,7 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 
 func (s *agentCore) handleCommand(ctx context.Context, input string, handler EventHandler) bool {
 	if strings.HasPrefix(input, "!") {
+		handler(infoEvent(""))
 		cmdStr := strings.TrimSpace(input[1:])
 		if cmdStr == "" {
 			return true
@@ -660,6 +661,8 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 	cmd := parts[0]
 	args := parts[1:]
 
+	handler(infoEvent(""))
+
 	switch cmd {
 	case "/irw":
 		prompt := strings.Join(args, " ")
@@ -672,7 +675,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 
 	case "/backend":
 		if len(args) == 0 {
-			handler(infoEvent("error: /backend requires an argument (e.g., /backend ollama)"))
+			handler(infoEvent(s.loopcfg.Backend.Name()))
 			return true
 		}
 		os.Setenv("OLLIE_BACKEND", args[0])
@@ -909,7 +912,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			"  /agents          - list available agent configs",
 			"  /sessions        - list saved sessions",
 			"  /agent [name]    - show or switch active agent",
-			"  /backend <type>  - switch backend (ollama, openai)",
+			"  /backend [type]  - show current backend, or switch to <type>",
 			"  /model [name]    - show current model, or switch to <name>",
 			"  /models          - list available models",
 			"  /mcp             - list registered tool servers and their tools",
