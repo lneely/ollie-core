@@ -24,7 +24,7 @@ pkg/tools/reasoning/ — reasoning.Server: reasoning_think, reasoning_plan
 mk
 ```
 
-Installs sandbox config to `~/.config/ollie/sandbox/`.
+No build step — ollie-core is a library.
 
 ## Configuration
 

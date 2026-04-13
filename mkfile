@@ -1,6 +1,2 @@
-all:V: install
-
-install:V:
-	mkdir -p $HOME/.config/ollie/sandbox
-	cp -rf sandbox $HOME/.config/ollie
-
+all:V:
+	@echo 'ollie-core: no build step (library only)'
