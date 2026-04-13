@@ -1,2 +1,2 @@
 all:V:
-	@echo 'ollie-core: no build step (library only)'
+	echo 'ollie-core: no build step (library only)'
