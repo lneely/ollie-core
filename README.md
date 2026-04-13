@@ -24,7 +24,7 @@ pkg/tools/reasoning/ — reasoning.Server: reasoning_think, reasoning_plan
 mk
 ```
 
-Copies agent configs to `~/.config/ollie/agents/`.
+Installs sandbox config to `~/.config/ollie/sandbox/`.
 
 ## Configuration
 
