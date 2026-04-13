@@ -22,6 +22,17 @@ Plan Structure:
 - depends_on: earlier step indexes (0-based)
 - Execute steps only after dependencies complete
 
+Plan Lifecycle:
+- Plans are saved as files in pl/ with status suffix: __todo, __wip, __done
+- Filename: YYYYMMDDThhmmss_{uid}--{goal}__status.md
+- Initial state is __todo on creation
+- Rename __todo → __wip when you begin executing the plan
+- Mark individual steps [x] in the checklist as you complete them
+- Rename __wip → __done when the goal is fully realized
+- To rename: use mv on the file, changing only the status suffix
+- List recent plans: ls ${OLLIE_9MOUNT:-$HOME/mnt/ollie}/pl | sort -r | head -20
+- Narrow by date: ls ${OLLIE_9MOUNT:-$HOME/mnt/ollie}/pl | grep ^2026 | sort -r
+
 When to Plan:
 - Multiple steps required
 - Steps have dependencies
