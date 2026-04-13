@@ -35,8 +35,8 @@ func Decl(projectDir string) func() tools.Server {
 	return func() tools.Server { return New(projectDir) }
 }
 
-// SetWorkDir implements tools.WorkDirSetter.
-func (s *Server) SetWorkDir(dir string) {
+// SetCWD implements tools.CWDSetter.
+func (s *Server) SetCWD(dir string) {
 	s.mu.Lock()
 	s.projectDir = dir
 	s.mu.Unlock()
@@ -93,7 +93,7 @@ func (s *Server) wasRead(path string) bool {
 
 // Compile-time interface checks.
 var _ tools.Server = (*Server)(nil)
-var _ tools.WorkDirSetter = (*Server)(nil)
+var _ tools.CWDSetter = (*Server)(nil)
 
 // Shared argument helpers.
 

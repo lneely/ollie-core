@@ -22,10 +22,10 @@ type Server struct {
 	// If it returns false, the operation is denied.
 	Confirm func(string) bool
 
-	// workdir is the working directory for sandboxed commands. If empty,
+	// cwd is the working directory for sandboxed commands. If empty,
 	// the process working directory is used.
 	wdMu    sync.RWMutex
-	workdir string
+	cwd string
 
 	// envExtra holds per-session environment variables injected via SetEnv.
 	envMu    sync.RWMutex
@@ -39,8 +39,8 @@ type Server struct {
 }
 
 // Decl returns a factory for an execute Server with the given working directory.
-func Decl(workdir string) func() tools.Server {
-	return func() tools.Server { return New(workdir) }
+func Decl(cwd string) func() tools.Server {
+	return func() tools.Server { return New(cwd) }
 }
 
 // ListTools implements tools.Server, returning the ToolInfo definitions for the execute_* built-in tools.
@@ -158,12 +158,12 @@ func (e *Server) CallTool(ctx context.Context, tool string, args json.RawMessage
 }
 
 // New creates a new Server with the given working directory.
-func New(workdir string) *Server { return &Server{workdir: workdir} }
+func New(cwd string) *Server { return &Server{cwd: cwd} }
 
-// SetWorkDir updates the working directory used for subsequent command executions.
-func (e *Server) SetWorkDir(dir string) {
+// SetCWD updates the working directory used for subsequent command executions.
+func (e *Server) SetCWD(dir string) {
 	e.wdMu.Lock()
-	e.workdir = dir
+	e.cwd = dir
 	e.wdMu.Unlock()
 }
 
@@ -233,7 +233,7 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 	}
 
 	e.wdMu.RLock()
-	workDir := e.workdir
+	workDir := e.cwd
 	e.wdMu.RUnlock()
 	if workDir == "" {
 		workDir, _ = os.Getwd()

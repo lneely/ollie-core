@@ -25,9 +25,9 @@ import (
 )
 
 // systemPrompt builds the full system prompt for a given tool set.
-func systemPrompt(workdir string) string {
-	if workdir == "" {
-		workdir, _ = os.Getwd()
+func systemPrompt(cwd string) string {
+	if cwd == "" {
+		cwd, _ = os.Getwd()
 	}
 	raw, err := os.ReadFile(DefaultPromptsDir() + "/SYSTEM_PROMPT.md")
 	if err != nil {
@@ -39,7 +39,7 @@ func systemPrompt(workdir string) string {
 	}
 	var buf bytes.Buffer
 	tmpl.Execute(&buf, map[string]string{
-		"WorkDir":   workdir,
+		"CWD":      cwd,
 		"Platform":  runtime.GOOS,
 		"Date":      time.Now().Format("2006-01-02"),
 		"IsGitRepo": "unknown",
@@ -74,10 +74,10 @@ func WithFallbackPlanBackend(b tools.PlanBackend) EnvOption {
 }
 
 // BuildAgentEnv constructs an AgentEnv from a pre-configured Dispatcher and
-// optional agent config. workdir sets the working directory reported in the
+// optional agent config. cwd sets the working directory reported in the
 // system prompt; if empty, the process working directory is used.
 // The caller is responsible for registering all servers on d before calling this.
-func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, workdir string, opts ...EnvOption) AgentEnv {
+func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string, opts ...EnvOption) AgentEnv {
 	var eo envOptions
 	for _, o := range opts {
 		o(&eo)
@@ -152,7 +152,7 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, workdir string, opts 
 		}
 	}
 
-	sp := systemPrompt(workdir)
+	sp := systemPrompt(cwd)
 	if agentPrompt != "" {
 		sp += "\n\n" + agentPrompt
 	}
@@ -244,7 +244,7 @@ type AgentCoreConfig struct {
 	AgentsDir   string
 	SessionsDir string
 	SessionID   string
-	WorkDir     string // working directory for tool execution and system prompt
+	CWD     string // working directory for tool execution and system prompt
 	Session     *Session
 	Env           AgentEnv
 	NewDispatcher func() tools.Dispatcher
@@ -262,7 +262,7 @@ type agentCore struct {
 	sessionID     string
 	dispatcher    tools.Dispatcher
 	newDispatcher func() tools.Dispatcher
-	workdir       string
+	cwd       string
 	agentPrompt   string // agent-specific prompt suffix; kept for system prompt rebuilds
 	currentAction atomic.Pointer[actionHandle]
 	fifo          PromptFIFO
@@ -294,7 +294,7 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		agentsDir:     cfg.AgentsDir,
 		sessionsDir:   cfg.SessionsDir,
 		sessionID:     cfg.SessionID,
-		workdir:       cfg.WorkDir,
+		cwd:           cfg.CWD,
 		agentPrompt:   cfg.Env.agentPrompt,
 		dispatcher:    cfg.Env.dispatcher,
 		newDispatcher: cfg.NewDispatcher,
@@ -325,33 +325,33 @@ func (s *agentCore) Reply() string {
 	return s.reply
 }
 
-// WorkDir returns the current working directory for tool execution.
-func (s *agentCore) WorkDir() string {
-	if s.workdir != "" {
-		return s.workdir
+// CWD returns the current working directory for tool execution.
+func (s *agentCore) CWD() string {
+	if s.cwd != "" {
+		return s.cwd
 	}
 	wd, _ := os.Getwd()
 	return wd
 }
 
-// SetWorkDir changes the working directory for tool execution and updates the
+// SetCWD changes the working directory for tool execution and updates the
 // system prompt. Returns an error if the path does not exist.
-func (s *agentCore) SetWorkDir(dir string) error {
+func (s *agentCore) SetCWD(dir string) error {
 	if dir != "" {
 		if _, err := os.Stat(dir); err != nil {
-			return fmt.Errorf("workdir: %w", err)
+			return fmt.Errorf("cwd: %w", err)
 		}
 	}
-	s.workdir = dir
+	s.cwd = dir
 	// Propagate to any tool server that knows how to handle it (e.g. execute).
 	if s.dispatcher != nil {
 		if srv, ok := s.dispatcher.GetServer("execute"); ok {
-			if ws, ok := srv.(tools.WorkDirSetter); ok {
-				ws.SetWorkDir(dir)
+			if ws, ok := srv.(tools.CWDSetter); ok {
+				ws.SetCWD(dir)
 			}
 		}
 	}
-	// Rebuild system prompt so it reflects the new workdir.
+	// Rebuild system prompt so it reflects the new cwd.
 	sp := systemPrompt(dir)
 	if s.agentPrompt != "" {
 		sp += "\n\n" + s.agentPrompt
@@ -814,7 +814,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			s.dispatcher.Close()
 		}
 		d := s.newDispatcher()
-		env := BuildAgentEnv(cfg, d, s.workdir)
+		env := BuildAgentEnv(cfg, d, s.cwd)
 		s.dispatcher = env.dispatcher
 		s.hooks = env.Hooks
 		s.loopcfg.systemPrompt = env.systemPrompt
@@ -968,11 +968,11 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 
 	case "/cwd":
 		if len(args) == 0 {
-			handler(infoEvent("cwd: " + s.WorkDir()))
+			handler(infoEvent("cwd: " + s.CWD()))
 			return true
 		}
 		dir := strings.Join(args, " ")
-		if err := s.SetWorkDir(dir); err != nil {
+		if err := s.SetCWD(dir); err != nil {
 			handler(infoEvent("error: " + err.Error()))
 			return true
 		}

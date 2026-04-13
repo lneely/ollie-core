@@ -80,12 +80,12 @@ type Core interface {
 	// grouped by server name.
 	ListServers() string
 
-	// WorkDir returns the current working directory used for tool execution.
-	WorkDir() string
+	// CWD returns the current working directory used for tool execution.
+	CWD() string
 
-	// SetWorkDir changes the working directory for tool execution and
+	// SetCWD changes the working directory for tool execution and
 	// updates the system prompt. Returns an error if the path does not exist.
-	SetWorkDir(dir string) error
+	SetCWD(dir string) error
 
 	// SetSessionID renames the session: updates the in-memory ID, renames
 	// persisted files on disk, and propagates to the execute server env.

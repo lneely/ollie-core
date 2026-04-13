@@ -138,10 +138,10 @@ type MemoryBackendSetter interface {
 	SetMemoryBackend(MemoryBackend)
 }
 
-// WorkDirSetter is implemented by tool servers that accept a dynamic working
-// directory. SetWorkDir updates the directory used for subsequent tool calls.
-type WorkDirSetter interface {
-	SetWorkDir(string)
+// CWDSetter is implemented by tool servers that accept a dynamic working
+// directory. SetCWD updates the directory used for subsequent tool calls.
+type CWDSetter interface {
+	SetCWD(string)
 }
 
 // EnvSetter is implemented by tool servers that accept per-session environment
