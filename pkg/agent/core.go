@@ -694,6 +694,10 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			handler(infoEvent(s.loopcfg.Backend.Name()))
 			return true
 		}
+		if s.IsRunning() {
+			handler(infoEvent("error: cannot switch backend while agent is running"))
+			return true
+		}
 		os.Setenv("OLLIE_BACKEND", args[0])
 		be, err := backend.New()
 		if err != nil {
@@ -758,6 +762,10 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			handler(infoEvent("active agent: " + s.agentName))
 			return true
 		}
+		if s.IsRunning() {
+			handler(infoEvent("error: cannot switch agent while agent is running"))
+			return true
+		}
 		name := args[0]
 		cfgPath := AgentConfigPath(s.agentsDir, name)
 		cfg, err := config.Load(cfgPath)
@@ -787,6 +795,10 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		return true
 
 	case "/compact":
+		if s.IsRunning() {
+			handler(infoEvent("error: cannot compact while agent is running"))
+			return true
+		}
 		if s.session == nil {
 			handler(infoEvent("nothing to compact"))
 			return true
@@ -866,6 +878,10 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		return true
 
 	case "/clear":
+		if s.IsRunning() {
+			handler(infoEvent("error: cannot clear while agent is running"))
+			return true
+		}
 		s.session = nil
 		s.sessionID = NewSessionID()
 		handler(infoEvent("cleared"))
