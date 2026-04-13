@@ -729,6 +729,10 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			handler(infoEvent(s.loopcfg.Backend.Model()))
 			return true
 		}
+		if s.IsRunning() {
+			handler(infoEvent("error: cannot switch model while agent is running"))
+			return true
+		}
 		s.loopcfg.Backend.SetModel(args[0])
 		handler(infoEvent("switched model to: " + args[0]))
 		return true
