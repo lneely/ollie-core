@@ -968,7 +968,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 
 	case "/cwd":
 		if len(args) == 0 {
-			handler(infoEvent("workdir: " + s.WorkDir()))
+			handler(infoEvent("cwd: " + s.WorkDir()))
 			return true
 		}
 		dir := strings.Join(args, " ")
@@ -976,7 +976,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			handler(infoEvent("error: " + err.Error()))
 			return true
 		}
-		handler(infoEvent("workdir: " + dir))
+		handler(infoEvent("cwd: " + dir))
 		return true
 
 	case "/skills", "/tools":
