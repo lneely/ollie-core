@@ -556,6 +556,9 @@ func firstSentence(s string) string {
 // starts an agent turn that streams events to handler. If a turn is already
 // in progress the prompt is queued as an in-stream interruption instead.
 func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandler) {
+	if input == "" {
+		return
+	}
 	if s.handleCommand(ctx, input, handler) {
 		return
 	}
