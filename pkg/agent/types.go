@@ -86,6 +86,10 @@ type Core interface {
 	// SetWorkDir changes the working directory for tool execution and
 	// updates the system prompt. Returns an error if the path does not exist.
 	SetWorkDir(dir string) error
+
+	// SetSessionID renames the session: updates the in-memory ID, renames
+	// persisted files on disk, and propagates to the execute server env.
+	SetSessionID(newID string) error
 }
 
 // PromptFIFO is a simple thread-safe FIFO for queued prompts.

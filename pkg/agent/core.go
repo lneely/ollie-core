@@ -360,6 +360,36 @@ func (s *agentCore) SetWorkDir(dir string) error {
 	return nil
 }
 
+// SetSessionID renames the session. It updates the in-memory ID, renames
+// persisted files on disk, and propagates to the execute server env.
+func (s *agentCore) SetSessionID(newID string) error {
+	oldID := s.sessionID
+	if oldID == newID {
+		return nil
+	}
+	// Rename persisted files on disk.
+	if s.sessionsDir != "" && oldID != "" {
+		for _, suffix := range []string{".json", ".compaction.jsonl"} {
+			oldPath := s.sessionsDir + "/" + oldID + suffix
+			if _, err := os.Stat(oldPath); err == nil {
+				if err := os.Rename(oldPath, s.sessionsDir+"/"+newID+suffix); err != nil {
+					return fmt.Errorf("rename %s: %w", suffix, err)
+				}
+			}
+		}
+	}
+	s.sessionID = newID
+	// Propagate to the execute server env.
+	if s.dispatcher != nil {
+		if srv, ok := s.dispatcher.GetServer("execute"); ok {
+			if es, ok := srv.(tools.EnvSetter); ok {
+				es.SetEnv("OLLIE_SESSION_ID", newID)
+			}
+		}
+	}
+	return nil
+}
+
 // defaultContextLength is used when the backend cannot report the model's
 // actual context window (e.g. CodeWhisperer). 128k tokens is a safe default
 // for modern models.
@@ -991,6 +1021,8 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			"  /usage           - show token usage and context percentage",
 			"  /history         - dump bounded message history",
 			"  /clear           - clear session",
+			"  /kill            - kill session",
+			"  /rn <name>       - rename session",
 			"  /help            - show this help",
 			"  !<cmd>           - run shell command",
 		}
