@@ -404,7 +404,7 @@ func encodeKiroToolResults(messages []Message) []kiroToolResult {
 
 func encodeKiroToolResultContent(content string) kiroToolResultContent {
 	content = strings.TrimSpace(content)
-	if content != "" && json.Valid([]byte(content)) {
+	if len(content) > 0 && content[0] == '{' && json.Valid([]byte(content)) {
 		return kiroToolResultContent{JSON: json.RawMessage(content)}
 	}
 	return kiroToolResultContent{Text: content}
