@@ -76,7 +76,20 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 				if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 {
 					emit(cfg, Event{
 						Role:    "usage",
-						Content: fmt.Sprintf("%d %d", ev.Usage.InputTokens, ev.Usage.OutputTokens),
+						Content: fmt.Sprintf("%d %d 0", ev.Usage.InputTokens, ev.Usage.OutputTokens),
+					})
+				} else {
+					// Backend didn't report usage; estimate from content.
+					inChars := 0
+					for _, m := range history {
+						inChars += len(m.Content)
+						for _, tc := range m.ToolCalls {
+							inChars += len(tc.Name) + len(tc.Arguments)
+						}
+					}
+					emit(cfg, Event{
+						Role:    "usage",
+						Content: fmt.Sprintf("%d %d 1", inChars/4, content.Len()/4),
 					})
 				}
 				break

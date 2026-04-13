@@ -73,6 +73,8 @@ type Session struct {
 	TotalInputTokens  int
 	TotalOutputTokens int
 	TotalRequests     int
+	TotalResponses    int
+	Estimated         bool // true if any usage was estimated rather than reported by the backend
 }
 
 // newSession creates a new Session with an initial user message.
@@ -90,10 +92,17 @@ func (s *Session) history() []backend.Message {
 
 func (s *Session) isComplete() bool { return s.complete }
 
-func (s *Session) addUsage(u backend.Usage) {
+func (s *Session) addUsage(u backend.Usage, estimated bool) {
 	s.TotalInputTokens += u.InputTokens
 	s.TotalOutputTokens += u.OutputTokens
 	s.TotalRequests++
+	if estimated {
+		s.Estimated = true
+	}
+}
+
+func (s *Session) addResponse() {
+	s.TotalResponses++
 }
 
 func (s *Session) update(assistant backend.Message, results []toolResult) error {

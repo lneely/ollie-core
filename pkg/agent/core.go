@@ -446,8 +446,13 @@ func (s *agentCore) Usage() string {
 	if s.session == nil {
 		return "no active session"
 	}
-	return fmt.Sprintf("%d in, %d out, %d requests",
-		s.session.TotalInputTokens, s.session.TotalOutputTokens, s.session.TotalRequests)
+	str := fmt.Sprintf("%d in, %d out, %d requests, %d responses",
+		s.session.TotalInputTokens, s.session.TotalOutputTokens,
+		s.session.TotalRequests, s.session.TotalResponses)
+	if s.session.Estimated {
+		str += " [estimated]"
+	}
+	return str
 }
 
 func (s *agentCore) ListModels() string {
@@ -570,9 +575,9 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 			s.mu.Unlock()
 		}
 		if ev.Role == "usage" && s.session != nil {
-			var in, out int
-			fmt.Sscanf(ev.Content, "%d %d", &in, &out)
-			s.session.addUsage(backend.Usage{InputTokens: in, OutputTokens: out})
+			var in, out, est int
+			fmt.Sscanf(ev.Content, "%d %d %d", &in, &out, &est)
+			s.session.addUsage(backend.Usage{InputTokens: in, OutputTokens: out}, est != 0)
 		}
 		handler(ev)
 	}
@@ -598,6 +603,10 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	err := run(actCtx, s.loopcfg, s.session)
 	actCancel(nil)
 	s.currentAction.CompareAndSwap(handle, nil)
+
+	if s.session != nil {
+		s.session.addResponse()
+	}
 
 	s.mu.Lock()
 	s.reply = replyBuf.String()
@@ -827,19 +836,20 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			handler(infoEvent("no active session"))
 			return true
 		}
-		total := s.session.TotalInputTokens + s.session.TotalOutputTokens
 		ctxLen := s.loopcfg.Backend.ContextLength(ctx)
 		if ctxLen <= 0 {
 			ctxLen = defaultContextLength
 		}
-		estimated := s.session.estimateTokens()
-		pct := estimated * 100 / ctxLen
-		handler(infoEvent(fmt.Sprintf("~%d / %d tokens (%d%%) | %d in, %d out, %d requests",
-			estimated, ctxLen, pct,
-			s.session.TotalInputTokens, s.session.TotalOutputTokens, s.session.TotalRequests)))
-		if total == 0 {
-			handler(infoEvent("(backend does not report token usage)"))
+		ctxEstimated := s.session.estimateTokens()
+		pct := ctxEstimated * 100 / ctxLen
+		usageStr := fmt.Sprintf("~%d / %d tokens (%d%%) | %d in, %d out, %d requests, %d responses",
+			ctxEstimated, ctxLen, pct,
+			s.session.TotalInputTokens, s.session.TotalOutputTokens,
+			s.session.TotalRequests, s.session.TotalResponses)
+		if s.session.Estimated {
+			usageStr += " [estimated]"
 		}
+		handler(infoEvent(usageStr))
 		return true
 
 	case "/history":
