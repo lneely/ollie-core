@@ -144,6 +144,12 @@ type WorkDirSetter interface {
 	SetWorkDir(string)
 }
 
+// EnvSetter is implemented by tool servers that accept per-session environment
+// variables. SetEnv adds a key=value pair to the command environment.
+type EnvSetter interface {
+	SetEnv(key, value string)
+}
+
 // NewServer wraps an mcp.Client as a Server.
 func NewServer(client *mcp.Client) Server {
 	return &mcpServer{client: client}

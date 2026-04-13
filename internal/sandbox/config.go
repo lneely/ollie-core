@@ -99,6 +99,8 @@ func DefaultConfig() *Config {
 			"PATH",
 			"LANG",
 			"TERM",
+			"OLLIE_SESSION_ID",
+			"OLLIE_PLAN_PATH",
 		},
 		Advanced: AdvancedConfig{
 			LDD:     false,
@@ -275,6 +277,8 @@ func SystemDefaults() LayeredConfig {
 			"PATH",
 			"LANG",
 			"TERM",
+			"OLLIE_SESSION_ID",
+			"OLLIE_PLAN_PATH",
 		},
 	}
 }

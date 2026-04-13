@@ -181,6 +181,9 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, workdir string, opts 
 	}
 }
 
+// Dispatcher returns the underlying tool dispatcher.
+func (e *AgentEnv) Dispatcher() tools.Dispatcher { return e.dispatcher }
+
 
 // DefaultAgentsDir returns the default directory for agent config files.
 func DefaultAgentsDir() string {

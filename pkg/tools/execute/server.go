@@ -27,6 +27,10 @@ type Server struct {
 	wdMu    sync.RWMutex
 	workdir string
 
+	// envExtra holds per-session environment variables injected via SetEnv.
+	envMu    sync.RWMutex
+	envExtra map[string]string
+
 	// rate limiting state (per-Server)
 	rateLimitMu        sync.Mutex
 	validationFailures int
@@ -163,6 +167,16 @@ func (e *Server) SetWorkDir(dir string) {
 	e.wdMu.Unlock()
 }
 
+// SetEnv adds a per-session environment variable to all subsequent commands.
+func (e *Server) SetEnv(key, value string) {
+	e.envMu.Lock()
+	if e.envExtra == nil {
+		e.envExtra = make(map[string]string)
+	}
+	e.envExtra[key] = value
+	e.envMu.Unlock()
+}
+
 var whitespacePattern = regexp.MustCompile(`\s+`)
 
 const (
@@ -241,6 +255,17 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 	wrapped := sandbox.WrapCommand(cfg, interpreter, workDir)
 	cmd = exec.CommandContext(ctx, wrapped[0], wrapped[1:]...)
 	cmd.Dir = workDir
+
+	// Inject per-session env vars so they're visible inside the sandbox.
+	e.envMu.RLock()
+	if len(e.envExtra) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range e.envExtra {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
+	e.envMu.RUnlock()
+
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
