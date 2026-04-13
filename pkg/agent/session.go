@@ -73,7 +73,6 @@ type Session struct {
 	TotalInputTokens  int
 	TotalOutputTokens int
 	TotalRequests     int
-	TotalResponses    int
 	Estimated         bool // true if any usage was estimated rather than reported by the backend
 }
 
@@ -99,10 +98,6 @@ func (s *Session) addUsage(u backend.Usage, estimated bool) {
 	if estimated {
 		s.Estimated = true
 	}
-}
-
-func (s *Session) addResponse() {
-	s.TotalResponses++
 }
 
 func (s *Session) update(assistant backend.Message, results []toolResult) error {

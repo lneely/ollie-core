@@ -446,9 +446,9 @@ func (s *agentCore) Usage() string {
 	if s.session == nil {
 		return "no active session"
 	}
-	str := fmt.Sprintf("%d in, %d out, %d requests, %d responses",
+	str := fmt.Sprintf("%d in, %d out, %d requests",
 		s.session.TotalInputTokens, s.session.TotalOutputTokens,
-		s.session.TotalRequests, s.session.TotalResponses)
+		s.session.TotalRequests)
 	if s.session.Estimated {
 		str += " [estimated]"
 	}
@@ -603,10 +603,6 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	err := run(actCtx, s.loopcfg, s.session)
 	actCancel(nil)
 	s.currentAction.CompareAndSwap(handle, nil)
-
-	if s.session != nil {
-		s.session.addResponse()
-	}
 
 	s.mu.Lock()
 	s.reply = replyBuf.String()
@@ -842,10 +838,10 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		}
 		ctxEstimated := s.session.estimateTokens()
 		pct := ctxEstimated * 100 / ctxLen
-		usageStr := fmt.Sprintf("~%d / %d tokens (%d%%) | %d in, %d out, %d requests, %d responses",
+		usageStr := fmt.Sprintf("~%d / %d tokens (%d%%) | %d in, %d out, %d requests",
 			ctxEstimated, ctxLen, pct,
 			s.session.TotalInputTokens, s.session.TotalOutputTokens,
-			s.session.TotalRequests, s.session.TotalResponses)
+			s.session.TotalRequests)
 		if s.session.Estimated {
 			usageStr += " [estimated]"
 		}
