@@ -39,7 +39,7 @@ OLLIE_ANTHROPIC_KEY=sk-ant-...
 OLLIE_COPILOT_TOKEN=...
 OLLIE_KIRO_TOKEN=...           # bearer token or sqlite:// path (auto-detected from Kiro CLI if unset)
 OLLIE_MODEL=qwen/qwen3-235b-a22b
-OLLIE_TOOLS_PATH=~/.local/share/ollie/tools  # directory for execute_tool scripts
+OLLIE_TOOLS_PATH=~/.config/ollie/tools  # directory for execute_tool scripts
 ```
 
 Shell environment variables take precedence over the env file.
@@ -76,7 +76,7 @@ Controls landrun sandboxing for `execute_code`. Created automatically with defau
 Five built-in tools across two servers:
 
 - `execute_code` — run inline shell code in a sandbox
-- `execute_tool` — run a named tool script from `OLLIE_TOOLS_PATH` (default: `~/.local/share/ollie/tools`)
+- `execute_tool` — run a named tool script from `OLLIE_TOOLS_PATH` (default: `~/.config/ollie/tools`)
 - `execute_pipe` — chain steps as a pipeline
 - `reasoning_think` — externalize intermediate reasoning
 - `reasoning_plan` — decompose a goal into ordered steps; persists to task backend if available, otherwise queued via fallback backend or in-context only

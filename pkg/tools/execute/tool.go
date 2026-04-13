@@ -14,13 +14,17 @@ import (
 )
 
 // ToolsPath returns the directory to search for named tool scripts.
-// Resolved in order: OLLIE_TOOLS_PATH env var, then ~/.local/share/ollie/tools.
+// Resolved in order: first entry of OLLIE_TOOLS_PATH (colon-separated),
+// then ~/.config/ollie/tools.
 func ToolsPath() string {
 	if p := os.Getenv("OLLIE_TOOLS_PATH"); p != "" {
+		if i := strings.Index(p, ":"); i >= 0 {
+			p = p[:i]
+		}
 		return p
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "ollie", "tools")
+	return filepath.Join(home, ".config", "ollie", "tools")
 }
 
 // detectLanguage infers the script language from the shebang line.
