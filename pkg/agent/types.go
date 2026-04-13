@@ -67,7 +67,10 @@ type Core interface {
 	// ModelName returns the name of the active model.
 	ModelName() string
 
-	// Usage returns a one-line usage summary string.
+	// CtxSz returns the estimated context size as a one-line summary.
+	CtxSz() string
+
+	// Usage returns billed token counts as a one-line summary.
 	Usage() string
 
 	// ListModels returns available model names, one per line.

@@ -429,7 +429,7 @@ func (s *agentCore) IsRunning() bool {
 	return s.currentAction.Load() != nil
 }
 
-func (s *agentCore) Usage() string {
+func (s *agentCore) CtxSz() string {
 	if s.session == nil {
 		return "no active session"
 	}
@@ -440,6 +440,14 @@ func (s *agentCore) Usage() string {
 	estimated := s.session.estimateTokens()
 	pct := estimated * 100 / ctxLen
 	return fmt.Sprintf("%d / %d (%d%%)", estimated, ctxLen, pct)
+}
+
+func (s *agentCore) Usage() string {
+	if s.session == nil {
+		return "no active session"
+	}
+	return fmt.Sprintf("%d in, %d out, %d requests",
+		s.session.TotalInputTokens, s.session.TotalOutputTokens, s.session.TotalRequests)
 }
 
 func (s *agentCore) ListModels() string {
@@ -804,6 +812,13 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			handler(infoEvent("no active session"))
 			return true
 		}
+		ctxLen := s.loopcfg.Backend.ContextLength(ctx)
+		if ctxLen <= 0 {
+			ctxLen = defaultContextLength
+		}
+		estimated := s.session.estimateTokens()
+		pct := estimated * 100 / ctxLen
+		handler(infoEvent(fmt.Sprintf("~%d / %d tokens (%d%%)", estimated, ctxLen, pct)))
 		handler(infoEvent(strings.TrimRight(s.session.contextDebug(), "\n")))
 		return true
 
@@ -943,7 +958,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			"  /cwd [path]      - show or change working directory",
 			"  /queued [pop|clear] - manage queued prompts",
 			"  /compact         - summarize conversation and compact context",
-			"  /context         - show context window debug info",
+			"  /context         - show context size and message breakdown",
 			"  /usage           - show token usage and context percentage",
 			"  /history         - dump bounded message history",
 			"  /clear           - clear session",
