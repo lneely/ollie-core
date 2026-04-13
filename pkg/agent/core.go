@@ -902,6 +902,28 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		handler(infoEvent("workdir: " + dir))
 		return true
 
+	case "/skills", "/tools":
+		subdir := "sk"
+		if cmd == "/tools" {
+			subdir = "t"
+		}
+		mount := os.Getenv("OLLIE_9MOUNT")
+		if mount == "" {
+			home, _ := os.UserHomeDir()
+			mount = home + "/mnt/ollie"
+		}
+		entries, err := os.ReadDir(mount + "/" + subdir)
+		if err != nil {
+			handler(infoEvent(fmt.Sprintf("%s: %v", cmd, err)))
+			return true
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				handler(infoEvent("  " + e.Name()))
+			}
+		}
+		return true
+
 	case "/mcp":
 		handler(infoEvent(s.ListServers()))
 		return true
@@ -915,6 +937,8 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			"  /backend [type]  - show current backend, or switch to <type>",
 			"  /model [name]    - show current model, or switch to <name>",
 			"  /models          - list available models",
+			"  /skills          - list available skills",
+			"  /tools           - list available tools",
 			"  /mcp             - list registered tool servers and their tools",
 			"  /cwd [path]      - show or change working directory",
 			"  /queued [pop|clear] - manage queued prompts",
