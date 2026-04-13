@@ -28,6 +28,9 @@ func loadEnvFile(path string) {
 			continue
 		}
 		k = strings.TrimSpace(k)
+		if i := strings.Index(v, " #"); i >= 0 {
+			v = v[:i]
+		}
 		v = strings.TrimSpace(v)
 		if k != "" && os.Getenv(k) == "" {
 			os.Setenv(k, v)
@@ -79,7 +82,7 @@ func New() (Backend, error) {
 	case "kiro", "codewhisperer":
 		return NewCodeWhisperer(os.Getenv("OLLIE_KIRO_TOKEN"))
 	default:
-		return nil, fmt.Errorf("unknown OLLIE_BACKEND %q (supported: ollama, openai, openrouter, anthropic, copilot)", which)
+		return nil, fmt.Errorf("unknown OLLIE_BACKEND %q (supported: ollama, openai, openrouter, anthropic, copilot, kiro)", which)
 	}
 }
 

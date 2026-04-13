@@ -28,7 +28,7 @@ Usage:
 
 Notes:
 - Use offset/limit parameters for large files
-- Read directories with \`execute_code('ls <path>')\`, not this tool
+- Read directories with execute_code, not this tool
 - Call multiple file_read operations in parallel when exploring
 - Always read a file before editing or writing to it with file_edit/file_write`,
 	InputSchema: json.RawMessage(`{

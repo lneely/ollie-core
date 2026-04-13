@@ -83,7 +83,7 @@ Usage:
 - Default timeout: 30 seconds
 
 Tool Discovery:
-- List tools: \`execute_code('ls ' + \"" + ToolsPath() + "\")\`
+- List tools: execute_code with 'ls ` + ToolsPath() + `'
 - Check script permissions before execution
 
 Examples:
