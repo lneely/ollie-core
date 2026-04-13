@@ -66,6 +66,10 @@ func (s *Server) dispatchGlob(ctx context.Context, raw json.RawMessage) (string,
 	}
 	searchPath = filepath.Clean(searchPath)
 
+	if err := s.checkAccess(searchPath, false); err != nil {
+		return errText("%v", err), nil
+	}
+
 	if err := ensureSearchPath(searchPath); err != nil {
 		return "", err
 	}

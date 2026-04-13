@@ -56,6 +56,9 @@ func (s *Server) dispatchEdit(_ context.Context, raw json.RawMessage) (string, e
 	if a.FilePath == "" {
 		return "", fmt.Errorf("file_path is required")
 	}
+	if err := s.checkAccess(a.FilePath, true); err != nil {
+		return errText("%v", err), nil
+	}
 	if a.OldString == a.NewString {
 		return errText("old_string and new_string must be different"), nil
 	}

@@ -45,6 +45,9 @@ func (s *Server) dispatchWrite(_ context.Context, raw json.RawMessage) (string, 
 	if a.FilePath == "" {
 		return "", fmt.Errorf("file_path is required")
 	}
+	if err := s.checkAccess(a.FilePath, true); err != nil {
+		return errText("%v", err), nil
+	}
 
 	_, statErr := os.Stat(a.FilePath)
 	exists := statErr == nil

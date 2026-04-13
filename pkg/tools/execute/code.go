@@ -63,37 +63,7 @@ func (e *Server) ValidateCode(code string) error {
 }
 
 func loadLayeredConfig(name string) (*sandbox.Config, error) {
-	baseCfg, err := sandbox.Load()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load global config: %w", err)
-	}
-
-	baseLayer := sandbox.LayeredConfig{
-		Filesystem: baseCfg.Filesystem,
-		Network:    baseCfg.Network,
-		Env:        baseCfg.Env,
-	}
-	layers := []sandbox.LayeredConfig{baseLayer}
-
-	if name == "" {
-		name = "default"
-	}
-	sbxLayer, err := sandbox.LoadSandbox(name)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load sandbox %q: %w", name, err)
-	}
-	layers = append(layers, sbxLayer)
-
-	general := sandbox.GeneralConfig{
-		BestEffort: baseCfg.General.BestEffort,
-		LogLevel:   baseCfg.General.LogLevel,
-	}
-	advanced := sandbox.AdvancedConfig{
-		LDD:     baseCfg.Advanced.LDD,
-		AddExec: baseCfg.Advanced.AddExec,
-	}
-
-	return sandbox.Merge(general, advanced, layers...), nil
+	return sandbox.LoadMerged(name)
 }
 
 type limitedWriter struct {

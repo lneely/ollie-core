@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"sync"
 
+	"ollie/internal/sandbox"
 	"ollie/pkg/tools"
 )
 
@@ -89,6 +90,19 @@ func (s *Server) wasRead(path string) bool {
 	_, ok := s.readFiles[path]
 	s.mu.Unlock()
 	return ok
+}
+
+// checkAccess verifies that path is allowed by the sandbox config.
+// write indicates whether write access is needed.
+func (s *Server) checkAccess(path string, write bool) error {
+	cfg, err := sandbox.LoadMerged("default")
+	if err != nil {
+		return fmt.Errorf("sandbox config: %w", err)
+	}
+	s.mu.Lock()
+	cwd := s.projectDir
+	s.mu.Unlock()
+	return sandbox.CheckPath(cfg, path, write, cwd)
 }
 
 // Compile-time interface checks.

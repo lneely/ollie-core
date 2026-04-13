@@ -244,6 +244,74 @@ func ExpandPath(pattern, cwd string) string {
 	return s
 }
 
+// LoadMerged loads the base config merged with a named sandbox layer.
+// If the named layer doesn't exist, returns the base config alone.
+func LoadMerged(name string) (*Config, error) {
+	baseCfg, err := Load()
+	if err != nil {
+		return nil, err
+	}
+	if name == "" {
+		name = "default"
+	}
+	baseLayer := LayeredConfig{
+		Filesystem: baseCfg.Filesystem,
+		Network:    baseCfg.Network,
+		Env:        baseCfg.Env,
+	}
+	layers := []LayeredConfig{baseLayer}
+	if sbxLayer, err := LoadSandbox(name); err == nil {
+		layers = append(layers, sbxLayer)
+	}
+	return Merge(baseCfg.General, baseCfg.Advanced, layers...), nil
+}
+
+// CheckPath checks if the given absolute path is allowed by the sandbox config.
+// If write is true, the path must fall under an RW or RWX entry.
+// If write is false, any entry (RO, ROX, RW, RWX) grants access.
+func CheckPath(cfg *Config, path string, write bool, cwd string) error {
+	cleaned := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		cleaned = resolved
+	} else {
+		// File may not exist yet (new file creation). Resolve parent.
+		if rp, err2 := filepath.EvalSymlinks(filepath.Dir(cleaned)); err2 == nil {
+			cleaned = filepath.Join(rp, filepath.Base(cleaned))
+		}
+	}
+
+	var allowed []string
+	for _, p := range cfg.Filesystem.RW {
+		allowed = append(allowed, ExpandPath(p, cwd))
+	}
+	for _, p := range cfg.Filesystem.RWX {
+		allowed = append(allowed, ExpandPath(p, cwd))
+	}
+	if !write {
+		for _, p := range cfg.Filesystem.RO {
+			allowed = append(allowed, ExpandPath(p, cwd))
+		}
+		for _, p := range cfg.Filesystem.ROX {
+			allowed = append(allowed, ExpandPath(p, cwd))
+		}
+	}
+
+	for _, root := range allowed {
+		if pathUnder(cleaned, root) {
+			return nil
+		}
+	}
+
+	if write {
+		return fmt.Errorf("path outside sandbox (no write access): %s", path)
+	}
+	return fmt.Errorf("path outside sandbox (no read access): %s", path)
+}
+
+func pathUnder(path, root string) bool {
+	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
+}
+
 // SystemDefaults returns the system-level defaults (restrictive baseline)
 func SystemDefaults() LayeredConfig {
 	return LayeredConfig{

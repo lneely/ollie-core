@@ -60,6 +60,9 @@ func (s *Server) dispatchRead(_ context.Context, raw json.RawMessage) (string, e
 	if a.FilePath == "" {
 		return "", fmt.Errorf("file_path is required")
 	}
+	if err := s.checkAccess(a.FilePath, false); err != nil {
+		return errText("%v", err), nil
+	}
 
 	file, err := openChecked(a.FilePath)
 	if err != nil {
