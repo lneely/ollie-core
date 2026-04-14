@@ -84,8 +84,6 @@ func DefaultConfig() *Config {
 				"{HOME}/.kiro",
 				"{HOME}/.config/ollie",
 				"{HOME}/.claude.json",
-				"{XDG_DATA_HOME}/ollie/memory",
-				"{OLLIE_MEMORY_PATH}",
 			},
 			RWX: []string{},
 		},
@@ -102,8 +100,6 @@ func DefaultConfig() *Config {
 			"LANG",
 			"TERM",
 			"OLLIE_SESSION_ID",
-			"OLLIE_MEMORY_PATH",
-			"OLLIE_PLAN_PATH",
 		},
 		Advanced: AdvancedConfig{
 			LDD:     false,
@@ -349,8 +345,6 @@ func SystemDefaults() LayeredConfig {
 			"LANG",
 			"TERM",
 			"OLLIE_SESSION_ID",
-			"OLLIE_MEMORY_PATH",
-			"OLLIE_PLAN_PATH",
 		},
 	}
 }
