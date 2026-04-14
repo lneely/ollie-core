@@ -67,7 +67,7 @@ Five built-in tools across two servers:
 
 ## Session lifecycle
 
-`NewAgentCore` creates `/tmp/ollie/{sessionID}` when a session starts. `Core.Close()` removes it. Callers must call `Close()` when tearing down a session.
+`NewAgentCore` creates `/tmp/ollie/{sessionID}` when a session starts. `Core.Close()` removes it. Callers must call `Close()` when tearing down a session — olliesrv does this in `killSession` and on server shutdown.
 
 File operations go through `execute_code` using standard shell tools (`cat`, `grep`, `sed`, `ed`, `ssam` if plan9port is available, etc.).
 
