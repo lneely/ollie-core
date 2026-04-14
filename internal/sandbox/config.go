@@ -86,6 +86,7 @@ func DefaultConfig() *Config {
 			},
 			RWX: []string{
 				"{HOME}/.config/ollie",
+				"{OLLIE_9MOUNT}",
 				"{HOME}/mnt/ollie",
 			},
 		},
