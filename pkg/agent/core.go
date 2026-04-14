@@ -20,45 +20,59 @@ import (
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
 	"ollie/pkg/mcp"
-	"ollie/pkg/skills"
 	"ollie/pkg/tools"
+	"path/filepath"
 )
 
 
 
-// systemPrompt builds the full system prompt for a given tool set.
+// systemPrompt assembles the system prompt from ordered *.md parts in DefaultPromptsDir().
+// Files are loaded in lexical order (00_base.md, 01_foo.md, ...) and separated by "---".
+// Each part is rendered as a Go template with session/environment variables.
 func systemPrompt(cwd string) string {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	raw, err := os.ReadFile(DefaultPromptsDir() + "/SYSTEM_PROMPT.md")
-	if err != nil {
-		return "You are ollie, an agentic assistant."
-	}
-	tmpl, err := template.New("system").Parse(string(raw))
-	if err != nil {
-		return string(raw)
-	}
-	var buf bytes.Buffer
-	tmpl.Execute(&buf, map[string]string{
+
+	data := map[string]string{
 		"CWD":       cwd,
 		"Platform":  runtime.GOOS,
 		"Date":      time.Now().Format("2006-01-02"),
 		"IsGitRepo": "unknown",
 		"SessionID": os.Getenv("OLLIE_SESSION_ID"),
-	})
-
-	// These skills are intentionally eager-loaded into the system prompt so the
-	// bot uses the right tools from the first turn. This is an alternative to
-	// encoding tool guidance in MCP schemas — skills are richer, human-readable,
-	// and can be updated without changing server code.
-	for _, name := range []string{"reasoning", "memory", "task", "edit-text"} {
-		data, err := skills.Read(name)
-		if err == nil {
-			fmt.Fprintf(&buf, "\n\n---\n\n%s", data)
-		}
 	}
 
+	dir := DefaultPromptsDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "You are ollie, an agentic assistant."
+	}
+
+	var buf bytes.Buffer
+	first := true
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		if !first {
+			buf.WriteString("\n\n---\n\n")
+		}
+		tmpl, err := template.New(e.Name()).Parse(string(raw))
+		if err != nil {
+			buf.Write(raw)
+		} else {
+			tmpl.Execute(&buf, data) //nolint:errcheck
+		}
+		first = false
+	}
+
+	if buf.Len() == 0 {
+		return "You are ollie, an agentic assistant."
+	}
 	return buf.String()
 }
 
