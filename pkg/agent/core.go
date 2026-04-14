@@ -1016,6 +1016,10 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		handler(infoEvent(s.ListServers()))
 		return true
 
+	case "/sp":
+		handler(infoEvent(s.loopcfg.systemPrompt))
+		return true
+
 	case "/help":
 		lines := []string{
 			"Available commands:",
@@ -1037,6 +1041,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			"  /clear           - clear session",
 			"  /kill            - kill session",
 			"  /rn <name>       - rename session",
+			"  /sp              - show rendered system prompt",
 			"  /help            - show this help",
 			"  !<cmd>           - run shell command",
 		}
