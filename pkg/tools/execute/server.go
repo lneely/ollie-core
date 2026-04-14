@@ -82,7 +82,7 @@ Examples:
 
 Usage:
 - Scripts located in: ` + ToolsPath() + `
-- Supported languages: bash, python3, perl, awk, sed, ed (detected from shebang)
+- Supported languages: bash, python3, perl, awk, sed, ed, jq, expect, bc (detected from shebang)
 - Use for named scripts, not inline shell commands
 - Default timeout: 30 seconds
 
@@ -256,10 +256,15 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 	case "sed":
 		interpreter = []string{"bash", "-c", fmt.Sprintf("sed -e $'%s'", ansiCEscape(code))}
 	case "ed":
-		// ed reads commands from stdin; no filename = edit new buffer.
 		interpreter = []string{"bash", "-c", fmt.Sprintf("printf '%%s' $'%s' | ed -s", ansiCEscape(code))}
+	case "jq":
+		interpreter = []string{"bash", "-c", fmt.Sprintf("jq $'%s'", ansiCEscape(code))}
+	case "expect":
+		interpreter = []string{"bash", "-c", fmt.Sprintf("printf '%%s' $'%s' | expect -", ansiCEscape(code))}
+	case "bc":
+		interpreter = []string{"bash", "-c", fmt.Sprintf("printf '%%s' $'%s' | bc -ql", ansiCEscape(code))}
 	default:
-		return "", fmt.Errorf("unsupported language: %s (supported: bash, python3, perl, awk, sed, ed)", language)
+		return "", fmt.Errorf("unsupported language: %s (supported: bash, python3, perl, awk, sed, ed, jq, expect, bc)", language)
 	}
 	wrapped := sandbox.WrapCommand(cfg, interpreter, workDir)
 	cmd = exec.CommandContext(ctx, wrapped[0], wrapped[1:]...)

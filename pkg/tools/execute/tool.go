@@ -50,6 +50,12 @@ func detectLanguage(code string) string {
 		return "sed"
 	case "ed":
 		return "ed"
+	case "jq":
+		return "jq"
+	case "expect":
+		return "expect"
+	case "bc":
+		return "bc"
 	}
 	return "bash"
 }
@@ -90,6 +96,19 @@ func injectArgs(language, name string, args []string, code string) string {
 			file = " '" + strings.ReplaceAll(args[0], "'", "'\\''") + "'"
 		}
 		return fmt.Sprintf("printf '%%s' $'%s' | ed -s%s", ansiCEscape(code), file)
+	case "jq":
+		// jq args are JSON input files; filter is the program.
+		fileArgs := make([]string, len(args))
+		for i, a := range args {
+			fileArgs[i] = "'" + strings.ReplaceAll(a, "'", "'\\''") + "'"
+		}
+		return fmt.Sprintf("jq $'%s' %s", ansiCEscape(code), strings.Join(fileArgs, " "))
+	case "expect":
+		// expect reads script from stdin via expect -.
+		return fmt.Sprintf("printf '%%s' $'%s' | expect -", ansiCEscape(code))
+	case "bc":
+		// bc reads from stdin; -ql for quiet mode + math library.
+		return fmt.Sprintf("printf '%%s' $'%s' | bc -ql", ansiCEscape(code))
 	default: // bash
 		escaped := make([]string, len(args))
 		for i, a := range args {

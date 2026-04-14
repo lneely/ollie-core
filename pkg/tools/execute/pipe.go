@@ -59,6 +59,10 @@ func BuildPipeline(steps []PipeStep) (string, bool, error) {
 			parts = append(parts, fmt.Sprintf("( gawk -e $'%s' )", ansiCEscape(code)))
 		case "sed":
 			parts = append(parts, fmt.Sprintf("( sed -e $'%s' )", ansiCEscape(code)))
+		case "jq":
+			parts = append(parts, fmt.Sprintf("( jq $'%s' )", ansiCEscape(code)))
+		case "bc":
+			parts = append(parts, fmt.Sprintf("( bc -ql <<< $'%s' )", ansiCEscape(code)))
 		default:
 			parts = append(parts, fmt.Sprintf("(\n%s\n)", code))
 		}
