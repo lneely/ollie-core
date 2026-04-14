@@ -23,6 +23,56 @@ import (
 	"ollie/pkg/tools"
 )
 
+// toolsSummary scans the tools directory and builds a summary of each tool's
+// description and args from its header comments, mimicking MCP schema injection.
+func toolsSummary() string {
+	toolsPath := os.Getenv("OLLIE_TOOLS_PATH")
+	if toolsPath == "" {
+		home, _ := os.UserHomeDir()
+		toolsPath = home + "/.config/ollie/tools"
+	}
+	// Use only the first entry of a colon-separated path.
+	if i := strings.Index(toolsPath, ":"); i >= 0 {
+		toolsPath = toolsPath[:i]
+	}
+	entries, err := os.ReadDir(toolsPath)
+	if err != nil || len(entries) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(toolsPath + "/" + e.Name())
+		if err != nil {
+			continue
+		}
+		var desc, args string
+		for line := range strings.SplitSeq(string(data), "\n") {
+			if strings.HasPrefix(line, "# description:") {
+				desc = strings.TrimSpace(strings.TrimPrefix(line, "# description:"))
+			} else if strings.HasPrefix(line, "# Args:") || strings.HasPrefix(line, "# args:") {
+				after, _ := strings.CutPrefix(line, "# Args:")
+				after2, _ := strings.CutPrefix(after, "# args:")
+				args = strings.TrimSpace(after + after2)
+			}
+			if !strings.HasPrefix(line, "#") && line != "" {
+				break
+			}
+		}
+		if desc == "" {
+			continue
+		}
+		fmt.Fprintf(&sb, "- **%s**", e.Name())
+		if args != "" {
+			fmt.Fprintf(&sb, " `%s`", args)
+		}
+		fmt.Fprintf(&sb, " — %s\n", desc)
+	}
+	return sb.String()
+}
+
 // systemPrompt builds the full system prompt for a given tool set.
 func systemPrompt(cwd string) string {
 	if cwd == "" {
@@ -38,10 +88,11 @@ func systemPrompt(cwd string) string {
 	}
 	var buf bytes.Buffer
 	tmpl.Execute(&buf, map[string]string{
-		"CWD":      cwd,
+		"CWD":       cwd,
 		"Platform":  runtime.GOOS,
 		"Date":      time.Now().Format("2006-01-02"),
 		"IsGitRepo": "unknown",
+		"Tools":     toolsSummary(),
 	})
 	return buf.String()
 }
