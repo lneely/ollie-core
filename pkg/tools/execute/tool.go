@@ -28,20 +28,28 @@ func ToolsPath() string {
 }
 
 // detectLanguage infers the script language from the shebang line.
-// Returns "python3", "perl", "awk", or "bash".
+// Returns "python3", "perl", "awk", "sed", "ed", or "bash".
 func detectLanguage(code string) string {
 	line, _, _ := strings.Cut(code, "\n")
 	line = strings.TrimSpace(line)
-	if strings.HasPrefix(line, "#!") {
-		if strings.Contains(line, "python") {
-			return "python3"
-		}
-		if strings.Contains(line, "perl") {
-			return "perl"
-		}
-		if strings.Contains(line, "awk") {
-			return "awk"
-		}
+	if !strings.HasPrefix(line, "#!") {
+		return "bash"
+	}
+	fields := strings.Fields(strings.TrimPrefix(line, "#!"))
+	if len(fields) == 0 {
+		return "bash"
+	}
+	switch filepath.Base(fields[0]) {
+	case "python", "python3":
+		return "python3"
+	case "perl":
+		return "perl"
+	case "awk", "gawk":
+		return "awk"
+	case "sed", "gsed":
+		return "sed"
+	case "ed":
+		return "ed"
 	}
 	return "bash"
 }
@@ -68,6 +76,20 @@ func injectArgs(language, name string, args []string, code string) string {
 			fileArgs[i] = "'" + strings.ReplaceAll(a, "'", "'\\''") + "'"
 		}
 		return fmt.Sprintf("gawk -e $'%s' -- %s", ansiCEscape(code), strings.Join(fileArgs, " "))
+	case "sed":
+		// sed args are input filenames (use -i in the script for in-place editing).
+		fileArgs := make([]string, len(args))
+		for i, a := range args {
+			fileArgs[i] = "'" + strings.ReplaceAll(a, "'", "'\\''") + "'"
+		}
+		return fmt.Sprintf("sed -e $'%s' %s", ansiCEscape(code), strings.Join(fileArgs, " "))
+	case "ed":
+		// ed reads commands from stdin; first arg is the file to edit.
+		file := ""
+		if len(args) > 0 {
+			file = " '" + strings.ReplaceAll(args[0], "'", "'\\''") + "'"
+		}
+		return fmt.Sprintf("printf '%%s' $'%s' | ed -s%s", ansiCEscape(code), file)
 	default: // bash
 		escaped := make([]string, len(args))
 		for i, a := range args {

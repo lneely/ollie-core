@@ -82,7 +82,7 @@ Examples:
 
 Usage:
 - Scripts located in: ` + ToolsPath() + `
-- Supported languages: bash, python3, perl, awk (detected from shebang)
+- Supported languages: bash, python3, perl, awk, sed, ed (detected from shebang)
 - Use for named scripts, not inline shell commands
 - Default timeout: 30 seconds
 
@@ -252,10 +252,14 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 	case "perl":
 		interpreter = []string{"perl", "-e", code}
 	case "awk":
-		// Run via bash so gawk -e $'...' ANSI-C quoting handles arbitrary programs.
 		interpreter = []string{"bash", "-c", fmt.Sprintf("gawk -e $'%s'", ansiCEscape(code))}
+	case "sed":
+		interpreter = []string{"bash", "-c", fmt.Sprintf("sed -e $'%s'", ansiCEscape(code))}
+	case "ed":
+		// ed reads commands from stdin; no filename = edit new buffer.
+		interpreter = []string{"bash", "-c", fmt.Sprintf("printf '%%s' $'%s' | ed -s", ansiCEscape(code))}
 	default:
-		return "", fmt.Errorf("unsupported language: %s (supported: bash, python3, perl, awk)", language)
+		return "", fmt.Errorf("unsupported language: %s (supported: bash, python3, perl, awk, sed, ed)", language)
 	}
 	wrapped := sandbox.WrapCommand(cfg, interpreter, workDir)
 	cmd = exec.CommandContext(ctx, wrapped[0], wrapped[1:]...)
