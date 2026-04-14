@@ -280,6 +280,10 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		Exec:             cfg.Env.exec,
 		GenerationParams: cfg.Env.genParams,
 	}
+	if cfg.SessionID != "" {
+		os.MkdirAll("/tmp/ollie/"+cfg.SessionID, 0700) //nolint:errcheck
+	}
+
 	return &agentCore{
 		session:       cfg.Session,
 		loopcfg:       loopcfg,
