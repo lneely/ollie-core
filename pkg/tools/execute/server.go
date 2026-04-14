@@ -155,7 +155,10 @@ Examples:
 func (e *Server) CallTool(ctx context.Context, tool string, args json.RawMessage) (json.RawMessage, error) {
 	result, err := e.Dispatch(ctx, tool, args)
 	if err != nil {
-		return json.Marshal(map[string]string{"error": err.Error()})
+		return json.Marshal(map[string]any{
+			"isError": true,
+			"content": []map[string]string{{"type": "text", "text": err.Error()}},
+		})
 	}
 	return json.Marshal(map[string]any{
 		"content": []map[string]string{{"type": "text", "text": result}},
@@ -199,7 +202,10 @@ func (e *Server) allowed(tool, detail string) bool {
 }
 
 // SetEnv adds a per-session environment variable to all subsequent commands.
+// It also exports the variable to the process environment so it is inherited
+// by sandboxed subprocesses that read os.Environ().
 func (e *Server) SetEnv(key, value string) {
+	os.Setenv(key, value) //nolint:errcheck
 	e.envMu.Lock()
 	if e.envExtra == nil {
 		e.envExtra = make(map[string]string)

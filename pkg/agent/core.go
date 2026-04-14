@@ -167,7 +167,11 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 		if err != nil {
 			return "", err
 		}
-		return extractMCPText(raw), nil
+		text, isErr := extractMCPResult(raw)
+		if isErr {
+			return "", fmt.Errorf("%s", text)
+		}
+		return text, nil
 	}
 
 	return AgentEnv{
@@ -289,6 +293,22 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 	}
 	if cfg.SessionID != "" {
 		os.MkdirAll("/tmp/ollie/"+cfg.SessionID, 0700) //nolint:errcheck
+	}
+
+	// Inject session env into the execute server so OLLIE_SESSION_ID and OLLIE
+	// are available to tool scripts from the very first turn, not just after rename.
+	if cfg.Env.dispatcher != nil && cfg.SessionID != "" {
+		if srv, ok := cfg.Env.dispatcher.GetServer("execute"); ok {
+			if es, ok := srv.(tools.EnvSetter); ok {
+				es.SetEnv("OLLIE_SESSION_ID", cfg.SessionID)
+				ollie := os.Getenv("OLLIE")
+				if ollie == "" {
+					home, _ := os.UserHomeDir()
+					ollie = home + "/mnt/ollie"
+				}
+				es.SetEnv("OLLIE", ollie)
+			}
+		}
 	}
 
 	return &agentCore{
@@ -1087,14 +1107,20 @@ func mcpToolsToBackend(mcpTools []tools.ToolInfo) []backend.Tool {
 }
 
 func extractMCPText(raw json.RawMessage) string {
+	text, _ := extractMCPResult(raw)
+	return text
+}
+
+func extractMCPResult(raw json.RawMessage) (text string, isError bool) {
 	var result struct {
+		IsError bool `json:"isError"`
 		Content []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return string(raw)
+		return string(raw), false
 	}
 	var parts []string
 	for _, c := range result.Content {
@@ -1102,6 +1128,6 @@ func extractMCPText(raw json.RawMessage) string {
 			parts = append(parts, c.Text)
 		}
 	}
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, "\n"), result.IsError
 }
 
