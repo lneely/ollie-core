@@ -48,7 +48,7 @@ func systemPrompt(cwd string) string {
 		"SessionID": os.Getenv("OLLIE_SESSION_ID"),
 	})
 
-	for _, name := range []string{"reasoning", "memory"} {
+	for _, name := range []string{"reasoning", "memory", "task"} {
 		data, err := skills.Read(name)
 		if err == nil {
 			fmt.Fprintf(&buf, "\n\n---\n\n%s", data)
