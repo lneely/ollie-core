@@ -710,7 +710,9 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		if cmdStr == "" {
 			return true
 		}
-		o, err := exec.Command("sh", "-c", cmdStr).CombinedOutput()
+		cmd := exec.Command("sh", "-c", cmdStr)
+		cmd.Dir = s.CWD()
+		o, err := cmd.CombinedOutput()
 		if err != nil {
 			handler(infoEvent("error: " + err.Error()))
 		}
