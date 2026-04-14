@@ -82,7 +82,7 @@ Examples:
 
 Usage:
 - Scripts located in: ` + ToolsPath() + `
-- Supported languages: bash, python3 (detected from shebang)
+- Supported languages: bash, python3, perl (detected from shebang)
 - Use for named scripts, not inline shell commands
 - Default timeout: 30 seconds
 
@@ -249,8 +249,10 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 		interpreter = []string{"bash", "-c", code}
 	case "python3", "python":
 		interpreter = []string{"python3", "-c", code}
+	case "perl":
+		interpreter = []string{"perl", "-e", code}
 	default:
-		return "", fmt.Errorf("unsupported language: %s (supported: bash, python3)", language)
+		return "", fmt.Errorf("unsupported language: %s (supported: bash, python3, perl)", language)
 	}
 	wrapped := sandbox.WrapCommand(cfg, interpreter, workDir)
 	cmd = exec.CommandContext(ctx, wrapped[0], wrapped[1:]...)

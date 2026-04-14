@@ -28,12 +28,17 @@ func ToolsPath() string {
 }
 
 // detectLanguage infers the script language from the shebang line.
-// Returns "python3" for Python scripts, "bash" for everything else.
+// Returns "python3", "perl", or "bash".
 func detectLanguage(code string) string {
 	line, _, _ := strings.Cut(code, "\n")
 	line = strings.TrimSpace(line)
-	if strings.HasPrefix(line, "#!") && strings.Contains(line, "python") {
-		return "python3"
+	if strings.HasPrefix(line, "#!") {
+		if strings.Contains(line, "python") {
+			return "python3"
+		}
+		if strings.Contains(line, "perl") {
+			return "perl"
+		}
 	}
 	return "bash"
 }
@@ -47,6 +52,12 @@ func injectArgs(language, name string, args []string, code string) string {
 			quoted[i] = fmt.Sprintf("%q", a)
 		}
 		return fmt.Sprintf("import sys\nsys.argv = [%q, %s]\n%s", name, strings.Join(quoted, ", "), code)
+	case "perl":
+		quoted := make([]string, len(args))
+		for i, a := range args {
+			quoted[i] = "'" + strings.ReplaceAll(a, "'", "\\'") + "'"
+		}
+		return fmt.Sprintf("@ARGV = (%s);\n%s", strings.Join(quoted, ", "), code)
 	default: // bash
 		escaped := make([]string, len(args))
 		for i, a := range args {

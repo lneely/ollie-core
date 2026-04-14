@@ -53,6 +53,8 @@ func BuildPipeline(steps []PipeStep) (string, bool, error) {
 		switch language {
 		case "python3":
 			parts = append(parts, fmt.Sprintf("( python3 -c $'%s' )", ansiCEscape(code)))
+		case "perl":
+			parts = append(parts, fmt.Sprintf("( perl -e $'%s' )", ansiCEscape(code)))
 		default:
 			parts = append(parts, fmt.Sprintf("(\n%s\n)", code))
 		}
