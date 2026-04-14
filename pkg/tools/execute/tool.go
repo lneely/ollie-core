@@ -184,7 +184,7 @@ func dispatchExecuteTool(ctx context.Context, e *Server, args json.RawMessage) (
 	if a.Tool == "" {
 		return "", fmt.Errorf("execute_tool: 'tool' is required")
 	}
-	if e.Confirm != nil && !e.Confirm(fmt.Sprintf("execute_tool: %s %s", a.Tool, strings.Join(a.Args, " "))) {
+	if !e.allowed("execute_tool", fmt.Sprintf("execute_tool: %s %s", a.Tool, strings.Join(a.Args, " "))) {
 		return "", fmt.Errorf("execute_tool: denied by user")
 	}
 	toolCode, err := ReadTool(a.Tool)

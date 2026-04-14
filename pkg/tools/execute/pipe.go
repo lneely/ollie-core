@@ -89,7 +89,7 @@ func dispatchExecutePipe(ctx context.Context, e *Server, args json.RawMessage) (
 	if err != nil {
 		return "", err
 	}
-	if e.Confirm != nil && !e.Confirm(fmt.Sprintf("execute_pipe: %s", code)) {
+	if !e.allowed("execute_pipe", fmt.Sprintf("execute_pipe: %s", code)) {
 		return "", fmt.Errorf("execute_pipe: denied by user")
 	}
 	timeout := a.Timeout

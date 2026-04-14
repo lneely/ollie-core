@@ -112,6 +112,12 @@ type EnvSetter interface {
 	SetEnv(key, value string)
 }
 
+// TrustedToolsSetter is implemented by tool servers that support a trusted-tool
+// list. Tools in the list bypass the Confirm callback.
+type TrustedToolsSetter interface {
+	SetTrustedTools(tools []string)
+}
+
 // NewServer wraps an mcp.Client as a Server.
 func NewServer(client *mcp.Client) Server {
 	return &mcpServer{client: client}

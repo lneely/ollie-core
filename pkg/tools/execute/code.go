@@ -137,7 +137,7 @@ func dispatchExecuteCode(ctx context.Context, e *Server, args json.RawMessage) (
 	if code == "" {
 		return "", fmt.Errorf("execute_code: 'code' is required")
 	}
-	if e.Confirm != nil && !e.Confirm(fmt.Sprintf("execute_code: %s", code)) {
+	if !e.allowed("execute_code", fmt.Sprintf("execute_code: %s", code)) {
 		return "", fmt.Errorf("execute_code: denied by user")
 	}
 	return e.Execute(ctx, code, language, timeout, sandbox, false)

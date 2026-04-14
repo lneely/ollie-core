@@ -20,8 +20,12 @@ import (
 // Server runs code in a sandboxed environment.
 type Server struct {
 	// Confirm is an optional function called before executing sensitive operations.
-	// If it returns false, the operation is denied.
+	// Returns true to allow, false to deny. Trusted tools bypass this check.
 	Confirm func(string) bool
+
+	// trusted is the set of tool names that bypass Confirm.
+	trustedMu sync.RWMutex
+	trusted   map[string]bool
 
 	// cwd is the working directory for sandboxed commands. If empty,
 	// the process working directory is used.
@@ -166,6 +170,32 @@ func (e *Server) SetCWD(dir string) {
 	e.wdMu.Lock()
 	e.cwd = dir
 	e.wdMu.Unlock()
+}
+
+// SetTrustedTools marks the given tool names as trusted; they bypass Confirm.
+func (e *Server) SetTrustedTools(tools []string) {
+	e.trustedMu.Lock()
+	e.trusted = make(map[string]bool, len(tools))
+	for _, t := range tools {
+		e.trusted[t] = true
+	}
+	e.trustedMu.Unlock()
+}
+
+// allowed returns true if the tool call should proceed.
+// Trusted tools are always allowed. Untrusted tools are passed to Confirm;
+// if Confirm is nil, untrusted tools are denied.
+func (e *Server) allowed(tool, detail string) bool {
+	e.trustedMu.RLock()
+	trusted := e.trusted[tool]
+	e.trustedMu.RUnlock()
+	if trusted {
+		return true
+	}
+	if e.Confirm == nil {
+		return false // no confirm fn and not trusted: deny by default
+	}
+	return e.Confirm(detail)
 }
 
 // SetEnv adds a per-session environment variable to all subsequent commands.

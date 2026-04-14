@@ -119,6 +119,13 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 			FrequencyPenalty: cfg.FrequencyPenalty,
 			PresencePenalty:  cfg.PresencePenalty,
 		}
+		if len(cfg.TrustedTools) > 0 {
+			if srv, ok := d.GetServer("execute"); ok {
+				if ts, ok := srv.(tools.TrustedToolsSetter); ok {
+					ts.SetTrustedTools(cfg.TrustedTools)
+				}
+			}
+		}
 	}
 
 	sp := systemPrompt(cwd)
