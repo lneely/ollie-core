@@ -339,6 +339,12 @@ func (s *agentCore) SetSessionID(newID string) error {
 		}
 	}
 	s.sessionID = newID
+	// Rename tmpdir so isread markers remain valid after rename.
+	oldTemp := "/tmp/ollie/" + oldID
+	newTemp := "/tmp/ollie/" + newID
+	if _, err := os.Stat(oldTemp); err == nil {
+		os.Rename(oldTemp, newTemp) //nolint:errcheck
+	}
 	// Propagate to the execute server env.
 	if s.dispatcher != nil {
 		if srv, ok := s.dispatcher.GetServer("execute"); ok {
