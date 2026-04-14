@@ -190,6 +190,12 @@ func dispatchExecuteTool(ctx context.Context, e *Server, args json.RawMessage) (
 	code := toolCode
 	if len(a.Args) > 0 {
 		code = injectArgs(language, a.Tool, a.Args, toolCode)
+		// injectArgs for file-based languages produces a bash command snippet;
+		// run it as bash rather than trying to pass it as a raw program argument.
+		switch language {
+		case "awk", "sed", "jq", "ed", "expect", "bc":
+			language = "bash"
+		}
 	}
 	timeout := a.Timeout
 	if timeout <= 0 {

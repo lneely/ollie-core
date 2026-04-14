@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -244,6 +245,7 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 
 	var cmd *exec.Cmd
 	var interpreter []string
+	var stdin string // non-empty: pipe this to cmd.Stdin instead of embedding in args
 	switch language {
 	case "bash", "":
 		interpreter = []string{"bash", "-c", code}
@@ -251,26 +253,32 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 		interpreter = []string{"python3", "-c", code}
 	case "perl":
 		interpreter = []string{"perl", "-e", code}
-	case "awk":
-		interpreter = []string{"bash", "-c", fmt.Sprintf("gawk -e $'%s'", ansiCEscape(code))}
-	case "sed":
-		interpreter = []string{"bash", "-c", fmt.Sprintf("sed -e $'%s'", ansiCEscape(code))}
-	case "ed":
-		interpreter = []string{"bash", "-c", fmt.Sprintf("printf '%%s' $'%s' | ed -s", ansiCEscape(code))}
-	case "jq":
-		interpreter = []string{"bash", "-c", fmt.Sprintf("jq $'%s'", ansiCEscape(code))}
-	case "expect":
-		interpreter = []string{"bash", "-c", fmt.Sprintf("printf '%%s' $'%s' | expect -", ansiCEscape(code))}
-	case "bc":
-		interpreter = []string{"bash", "-c", fmt.Sprintf("printf '%%s' $'%s' | bc -ql", ansiCEscape(code))}
 	case "lua":
 		interpreter = []string{"lua", "-e", code}
+	case "awk":
+		interpreter = []string{"gawk", code}
+	case "sed":
+		interpreter = []string{"sed", "-e", code}
+	case "jq":
+		interpreter = []string{"jq", code}
+	case "ed":
+		interpreter = []string{"ed", "-s"}
+		stdin = code
+	case "expect":
+		interpreter = []string{"expect", "-"}
+		stdin = code
+	case "bc":
+		interpreter = []string{"bc", "-ql"}
+		stdin = code
 	default:
 		return "", fmt.Errorf("unsupported language: %s (supported: bash, python3, perl, awk, sed, ed, jq, expect, bc, lua)", language)
 	}
 	wrapped := sandbox.WrapCommand(cfg, interpreter, workDir)
 	cmd = exec.CommandContext(ctx, wrapped[0], wrapped[1:]...)
 	cmd.Dir = workDir
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 
 	// Inject per-session env vars so they're visible inside the sandbox.
 	e.envMu.RLock()
