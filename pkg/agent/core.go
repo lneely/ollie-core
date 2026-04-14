@@ -34,12 +34,19 @@ func systemPrompt(cwd string) string {
 		cwd, _ = os.Getwd()
 	}
 
+	ollieMountPath := os.Getenv("OLLIE")
+	if ollieMountPath == "" {
+		home, _ := os.UserHomeDir()
+		ollieMountPath = home + "/mnt/ollie"
+	}
+
 	data := map[string]string{
-		"CWD":       cwd,
-		"Platform":  runtime.GOOS,
-		"Date":      time.Now().Format("2006-01-02"),
-		"IsGitRepo": "unknown",
-		"SessionID": os.Getenv("OLLIE_SESSION_ID"),
+		"CWD":            cwd,
+		"Platform":       runtime.GOOS,
+		"Date":           time.Now().Format("2006-01-02"),
+		"IsGitRepo":      "unknown",
+		"SessionID":      os.Getenv("OLLIE_SESSION_ID"),
+		"OllieMountPath": ollieMountPath,
 	}
 
 	dir := DefaultPromptsDir()
