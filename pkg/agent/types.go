@@ -90,6 +90,9 @@ type Core interface {
 	// SetSessionID renames the session: updates the in-memory ID, renames
 	// persisted files on disk, and propagates to the execute server env.
 	SetSessionID(newID string) error
+
+	// SystemPrompt returns the fully rendered system prompt for this session.
+	SystemPrompt() string
 }
 
 // PromptFIFO is a simple thread-safe FIFO for queued prompts.

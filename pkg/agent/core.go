@@ -495,6 +495,10 @@ func (s *agentCore) Usage() string {
 	return str
 }
 
+func (s *agentCore) SystemPrompt() string {
+	return s.loopcfg.systemPrompt
+}
+
 func (s *agentCore) ListModels() string {
 	models := s.loopcfg.Backend.Models(context.Background())
 	return strings.Join(models, "\n")
