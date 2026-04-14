@@ -359,6 +359,13 @@ func (s *agentCore) SetSessionID(newID string) error {
 		if srv, ok := s.dispatcher.GetServer("execute"); ok {
 			if es, ok := srv.(tools.EnvSetter); ok {
 				es.SetEnv("OLLIE_SESSION_ID", newID)
+				// Ensure OLLIE is always set, resolving the default if unset.
+				ollie := os.Getenv("OLLIE")
+				if ollie == "" {
+					home, _ := os.UserHomeDir()
+					ollie = home + "/mnt/ollie"
+				}
+				es.SetEnv("OLLIE", ollie)
 			}
 		}
 	}
@@ -959,7 +966,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		if cmd == "/tools" {
 			subdir = "t"
 		}
-		mount := os.Getenv("OLLIE_9MOUNT")
+		mount := os.Getenv("OLLIE")
 		if mount == "" {
 			home, _ := os.UserHomeDir()
 			mount = home + "/mnt/ollie"

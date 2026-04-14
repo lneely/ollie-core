@@ -86,7 +86,7 @@ func DefaultConfig() *Config {
 			},
 			RWX: []string{
 				"{HOME}/.config/ollie",
-				"{OLLIE_9MOUNT}",
+				"{OLLIE}",
 				"{HOME}/mnt/ollie",
 			},
 		},
@@ -103,7 +103,7 @@ func DefaultConfig() *Config {
 			"LANG",
 			"TERM",
 			"OLLIE_SESSION_ID",
-			"OLLIE_9MOUNT",
+			"OLLIE",
 			"OLLIE_MEMORY_PATH",
 		},
 		Advanced: AdvancedConfig{
@@ -350,7 +350,7 @@ func SystemDefaults() LayeredConfig {
 			"LANG",
 			"TERM",
 			"OLLIE_SESSION_ID",
-			"OLLIE_9MOUNT",
+			"OLLIE",
 		},
 	}
 }
