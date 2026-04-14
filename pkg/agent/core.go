@@ -20,6 +20,7 @@ import (
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
 	"ollie/pkg/mcp"
+	"ollie/pkg/skills"
 	"ollie/pkg/tools"
 )
 
@@ -47,13 +48,8 @@ func systemPrompt(cwd string) string {
 		"SessionID": os.Getenv("OLLIE_SESSION_ID"),
 	})
 
-	mount := os.Getenv("OLLIE_9MOUNT")
-	if mount == "" {
-		home, _ := os.UserHomeDir()
-		mount = home + "/mnt/ollie"
-	}
-	for _, skill := range []string{"reasoning", "memory"} {
-		data, err := os.ReadFile(mount + "/sk/" + skill + ".md")
+	for _, name := range []string{"reasoning", "memory"} {
+		data, err := skills.Read(name)
 		if err == nil {
 			fmt.Fprintf(&buf, "\n\n---\n\n%s", data)
 		}
