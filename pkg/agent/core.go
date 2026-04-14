@@ -20,88 +20,10 @@ import (
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
 	"ollie/pkg/mcp"
-	"ollie/pkg/skills"
 	"ollie/pkg/tools"
 )
 
-// rebuildToolsIdx scans the tools directory and writes ollie/t/idx with one
-// section per tool. Format:
-//
-//	## name
-//	description: ...
-//	args: ...
-//
-// Sections are separated by blank lines; grep -A2 "keyword" ollie/t/idx
-// returns the matching section. idx is skipped during the scan.
-func rebuildToolsIdx() {
-	toolsPath := os.Getenv("OLLIE_TOOLS_PATH")
-	if toolsPath == "" {
-		home, _ := os.UserHomeDir()
-		toolsPath = home + "/.config/ollie/tools"
-	}
-	if i := strings.Index(toolsPath, ":"); i >= 0 {
-		toolsPath = toolsPath[:i]
-	}
-	entries, err := os.ReadDir(toolsPath)
-	if err != nil {
-		return
-	}
-	var sb strings.Builder
-	for _, e := range entries {
-		if e.IsDir() || e.Name() == "idx" {
-			continue
-		}
-		data, err := os.ReadFile(toolsPath + "/" + e.Name())
-		if err != nil {
-			continue
-		}
-		var desc, args string
-		for line := range strings.SplitSeq(string(data), "\n") {
-			if d, ok := strings.CutPrefix(line, "# description:"); ok {
-				desc = strings.TrimSpace(d)
-			} else if a, ok := strings.CutPrefix(line, "# Args:"); ok {
-				args = strings.TrimSpace(a)
-			} else if a, ok := strings.CutPrefix(line, "# args:"); ok {
-				args = strings.TrimSpace(a)
-			}
-			if !strings.HasPrefix(line, "#") && line != "" {
-				break
-			}
-		}
-		if desc == "" {
-			continue
-		}
-		fmt.Fprintf(&sb, "## %s\n", e.Name())
-		fmt.Fprintf(&sb, "description: %s\n", desc)
-		if args != "" {
-			fmt.Fprintf(&sb, "args: %s\n", args)
-		}
-		sb.WriteString("\n")
-	}
-	os.WriteFile(toolsPath+"/idx", []byte(sb.String()), 0644) //nolint:errcheck
-}
 
-// rebuildSkillsIdx writes ollie/sk/idx with one section per skill. Format
-// mirrors ollie/t/idx for consistent grep-based discovery.
-func rebuildSkillsIdx() {
-	dirs := skills.Dirs()
-	if len(dirs) == 0 {
-		return
-	}
-	// Write idx into the first skills directory.
-	skillsPath := dirs[0]
-	list := skills.List()
-	if len(list) == 0 {
-		return
-	}
-	var sb strings.Builder
-	for _, s := range list {
-		fmt.Fprintf(&sb, "## %s\n", s.Name)
-		fmt.Fprintf(&sb, "description: %s\n", s.Description)
-		sb.WriteString("\n")
-	}
-	os.WriteFile(skillsPath+"/idx", []byte(sb.String()), 0644) //nolint:errcheck
-}
 
 // systemPrompt builds the full system prompt for a given tool set.
 func systemPrompt(cwd string) string {
@@ -117,8 +39,6 @@ func systemPrompt(cwd string) string {
 		return string(raw)
 	}
 	var buf bytes.Buffer
-	rebuildToolsIdx()
-	rebuildSkillsIdx()
 	tmpl.Execute(&buf, map[string]string{
 		"CWD":       cwd,
 		"Platform":  runtime.GOOS,
