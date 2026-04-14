@@ -65,6 +65,10 @@ Five built-in tools across two servers:
 - `reasoning_think` — externalize intermediate reasoning
 - `reasoning_plan` — decompose a goal into ordered steps; persists to task backend if available, otherwise queued via fallback backend or in-context only
 
+## Session lifecycle
+
+`NewAgentCore` creates `/tmp/ollie/{sessionID}` when a session starts. `Core.Close()` removes it. Callers must call `Close()` when tearing down a session.
+
 File operations go through `execute_code` using standard shell tools (`cat`, `grep`, `sed`, `ed`, `ssam` if plan9port is available, etc.).
 
 MCP server tools are discovered at startup and available alongside the built-ins.
