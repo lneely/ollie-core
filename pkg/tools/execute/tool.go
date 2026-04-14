@@ -56,6 +56,8 @@ func detectLanguage(code string) string {
 		return "expect"
 	case "bc":
 		return "bc"
+	case "lua", "lua5.1", "lua5.2", "lua5.3", "lua5.4":
+		return "lua"
 	}
 	return "bash"
 }
@@ -109,6 +111,13 @@ func injectArgs(language, name string, args []string, code string) string {
 	case "bc":
 		// bc reads from stdin; -ql for quiet mode + math library.
 		return fmt.Sprintf("printf '%%s' $'%s' | bc -ql", ansiCEscape(code))
+	case "lua":
+		// Inject args as the arg table, matching lua's scriptfile convention.
+		quoted := make([]string, len(args))
+		for i, a := range args {
+			quoted[i] = fmt.Sprintf("%q", a)
+		}
+		return fmt.Sprintf("arg={%s}\n%s", strings.Join(quoted, ", "), code)
 	default: // bash
 		escaped := make([]string, len(args))
 		for i, a := range args {

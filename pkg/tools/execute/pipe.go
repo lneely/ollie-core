@@ -63,6 +63,8 @@ func BuildPipeline(steps []PipeStep) (string, bool, error) {
 			parts = append(parts, fmt.Sprintf("( jq $'%s' )", ansiCEscape(code)))
 		case "bc":
 			parts = append(parts, fmt.Sprintf("( bc -ql <<< $'%s' )", ansiCEscape(code)))
+		case "lua":
+			parts = append(parts, fmt.Sprintf("( lua -e $'%s' )", ansiCEscape(code)))
 		default:
 			parts = append(parts, fmt.Sprintf("(\n%s\n)", code))
 		}
