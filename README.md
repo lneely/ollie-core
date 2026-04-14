@@ -28,22 +28,6 @@ No build step — ollie-core is a library.
 
 ## Configuration
 
-### Environment: `~/.config/ollie/env`
-
-```
-OLLIE_BACKEND=openai           # ollama | openai | openrouter | anthropic | copilot | kiro (default: ollama)
-OLLIE_OLLAMA_URL=              # base URL for Ollama (default: http://localhost:11434)
-OLLIE_OPENAI_URL=https://openrouter.ai/api
-OLLIE_OPENAI_KEY=sk-or-...
-OLLIE_ANTHROPIC_KEY=sk-ant-...
-OLLIE_COPILOT_TOKEN=...
-OLLIE_KIRO_TOKEN=...           # bearer token or sqlite:// path (auto-detected from Kiro CLI if unset)
-OLLIE_MODEL=qwen/qwen3-235b-a22b
-OLLIE_TOOLS_PATH=~/.config/ollie/tools  # directory for execute_tool scripts
-```
-
-Shell environment variables take precedence over the env file.
-
 ### Config file: `~/.config/ollie/config.json`
 
 ```json
