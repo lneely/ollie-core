@@ -93,6 +93,10 @@ type Core interface {
 
 	// SystemPrompt returns the fully rendered system prompt for this session.
 	SystemPrompt() string
+
+	// Close releases resources associated with the session, including its
+	// temporary directory under /tmp/ollie/.
+	Close()
 }
 
 // PromptFIFO is a simple thread-safe FIFO for queued prompts.

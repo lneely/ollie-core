@@ -300,6 +300,13 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 	}
 }
 
+// Close releases resources for this session, including its tmpdir.
+func (s *agentCore) Close() {
+	if s.sessionID != "" {
+		os.RemoveAll("/tmp/ollie/" + s.sessionID) //nolint:errcheck
+	}
+}
+
 func (s *agentCore) prompt() string {
 	return fmt.Sprintf("[%s :: %s] ", s.loopcfg.Backend.Name(), s.agentName)
 }
