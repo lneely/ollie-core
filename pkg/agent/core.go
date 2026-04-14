@@ -21,7 +21,6 @@ import (
 	"ollie/pkg/config"
 	"ollie/pkg/mcp"
 	"ollie/pkg/tools"
-	"ollie/pkg/tools/reasoning"
 )
 
 // systemPrompt builds the full system prompt for a given tool set.
@@ -59,29 +58,11 @@ type AgentEnv struct {
 	Messages     []string
 }
 
-// EnvOption is a functional option for BuildAgentEnv.
-type EnvOption func(*envOptions)
-
-type envOptions struct {
-	fallbackPlan tools.PlanBackend
-}
-
-// WithFallbackPlanBackend sets a PlanBackend used when no task_create MCP tool
-// is available. When task_create IS available, it takes priority and this
-// fallback is ignored.
-func WithFallbackPlanBackend(b tools.PlanBackend) EnvOption {
-	return func(o *envOptions) { o.fallbackPlan = b }
-}
-
 // BuildAgentEnv constructs an AgentEnv from a pre-configured Dispatcher and
 // optional agent config. cwd sets the working directory reported in the
 // system prompt; if empty, the process working directory is used.
 // The caller is responsible for registering all servers on d before calling this.
-func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string, opts ...EnvOption) AgentEnv {
-	var eo envOptions
-	for _, o := range opts {
-		o(&eo)
-	}
+func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv {
 	var messages []string
 
 	if cfg != nil {
@@ -111,30 +92,6 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string, opts ...E
 	}
 
 	allTools := mcpToolsToBackend(allToolInfos)
-
-	// Wire plan backend to the reasoning server.
-	// If task_create is available, use the dispatch backend (primary).
-	// Otherwise fall back to the caller-supplied backend, if any.
-	if rs, ok := d.GetServer("reasoning"); ok {
-		if setter, ok := rs.(tools.PlanBackendSetter); ok {
-			if taskServer, ok := serverOf["task_create"]; ok {
-				setter.SetPlanBackend(&dispatchPlanBackend{d: d, server: taskServer})
-			} else if eo.fallbackPlan != nil {
-				setter.SetPlanBackend(eo.fallbackPlan)
-			}
-		}
-
-		// Wire memory backend to the reasoning server.
-		// If memory_remember is available via MCP, use the dispatch backend.
-		// Otherwise fall back to the flat-dir backend (always available).
-		if setter, ok := rs.(tools.MemoryBackendSetter); ok {
-			if memServer, ok := serverOf["memory_remember"]; ok {
-				setter.SetMemoryBackend(&dispatchMemoryBackend{d: d, server: memServer})
-			} else {
-				setter.SetMemoryBackend(reasoning.NewFlatDirBackend(""))
-			}
-		}
-	}
 
 	hooks := Hooks{}
 	agentPrompt := ""

@@ -100,44 +100,6 @@ func (d *dispatcher) Dispatch(ctx context.Context, server, tool string, args jso
 	return s.CallTool(ctx, tool, args)
 }
 
-// PlanStep is a single step in a plan produced by reasoning_plan.
-type PlanStep struct {
-	Title string
-	Body  string
-	After []int // 0-based indices of steps this step depends on (must be < this step's index)
-}
-
-// PlanBackend persists plans to a task backend. Used by reasoning_plan.
-// Nil is a valid value; reasoning_plan degrades gracefully when no backend is wired.
-//
-// CreatePlan returns the assigned IDs, an optional response message, and an
-// error. If the message is non-empty, the reasoning server uses it as the tool
-// response instead of the default formatted plan summary. Backends that want
-// the agent to stop after planning (e.g. queue-based) return a yield
-// instruction here; backends that want the agent to continue return "".
-type PlanBackend interface {
-	CreatePlan(ctx context.Context, goal string, steps []PlanStep) (ids []string, msg string, err error)
-}
-
-// PlanBackendSetter is implemented by tool servers that accept an optional
-// PlanBackend. BuildAgentEnv wires this after connecting MCP servers.
-type PlanBackendSetter interface {
-	SetPlanBackend(PlanBackend)
-}
-
-// MemoryBackend persists and retrieves memories. Used by memory_remember and
-// memory_recall. A flat-file fallback is always available; denotesrv is
-// preferred when its mount is accessible.
-type MemoryBackend interface {
-	Remember(ctx context.Context, title string, tags []string, body string) (string, error)
-	Recall(ctx context.Context, query string) (string, error)
-}
-
-// MemoryBackendSetter is implemented by tool servers that accept a MemoryBackend.
-type MemoryBackendSetter interface {
-	SetMemoryBackend(MemoryBackend)
-}
-
 // CWDSetter is implemented by tool servers that accept a dynamic working
 // directory. SetCWD updates the directory used for subsequent tool calls.
 type CWDSetter interface {
