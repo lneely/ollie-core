@@ -222,8 +222,14 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 		timeout = 30
 	}
 
-	if !trusted {
-		if err := e.ValidateCode(code); err != nil {
+	// Domain-specific tools (awk, sed, jq, ed, bc, expect) skip validation —
+	// they are constrained by design and the sandbox handles OS-level restrictions.
+	// General-purpose languages get universal + language-specific pattern checks.
+	_, isDomainSpecific := map[string]struct{}{
+		"awk": {}, "sed": {}, "jq": {}, "ed": {}, "bc": {}, "expect": {},
+	}[language]
+	if !trusted && !isDomainSpecific {
+		if err := e.ValidateCode(code, language); err != nil {
 			return "", err
 		}
 	}

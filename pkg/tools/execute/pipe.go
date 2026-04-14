@@ -36,7 +36,7 @@ func BuildPipeline(steps []PipeStep) (string, bool, error) {
 				return "", false, fmt.Errorf("pipe step %q: %v", step.Tool, err)
 			}
 		} else if step.Code != "" {
-			if err := validator.ValidateCode(step.Code); err != nil {
+			if err := validator.ValidateCode(step.Code, "bash"); err != nil {
 				return "", false, fmt.Errorf("pipe step code: %v", err)
 			}
 			code = step.Code

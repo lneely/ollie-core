@@ -13,7 +13,16 @@ import (
 // execute_code is implemented directly by Executor.Execute with trusted=false.
 // See executor.go for the implementation.
 
-var dangerousPatterns = []*regexp.Regexp{
+// universalPatterns apply to all general-purpose languages.
+var universalPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\bmkfs\b`),
+	regexp.MustCompile(`\bdd\b.*\bif=/dev/`),
+	regexp.MustCompile(`\b(sudo|su)\s`),
+	regexp.MustCompile(`/etc/(shadow|sudoers)`),
+}
+
+// bashPatterns apply only to bash (flag syntax, redirects, shell-specific constructs).
+var bashPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s*/(home|var|usr|etc|boot|root|bin|sbin|lib|opt|srv)?`),
 	regexp.MustCompile(`rm\s+(-[a-z]*f[a-z]*\s+)*-[a-z]*r[a-z]*\s*/(home|var|usr|etc|boot|root|bin|sbin|lib|opt|srv)?`),
 	regexp.MustCompile(`rm\s+.*--recursive.*--force`),
@@ -21,13 +30,38 @@ var dangerousPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s+\.\.?(/|$)`),
 	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s+~`),
 	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s+\*`),
-	regexp.MustCompile(`:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&`),
-	regexp.MustCompile(`\bmkfs\b`),
-	regexp.MustCompile(`\bdd\b.*\bif=/dev/`),
+	regexp.MustCompile(`:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&`), // fork bomb
 	regexp.MustCompile(`>\s*/dev/sd`),
 	regexp.MustCompile(`\beval\s+".*\$`),
-	regexp.MustCompile(`\b(sudo|su)\s`),
-	regexp.MustCompile(`/etc/(shadow|sudoers)`),
+}
+
+// pythonPatterns apply to python3/python.
+var pythonPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`shutil\.rmtree\s*\(\s*['"]/`),
+	regexp.MustCompile(`(os\.system|subprocess\.(call|run|popen))\s*\(.*\brm\s+-[a-z]*r[a-z]*f`),
+	regexp.MustCompile(`os\.(remove|unlink)\s*\(\s*['"]/(etc|usr|bin|sbin|lib|boot)`),
+}
+
+// perlPatterns apply to perl.
+var perlPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(system|exec)\s*\(.*\brm\s+-[a-z]*r[a-z]*f`),
+	regexp.MustCompile("`.+rm\\s+-[a-z]*r[a-z]*f"), // backtick execution
+	regexp.MustCompile(`unlink\s+glob\s*\(['"]/(etc|usr|bin|sbin|lib|boot)`),
+}
+
+// luaPatterns apply to lua.
+var luaPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(os\.execute|io\.popen)\s*\(.*\brm\s+-[a-z]*r[a-z]*f`),
+	regexp.MustCompile(`os\.remove\s*\(\s*['"]/(etc|usr|bin|sbin|lib|boot)`),
+}
+
+var languagePatterns = map[string][]*regexp.Regexp{
+	"bash":    bashPatterns,
+	"":        bashPatterns,
+	"python3": pythonPatterns,
+	"python":  pythonPatterns,
+	"perl":    perlPatterns,
+	"lua":     luaPatterns,
 }
 
 // Dispatch routes a named execute tool call. Called by tools.BuiltinServer.
@@ -44,8 +78,8 @@ func (e *Server) Dispatch(ctx context.Context, name string, args json.RawMessage
 	}
 }
 
-// ValidateCode checks code against dangerous patterns.
-func (e *Server) ValidateCode(code string) error {
+// ValidateCode checks code against dangerous patterns for the given language.
+func (e *Server) ValidateCode(code, language string) error {
 	if err := e.checkRateLimit(); err != nil {
 		return err
 	}
@@ -53,7 +87,8 @@ func (e *Server) ValidateCode(code string) error {
 	normalized := strings.ToLower(code)
 	normalized = whitespacePattern.ReplaceAllString(normalized, " ")
 
-	for _, pattern := range dangerousPatterns {
+	patterns := append(universalPatterns, languagePatterns[language]...)
+	for _, pattern := range patterns {
 		if pattern.MatchString(normalized) {
 			e.recordValidationFailure()
 			return fmt.Errorf("dangerous pattern detected")
