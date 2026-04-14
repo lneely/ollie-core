@@ -48,7 +48,11 @@ func systemPrompt(cwd string) string {
 		"SessionID": os.Getenv("OLLIE_SESSION_ID"),
 	})
 
-	for _, name := range []string{"reasoning", "memory", "task"} {
+	// These skills are intentionally eager-loaded into the system prompt so the
+	// bot uses the right tools from the first turn. This is an alternative to
+	// encoding tool guidance in MCP schemas — skills are richer, human-readable,
+	// and can be updated without changing server code.
+	for _, name := range []string{"reasoning", "memory", "task", "edit-text"} {
 		data, err := skills.Read(name)
 		if err == nil {
 			fmt.Fprintf(&buf, "\n\n---\n\n%s", data)
