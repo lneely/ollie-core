@@ -28,7 +28,7 @@ func ToolsPath() string {
 }
 
 // detectLanguage infers the script language from the shebang line.
-// Returns "python3", "perl", or "bash".
+// Returns "python3", "perl", "awk", or "bash".
 func detectLanguage(code string) string {
 	line, _, _ := strings.Cut(code, "\n")
 	line = strings.TrimSpace(line)
@@ -38,6 +38,9 @@ func detectLanguage(code string) string {
 		}
 		if strings.Contains(line, "perl") {
 			return "perl"
+		}
+		if strings.Contains(line, "awk") {
+			return "awk"
 		}
 	}
 	return "bash"
@@ -58,6 +61,13 @@ func injectArgs(language, name string, args []string, code string) string {
 			quoted[i] = "'" + strings.ReplaceAll(a, "'", "\\'") + "'"
 		}
 		return fmt.Sprintf("@ARGV = (%s);\n%s", strings.Join(quoted, ", "), code)
+	case "awk":
+		// awk args are input filenames; produce a bash snippet: gawk -e $'prog' -- file ...
+		fileArgs := make([]string, len(args))
+		for i, a := range args {
+			fileArgs[i] = "'" + strings.ReplaceAll(a, "'", "'\\''") + "'"
+		}
+		return fmt.Sprintf("gawk -e $'%s' -- %s", ansiCEscape(code), strings.Join(fileArgs, " "))
 	default: // bash
 		escaped := make([]string, len(args))
 		for i, a := range args {

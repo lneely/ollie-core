@@ -55,6 +55,8 @@ func BuildPipeline(steps []PipeStep) (string, bool, error) {
 			parts = append(parts, fmt.Sprintf("( python3 -c $'%s' )", ansiCEscape(code)))
 		case "perl":
 			parts = append(parts, fmt.Sprintf("( perl -e $'%s' )", ansiCEscape(code)))
+		case "awk":
+			parts = append(parts, fmt.Sprintf("( gawk -e $'%s' )", ansiCEscape(code)))
 		default:
 			parts = append(parts, fmt.Sprintf("(\n%s\n)", code))
 		}
