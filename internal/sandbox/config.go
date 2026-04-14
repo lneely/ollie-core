@@ -82,10 +82,10 @@ func DefaultConfig() *Config {
 				"{TMPDIR}",
 				"{HOME}/.claude",
 				"{HOME}/.kiro",
-				"{HOME}/.config/ollie",
 				"{HOME}/.claude.json",
 			},
 			RWX: []string{
+				"{HOME}/.config/ollie",
 				"{HOME}/mnt/ollie",
 			},
 		},
