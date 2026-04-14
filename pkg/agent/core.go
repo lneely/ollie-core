@@ -20,28 +20,35 @@ import (
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
 	"ollie/pkg/mcp"
+	"ollie/pkg/skills"
 	"ollie/pkg/tools"
 )
 
-// toolsSummary scans the tools directory and builds a summary of each tool's
-// description and args from its header comments, mimicking MCP schema injection.
-func toolsSummary() string {
+// rebuildToolsIdx scans the tools directory and writes ollie/t/idx with one
+// section per tool. Format:
+//
+//	## name
+//	description: ...
+//	args: ...
+//
+// Sections are separated by blank lines; grep -A2 "keyword" ollie/t/idx
+// returns the matching section. idx is skipped during the scan.
+func rebuildToolsIdx() {
 	toolsPath := os.Getenv("OLLIE_TOOLS_PATH")
 	if toolsPath == "" {
 		home, _ := os.UserHomeDir()
 		toolsPath = home + "/.config/ollie/tools"
 	}
-	// Use only the first entry of a colon-separated path.
 	if i := strings.Index(toolsPath, ":"); i >= 0 {
 		toolsPath = toolsPath[:i]
 	}
 	entries, err := os.ReadDir(toolsPath)
-	if err != nil || len(entries) == 0 {
-		return ""
+	if err != nil {
+		return
 	}
 	var sb strings.Builder
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() || e.Name() == "idx" {
 			continue
 		}
 		data, err := os.ReadFile(toolsPath + "/" + e.Name())
@@ -50,12 +57,12 @@ func toolsSummary() string {
 		}
 		var desc, args string
 		for line := range strings.SplitSeq(string(data), "\n") {
-			if strings.HasPrefix(line, "# description:") {
-				desc = strings.TrimSpace(strings.TrimPrefix(line, "# description:"))
-			} else if strings.HasPrefix(line, "# Args:") || strings.HasPrefix(line, "# args:") {
-				after, _ := strings.CutPrefix(line, "# Args:")
-				after2, _ := strings.CutPrefix(after, "# args:")
-				args = strings.TrimSpace(after + after2)
+			if d, ok := strings.CutPrefix(line, "# description:"); ok {
+				desc = strings.TrimSpace(d)
+			} else if a, ok := strings.CutPrefix(line, "# Args:"); ok {
+				args = strings.TrimSpace(a)
+			} else if a, ok := strings.CutPrefix(line, "# args:"); ok {
+				args = strings.TrimSpace(a)
 			}
 			if !strings.HasPrefix(line, "#") && line != "" {
 				break
@@ -64,13 +71,36 @@ func toolsSummary() string {
 		if desc == "" {
 			continue
 		}
-		fmt.Fprintf(&sb, "- **%s**", e.Name())
+		fmt.Fprintf(&sb, "## %s\n", e.Name())
+		fmt.Fprintf(&sb, "description: %s\n", desc)
 		if args != "" {
-			fmt.Fprintf(&sb, " `%s`", args)
+			fmt.Fprintf(&sb, "args: %s\n", args)
 		}
-		fmt.Fprintf(&sb, " — %s\n", desc)
+		sb.WriteString("\n")
 	}
-	return sb.String()
+	os.WriteFile(toolsPath+"/idx", []byte(sb.String()), 0644) //nolint:errcheck
+}
+
+// rebuildSkillsIdx writes ollie/sk/idx with one section per skill. Format
+// mirrors ollie/t/idx for consistent grep-based discovery.
+func rebuildSkillsIdx() {
+	dirs := skills.Dirs()
+	if len(dirs) == 0 {
+		return
+	}
+	// Write idx into the first skills directory.
+	skillsPath := dirs[0]
+	list := skills.List()
+	if len(list) == 0 {
+		return
+	}
+	var sb strings.Builder
+	for _, s := range list {
+		fmt.Fprintf(&sb, "## %s\n", s.Name)
+		fmt.Fprintf(&sb, "description: %s\n", s.Description)
+		sb.WriteString("\n")
+	}
+	os.WriteFile(skillsPath+"/idx", []byte(sb.String()), 0644) //nolint:errcheck
 }
 
 // systemPrompt builds the full system prompt for a given tool set.
@@ -87,12 +117,14 @@ func systemPrompt(cwd string) string {
 		return string(raw)
 	}
 	var buf bytes.Buffer
+	rebuildToolsIdx()
+	rebuildSkillsIdx()
 	tmpl.Execute(&buf, map[string]string{
 		"CWD":       cwd,
 		"Platform":  runtime.GOOS,
 		"Date":      time.Now().Format("2006-01-02"),
 		"IsGitRepo": "unknown",
-		"Tools":     toolsSummary(),
+		"SessionID": os.Getenv("OLLIE_SESSION_ID"),
 	})
 	return buf.String()
 }

@@ -82,13 +82,13 @@ Examples:
 			Description: `Run a named tool script from the tools directory.
 
 Usage:
-- Scripts located in: ` + ToolsPath() + `
+- Scripts located in: ollie/t (default: $HOME/mnt/ollie/t)
 - Supported languages: bash, python3, perl, awk, sed, ed, jq, expect, bc, lua (detected from shebang)
 - Use for named scripts, not inline shell commands
 - Default timeout: 30 seconds
 
 Tool Discovery:
-- List tools: execute_code with 'ls ` + ToolsPath() + `'
+- List tools: execute_code with 'ls ollie/t'
 - Check script permissions before execution
 
 Examples:
