@@ -100,6 +100,7 @@ func DefaultConfig() *Config {
 			"LANG",
 			"TERM",
 			"OLLIE_SESSION_ID",
+			"OLLIE_MEMORY_PATH",
 		},
 		Advanced: AdvancedConfig{
 			LDD:     false,
@@ -345,6 +346,7 @@ func SystemDefaults() LayeredConfig {
 			"LANG",
 			"TERM",
 			"OLLIE_SESSION_ID",
+			"OLLIE_MEMORY_PATH",
 		},
 	}
 }
