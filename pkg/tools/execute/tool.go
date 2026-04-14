@@ -39,7 +39,12 @@ func detectLanguage(code string) string {
 	if len(fields) == 0 {
 		return "bash"
 	}
-	switch filepath.Base(fields[0]) {
+	// When the interpreter is /usr/bin/env, the actual interpreter is the next argument.
+	names := fields
+	if filepath.Base(fields[0]) == "env" && len(fields) > 1 {
+		names = fields[1:]
+	}
+	switch filepath.Base(names[0]) {
 	case "python", "python3":
 		return "python3"
 	case "perl":

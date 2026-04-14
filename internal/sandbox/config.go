@@ -104,6 +104,7 @@ func DefaultConfig() *Config {
 			"TERM",
 			"OLLIE_SESSION_ID",
 			"OLLIE_9MOUNT",
+			"OLLIE_MEMORY_PATH",
 		},
 		Advanced: AdvancedConfig{
 			LDD:     false,
