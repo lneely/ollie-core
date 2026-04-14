@@ -85,7 +85,9 @@ func DefaultConfig() *Config {
 				"{HOME}/.config/ollie",
 				"{HOME}/.claude.json",
 			},
-			RWX: []string{},
+			RWX: []string{
+				"{HOME}/mnt/ollie",
+			},
 		},
 		Network: NetworkConfig{
 			Enabled:      false,
@@ -100,7 +102,7 @@ func DefaultConfig() *Config {
 			"LANG",
 			"TERM",
 			"OLLIE_SESSION_ID",
-			"OLLIE_MEMORY_PATH",
+			"OLLIE_9MOUNT",
 		},
 		Advanced: AdvancedConfig{
 			LDD:     false,
@@ -346,7 +348,7 @@ func SystemDefaults() LayeredConfig {
 			"LANG",
 			"TERM",
 			"OLLIE_SESSION_ID",
-			"OLLIE_MEMORY_PATH",
+			"OLLIE_9MOUNT",
 		},
 	}
 }
