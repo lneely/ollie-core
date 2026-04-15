@@ -1,7 +1,7 @@
 package execute
 
 // execute_tool is a specific case of execute_code, such that the name of the
-// script passed to `tool` is loaded into memory from `$OLLIE_9MOUNT/t/` and
+// script passed to `tool` is loaded into memory from `$OLLIE/t/` and
 // run with Execute(...).
 
 import (
@@ -15,13 +15,16 @@ import (
 
 // ToolsPath returns the directory to search for named tool scripts.
 // Resolved in order: first entry of OLLIE_TOOLS_PATH (colon-separated),
-// then ~/.config/ollie/tools.
+// then $OLLIE/t.
 func ToolsPath() string {
 	if p := os.Getenv("OLLIE_TOOLS_PATH"); p != "" {
 		if i := strings.Index(p, ":"); i >= 0 {
 			p = p[:i]
 		}
 		return p
+	}
+	if p := os.Getenv("OLLIE"); p != "" {
+		return filepath.Join(p, "t")
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "ollie", "tools")
