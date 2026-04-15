@@ -17,8 +17,34 @@ const (
 
 var defaultLevel Level
 
+type entry struct {
+	stderr bool
+	msg    string
+}
+
+var entries = make(chan entry, 4096)
+var done = make(chan struct{})
+
 func init() {
 	defaultLevel = parseLevel(os.Getenv("OLLIE_LOG"), LevelWarn)
+	go writer()
+}
+
+func writer() {
+	for e := range entries {
+		if e.stderr {
+			fmt.Fprint(os.Stderr, e.msg)
+		} else {
+			fmt.Fprint(os.Stdout, e.msg)
+		}
+	}
+	close(done)
+}
+
+// Flush closes the log channel and waits for all pending entries to be written.
+func Flush() {
+	close(entries)
+	<-done
 }
 
 func parseLevel(s string, fallback Level) Level {
@@ -53,12 +79,8 @@ func (l *Logger) emit(lvl Level, format string, args ...any) {
 	if lvl < l.level {
 		return
 	}
-	msg := fmt.Sprintf(format, args...)
-	if lvl >= LevelWarn {
-		fmt.Fprintf(os.Stderr, "%s: %s\n", l.tag, msg)
-	} else {
-		fmt.Fprintf(os.Stdout, "%s: %s\n", l.tag, msg)
-	}
+	msg := fmt.Sprintf("%s: %s\n", l.tag, fmt.Sprintf(format, args...))
+	entries <- entry{stderr: lvl >= LevelWarn, msg: msg}
 }
 
 func (l *Logger) Debug(format string, args ...any) { l.emit(LevelDebug, format, args...) }
