@@ -24,6 +24,14 @@ import (
 	"path/filepath"
 )
 
+var coreDebug = os.Getenv("OLLIE_CORE_DEBUG") != ""
+
+func cdbg(format string, args ...any) {
+	if coreDebug {
+		fmt.Fprintf(os.Stderr, "core: "+format+"\n", args...)
+	}
+}
+
 
 
 // systemPrompt assembles the system prompt from ordered *.md parts in DefaultPromptsDir().
@@ -329,6 +337,7 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 
 // Close releases resources for this session, including its tmpdir.
 func (s *agentCore) Close() {
+	cdbg("Close() session=%q", s.sessionID)
 	if s.sessionID != "" {
 		os.RemoveAll("/tmp/ollie/" + s.sessionID) //nolint:errcheck
 	}
@@ -341,34 +350,51 @@ func (s *agentCore) prompt() string {
 // Prompt returns the display prompt string for the current session state.
 func (s *agentCore) Prompt() string { return s.prompt() }
 
-func (s *agentCore) AgentName() string   { return s.agentName }
-func (s *agentCore) BackendName() string { return s.loopcfg.Backend.Name() }
-func (s *agentCore) ModelName() string   { return s.loopcfg.Backend.Model() }
+func (s *agentCore) AgentName() string {
+	v := s.agentName
+	cdbg("AgentName() = %q", v)
+	return v
+}
+func (s *agentCore) BackendName() string {
+	v := s.loopcfg.Backend.Name()
+	cdbg("BackendName() = %q", v)
+	return v
+}
+func (s *agentCore) ModelName() string {
+	v := s.loopcfg.Backend.Model()
+	cdbg("ModelName() = %q", v)
+	return v
+}
 
 func (s *agentCore) State() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	cdbg("State() = %q", s.state)
 	return s.state
 }
 
 func (s *agentCore) Reply() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	cdbg("Reply() len=%d", len(s.reply))
 	return s.reply
 }
 
 // CWD returns the current working directory for tool execution.
 func (s *agentCore) CWD() string {
 	if s.cwd != "" {
+		cdbg("CWD() = %q", s.cwd)
 		return s.cwd
 	}
 	wd, _ := os.Getwd()
+	cdbg("CWD() = %q (from getwd)", wd)
 	return wd
 }
 
 // SetCWD changes the working directory for tool execution and updates the
 // system prompt. Returns an error if the path does not exist.
 func (s *agentCore) SetCWD(dir string) error {
+	cdbg("SetCWD(%q)", dir)
 	if dir != "" {
 		if _, err := os.Stat(dir); err != nil {
 			return fmt.Errorf("cwd: %w", err)
@@ -395,6 +421,7 @@ func (s *agentCore) SetCWD(dir string) error {
 // SetSessionID renames the session. It updates the in-memory ID, renames
 // persisted files on disk, and propagates to the execute server env.
 func (s *agentCore) SetSessionID(newID string) error {
+	cdbg("SetSessionID(%q) old=%q", newID, s.sessionID)
 	oldID := s.sessionID
 	if oldID == newID {
 		return nil
@@ -471,6 +498,7 @@ func (s *agentCore) getActionCancel() context.CancelCauseFunc {
 // Interrupt cancels the current in-progress agent turn.
 // Returns true if an action was running and was cancelled.
 func (s *agentCore) Interrupt(cause error) bool {
+	cdbg("Interrupt() cause=%v", cause)
 	if cancel := s.getActionCancel(); cancel != nil {
 		cancel(cause)
 		return true
@@ -496,19 +524,25 @@ func (s *agentCore) injectRewrite(prompt string) {
 }
 
 func (s *agentCore) Queue(prompt string) {
+	cdbg("Queue() len=%d", len(prompt))
 	s.fifo.Push(prompt)
 }
 
 func (s *agentCore) PopQueue() (string, bool) {
-	return s.fifo.Pop()
+	v, ok := s.fifo.Pop()
+	cdbg("PopQueue() ok=%v len=%d", ok, len(v))
+	return v, ok
 }
 
 func (s *agentCore) IsRunning() bool {
-	return s.currentAction.Load() != nil
+	v := s.currentAction.Load() != nil
+	cdbg("IsRunning() = %v", v)
+	return v
 }
 
 func (s *agentCore) CtxSz() string {
 	if s.session == nil {
+		cdbg("CtxSz() no session")
 		return "no active session"
 	}
 	ctxLen := s.loopcfg.Backend.ContextLength(context.Background())
@@ -517,11 +551,14 @@ func (s *agentCore) CtxSz() string {
 	}
 	estimated := s.session.estimateTokens()
 	pct := estimated * 100 / ctxLen
-	return fmt.Sprintf("%d / %d (%d%%)", estimated, ctxLen, pct)
+	v := fmt.Sprintf("%d / %d (%d%%)", estimated, ctxLen, pct)
+	cdbg("CtxSz() = %q", v)
+	return v
 }
 
 func (s *agentCore) Usage() string {
 	if s.session == nil {
+		cdbg("Usage() no session")
 		return "no active session"
 	}
 	str := fmt.Sprintf("%d in, %d out, %d requests",
@@ -530,19 +567,23 @@ func (s *agentCore) Usage() string {
 	if s.session.Estimated {
 		str += " [estimated]"
 	}
+	cdbg("Usage() = %q", str)
 	return str
 }
 
 func (s *agentCore) SystemPrompt() string {
+	cdbg("SystemPrompt() len=%d", len(s.loopcfg.systemPrompt))
 	return s.loopcfg.systemPrompt
 }
 
 func (s *agentCore) ListModels() string {
+	cdbg("ListModels()")
 	models := s.loopcfg.Backend.Models(context.Background())
 	return strings.Join(models, "\n")
 }
 
 func (s *agentCore) ListServers() string {
+	cdbg("ListServers()")
 	if s.dispatcher == nil {
 		return "no dispatcher"
 	}
@@ -605,6 +646,7 @@ func firstSentence(s string) string {
 // starts an agent turn that streams events to handler. If a turn is already
 // in progress the prompt is queued as an in-stream interruption instead.
 func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandler) {
+	cdbg("Submit() input_len=%d running=%v", len(input), s.IsRunning())
 	if input == "" {
 		return
 	}
