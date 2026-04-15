@@ -19,18 +19,13 @@ import (
 
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
+	olog "ollie/pkg/log"
 	"ollie/pkg/mcp"
 	"ollie/pkg/tools"
 	"path/filepath"
 )
 
-var coreDebug = os.Getenv("OLLIE_CORE_DEBUG") != ""
-
-func cdbg(format string, args ...any) {
-	if coreDebug {
-		fmt.Fprintf(os.Stderr, "core: "+format+"\n", args...)
-	}
-}
+var clog = olog.New("core")
 
 
 
@@ -337,7 +332,7 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 
 // Close releases resources for this session, including its tmpdir.
 func (s *agentCore) Close() {
-	cdbg("Close() session=%q", s.sessionID)
+	clog.Debug("Close() session=%q", s.sessionID)
 	if s.sessionID != "" {
 		os.RemoveAll("/tmp/ollie/" + s.sessionID) //nolint:errcheck
 	}
@@ -352,49 +347,49 @@ func (s *agentCore) Prompt() string { return s.prompt() }
 
 func (s *agentCore) AgentName() string {
 	v := s.agentName
-	cdbg("AgentName() = %q", v)
+	clog.Debug("AgentName() = %q", v)
 	return v
 }
 func (s *agentCore) BackendName() string {
 	v := s.loopcfg.Backend.Name()
-	cdbg("BackendName() = %q", v)
+	clog.Debug("BackendName() = %q", v)
 	return v
 }
 func (s *agentCore) ModelName() string {
 	v := s.loopcfg.Backend.Model()
-	cdbg("ModelName() = %q", v)
+	clog.Debug("ModelName() = %q", v)
 	return v
 }
 
 func (s *agentCore) State() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	cdbg("State() = %q", s.state)
+	clog.Debug("State() = %q", s.state)
 	return s.state
 }
 
 func (s *agentCore) Reply() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	cdbg("Reply() len=%d", len(s.reply))
+	clog.Debug("Reply() len=%d", len(s.reply))
 	return s.reply
 }
 
 // CWD returns the current working directory for tool execution.
 func (s *agentCore) CWD() string {
 	if s.cwd != "" {
-		cdbg("CWD() = %q", s.cwd)
+		clog.Debug("CWD() = %q", s.cwd)
 		return s.cwd
 	}
 	wd, _ := os.Getwd()
-	cdbg("CWD() = %q (from getwd)", wd)
+	clog.Debug("CWD() = %q (from getwd)", wd)
 	return wd
 }
 
 // SetCWD changes the working directory for tool execution and updates the
 // system prompt. Returns an error if the path does not exist.
 func (s *agentCore) SetCWD(dir string) error {
-	cdbg("SetCWD(%q)", dir)
+	clog.Debug("SetCWD(%q)", dir)
 	if dir != "" {
 		if _, err := os.Stat(dir); err != nil {
 			return fmt.Errorf("cwd: %w", err)
@@ -421,7 +416,7 @@ func (s *agentCore) SetCWD(dir string) error {
 // SetSessionID renames the session. It updates the in-memory ID, renames
 // persisted files on disk, and propagates to the execute server env.
 func (s *agentCore) SetSessionID(newID string) error {
-	cdbg("SetSessionID(%q) old=%q", newID, s.sessionID)
+	clog.Debug("SetSessionID(%q) old=%q", newID, s.sessionID)
 	oldID := s.sessionID
 	if oldID == newID {
 		return nil
@@ -484,7 +479,7 @@ func (s *agentCore) saveSession() {
 	}
 	path := s.sessionsDir + "/" + s.sessionID + ".json"
 	if err := s.session.saveTo(path, s.sessionID, s.agentName); err != nil {
-		fmt.Fprintln(os.Stderr, "session save:", err)
+		clog.Error("session save: %v", err)
 	}
 }
 
@@ -498,7 +493,7 @@ func (s *agentCore) getActionCancel() context.CancelCauseFunc {
 // Interrupt cancels the current in-progress agent turn.
 // Returns true if an action was running and was cancelled.
 func (s *agentCore) Interrupt(cause error) bool {
-	cdbg("Interrupt() cause=%v", cause)
+	clog.Debug("Interrupt() cause=%v", cause)
 	if cancel := s.getActionCancel(); cancel != nil {
 		cancel(cause)
 		return true
@@ -524,25 +519,25 @@ func (s *agentCore) injectRewrite(prompt string) {
 }
 
 func (s *agentCore) Queue(prompt string) {
-	cdbg("Queue() len=%d", len(prompt))
+	clog.Debug("Queue() len=%d", len(prompt))
 	s.fifo.Push(prompt)
 }
 
 func (s *agentCore) PopQueue() (string, bool) {
 	v, ok := s.fifo.Pop()
-	cdbg("PopQueue() ok=%v len=%d", ok, len(v))
+	clog.Debug("PopQueue() ok=%v len=%d", ok, len(v))
 	return v, ok
 }
 
 func (s *agentCore) IsRunning() bool {
 	v := s.currentAction.Load() != nil
-	cdbg("IsRunning() = %v", v)
+	clog.Debug("IsRunning() = %v", v)
 	return v
 }
 
 func (s *agentCore) CtxSz() string {
 	if s.session == nil {
-		cdbg("CtxSz() no session")
+		clog.Debug("CtxSz() no session")
 		return "no active session"
 	}
 	ctxLen := s.loopcfg.Backend.ContextLength(context.Background())
@@ -552,13 +547,13 @@ func (s *agentCore) CtxSz() string {
 	estimated := s.session.estimateTokens()
 	pct := estimated * 100 / ctxLen
 	v := fmt.Sprintf("%d / %d (%d%%)", estimated, ctxLen, pct)
-	cdbg("CtxSz() = %q", v)
+	clog.Debug("CtxSz() = %q", v)
 	return v
 }
 
 func (s *agentCore) Usage() string {
 	if s.session == nil {
-		cdbg("Usage() no session")
+		clog.Debug("Usage() no session")
 		return "no active session"
 	}
 	str := fmt.Sprintf("%d in, %d out, %d requests",
@@ -567,23 +562,23 @@ func (s *agentCore) Usage() string {
 	if s.session.Estimated {
 		str += " [estimated]"
 	}
-	cdbg("Usage() = %q", str)
+	clog.Debug("Usage() = %q", str)
 	return str
 }
 
 func (s *agentCore) SystemPrompt() string {
-	cdbg("SystemPrompt() len=%d", len(s.loopcfg.systemPrompt))
+	clog.Debug("SystemPrompt() len=%d", len(s.loopcfg.systemPrompt))
 	return s.loopcfg.systemPrompt
 }
 
 func (s *agentCore) ListModels() string {
-	cdbg("ListModels()")
+	clog.Debug("ListModels()")
 	models := s.loopcfg.Backend.Models(context.Background())
 	return strings.Join(models, "\n")
 }
 
 func (s *agentCore) ListServers() string {
-	cdbg("ListServers()")
+	clog.Debug("ListServers()")
 	if s.dispatcher == nil {
 		return "no dispatcher"
 	}
@@ -646,7 +641,7 @@ func firstSentence(s string) string {
 // starts an agent turn that streams events to handler. If a turn is already
 // in progress the prompt is queued as an in-stream interruption instead.
 func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandler) {
-	cdbg("Submit() input_len=%d running=%v", len(input), s.IsRunning())
+	clog.Debug("Submit() input_len=%d running=%v", len(input), s.IsRunning())
 	if input == "" {
 		return
 	}
