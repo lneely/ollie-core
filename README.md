@@ -6,6 +6,22 @@ Works well with [anvillm](https://github.com/lneely/anvillm), which provides a s
 
 The reference frontend is [ollie-tui](https://github.com/lneely/ollie-tui), a terminal UI built on top of this library.
 
+## Primitives
+
+**`agent.Core`** — the central interface for a running agent session. Exposes `Submit` (send a prompt, stream events back), `Interrupt`, `Inject`, `Queue`/`PopQueue` (buffered prompt delivery), `State`, `Reply`, `SystemPrompt`, `Usage`, `CtxSz`, `ListModels`, `ListServers`, `CWD`/`SetCWD`, `SetSessionID`, `IsRunning`, and `Close`.
+
+**`agent.Session`** — the conversation turn accumulator. Tracks message history, token usage, context compaction, and session persistence. Supports `compact` (summarize-and-truncate) and `PreCompactionSnapshot`.
+
+**`agent.AgentEnv`** — wires together a backend, tool dispatcher, config, and hooks into the environment passed to `NewAgentCore`. Built via `BuildAgentEnv`.
+
+**`agent.Hooks`** — lifecycle callbacks (`agentSpawn`, `userPromptSubmit`, `stop`) executed as shell commands with a JSON payload. Run via `Hooks.Run`.
+
+**`backend.Backend`** — the LLM interface: `ChatStream`, `Models`, `ContextLength`, `Name`, `Model`/`SetModel`, `DefaultModel`. Implementations: Ollama, OpenAI-compatible, Anthropic, Copilot, Kiro.
+
+**`tools.Server`** — interface for a tool provider: `ListTools`, `CallTool`, `Close`. Implementations: `execute.Server` (built-in execution tools), MCP client wrapper, any custom server.
+
+**`tools.Dispatcher`** — routes tool calls to the correct server by name. Built via `NewDispatcher` or `NewDispatcherFunc` (from a map of `Decl` factories). Supports `AddServer`, `GetServer`, `ListTools`, `Dispatch`.
+
 ## Packages
 
 ```
