@@ -18,7 +18,7 @@ The reference frontend is [ollie-tui](https://github.com/lneely/ollie-tui), a te
 
 **`backend.Backend`** — the LLM interface: `ChatStream`, `Models`, `ContextLength`, `Name`, `Model`/`SetModel`, `DefaultModel`. Implementations: Ollama, OpenAI-compatible, Anthropic, Copilot, Kiro.
 
-**`tools.Server`** — interface for a tool provider: `ListTools`, `CallTool`, `Close`. Implementations: `execute.Server` (built-in execution tools), MCP client wrapper, any custom server.
+**`tools.Server`** — interface for a tool provider: `ListTools`, `CallTool`, `Close`. The only built-in implementation is `execute.Server`. MCP servers are wrapped via `tools.NewServer(client)`. Custom servers implement this interface directly.
 
 **`tools.Dispatcher`** — routes tool calls to the correct server by name. Built via `NewDispatcher` or `NewDispatcherFunc` (from a map of `Decl` factories). Supports `AddServer`, `GetServer`, `ListTools`, `Dispatch`.
 
@@ -30,7 +30,7 @@ pkg/backend/         — Backend interface + implementations (Ollama, OpenAI, An
 pkg/config/          — Config struct and loader
 pkg/mcp/             — MCP client
 pkg/tools/           — Server and Dispatcher interfaces; tool definitions
-pkg/tools/execute/   — execute.Server: execute_code, execute_tool, execute_pipe
+pkg/tools/execute/   — execute.Server: execute_code, execute_pipe
 ```
 
 ## Install
@@ -72,11 +72,9 @@ Controls landrun sandboxing for `execute_code`. Created automatically with defau
 
 ## Tools
 
-Three built-in tools via `execute.Server`:
+Two built-in tools via `execute.Server`:
 
-**`execute_code`** — run one or more code snippets in a sandbox. Accepts a `steps` array; multiple steps run concurrently and results are returned in submission order. Each step is either inline `code` (with optional `language`) or a named `tool` script. Supported languages: bash (default), python3, perl, lua, awk, sed, jq, ed, expect, bc. Accepts `timeout` (per-step, default 30s) and `sandbox` (default: `default`).
-
-**`execute_tool`** — run a named script from `OLLIE_TOOLS_PATH`. Language detected from shebang. Accepts `tool`, `args`, `timeout`, `sandbox`.
+**`execute_code`** — run one or more steps in a sandbox. Accepts a `steps` array; multiple steps run concurrently and results are returned in submission order. Each step is either inline `{code, language}` or a named `{tool, args}` script (language detected from shebang). Supported inline languages: bash (default), python3, perl, lua, awk, sed, jq, ed, expect, bc. Accepts `timeout` (per-step, default 30s) and `sandbox` (default: `default`).
 
 **`execute_pipe`** — run a sequential pipeline, chaining each stage's stdout to the next stage's stdin. Each stage is `{code}`, `{tool, args}`, or `{parallel: [...]}` for concurrent fan-out within a stage. Accepts `timeout` (per-stage) and `sandbox`.
 
@@ -84,7 +82,7 @@ Three built-in tools via `execute.Server`:
 
 `NewAgentCore` creates `/tmp/ollie/{sessionID}` when a session starts. `Core.Close()` removes it. Callers must call `Close()` when tearing down a session — olliesrv does this in `killSession` and on server shutdown.
 
-File operations go through `execute_code` using standard shell tools (`cat`, `grep`, `sed`, `ed`, `ssam` if plan9port is available, etc.).
+Additional capabilities (file I/O, memory, reasoning, task planning, sub-agents) are implemented as tool scripts in `OLLIE_TOOLS_PATH`, invoked via `execute_code` `{tool}` steps.
 
 MCP server tools are discovered at startup and available alongside the built-ins.
 

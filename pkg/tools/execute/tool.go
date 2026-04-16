@@ -1,12 +1,6 @@
 package execute
 
-// execute_tool is a specific case of execute_code, such that the name of the
-// script passed to `tool` is loaded into memory from `$OLLIE_9MOUNT/t/` and
-// run with Execute(...).
-
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -171,44 +165,3 @@ func ReadTool(name string) (string, error) {
 	return string(data), nil
 }
 
-func dispatchExecuteTool(ctx context.Context, e *Server, args json.RawMessage) (string, error) {
-	var a struct {
-		Tool    string   `json:"tool"`
-		Args    []string `json:"args"`
-		Timeout int      `json:"timeout"`
-		Sandbox string   `json:"sandbox"`
-	}
-	if err := json.Unmarshal(args, &a); err != nil {
-		return "", fmt.Errorf("execute_tool: bad args: %w", err)
-	}
-	if a.Tool == "" {
-		return "", fmt.Errorf("execute_tool: 'tool' is required")
-	}
-	if !e.allowed("execute_tool", fmt.Sprintf("execute_tool: %s %s", a.Tool, strings.Join(a.Args, " "))) {
-		return "", fmt.Errorf("execute_tool: denied by user")
-	}
-	toolCode, err := ReadTool(a.Tool)
-	if err != nil {
-		return "", err
-	}
-	language := detectLanguage(toolCode)
-	code := toolCode
-	if len(a.Args) > 0 {
-		code = injectArgs(language, a.Tool, a.Args, toolCode)
-		// injectArgs for file-based languages produces a bash command snippet;
-		// run it as bash rather than trying to pass it as a raw program argument.
-		switch language {
-		case "awk", "sed", "jq", "ed", "expect", "bc":
-			language = "bash"
-		}
-	}
-	timeout := a.Timeout
-	if timeout <= 0 {
-		timeout = 30
-	}
-	sandbox := a.Sandbox
-	if sandbox == "" {
-		sandbox = "default"
-	}
-	return e.Execute(ctx, code, language, timeout, sandbox, true)
-}

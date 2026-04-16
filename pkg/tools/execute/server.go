@@ -95,34 +95,6 @@ Examples:
 			}`),
 		},
 		{
-			Name: "execute_tool",
-			Description: `Run a named tool script from the tools directory.
-
-Usage:
-- Scripts located in: ollie/t (default: $HOME/mnt/ollie/t)
-- Supported languages: bash, python3, perl, awk, sed, ed, jq, expect, bc, lua (detected from shebang)
-- Use for named scripts, not inline shell commands
-- Default timeout: 30 seconds
-
-Tool Discovery:
-- List tools: execute_code with 'ls ollie/t'
-- Check script permissions before execution
-
-Examples:
-- Run bash tool: tool='script.sh', args=['arg1', 'arg2']
-- Run python tool: tool='process.py', args=['--input', 'data.txt']`,
-			InputSchema: json.RawMessage(`{
-				"type": "object",
-				"required": ["tool"],
-				"properties": {
-					"tool":     {"type": "string", "description": "Name of the tool script in the tools directory."},
-					"args":     {"type": "array",  "items": {"type": "string"}, "description": "Arguments for the tool script."},
-					"timeout":  {"type": "integer", "description": "Timeout in seconds (default: 30)."},
-					"sandbox":  {"type": "string",  "description": "Sandbox name (default: default)."}
-				}
-			}`),
-		},
-		{
 			Name: "execute_pipe",
 			Description: `Run a sequential pipeline, chaining each stage's stdout to the next stage's stdin.
 

@@ -1,7 +1,7 @@
 package execute
 
-// execute_pipe constructs a pipeline of execute_code and execute_tool calls
-// to enable the composition of tools and arbitrary code.
+// execute_pipe constructs a sequential pipeline of code and tool steps,
+// enabling composition of named scripts and arbitrary inline code.
 
 import (
 	"context"
