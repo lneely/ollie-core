@@ -18,7 +18,7 @@ The reference frontend is [ollie-tui](https://github.com/lneely/ollie-tui), a te
 
 **`backend.Backend`** — the LLM interface: `ChatStream`, `Models`, `ContextLength`, `Name`, `Model`/`SetModel`, `DefaultModel`. Implementations: Ollama, OpenAI-compatible, Anthropic, Copilot, Kiro.
 
-**`tools.Server`** — interface for a tool provider: `ListTools`, `CallTool`, `Close`. Implementations: `execute.Server` (built-in execution tools), MCP client wrapper, any custom server.
+**`tools.Server`** — interface for a tool provider: `ListTools`, `CallTool`, `Close`. The only built-in implementation is `execute.Server`. MCP servers are wrapped via `tools.NewServer(client)`. Custom servers implement this interface directly.
 
 **`tools.Dispatcher`** — routes tool calls to the correct server by name. Built via `NewDispatcher` or `NewDispatcherFunc` (from a map of `Decl` factories). Supports `AddServer`, `GetServer`, `ListTools`, `Dispatch`.
 
@@ -82,7 +82,7 @@ Two built-in tools via `execute.Server`:
 
 `NewAgentCore` creates `/tmp/ollie/{sessionID}` when a session starts. `Core.Close()` removes it. Callers must call `Close()` when tearing down a session — olliesrv does this in `killSession` and on server shutdown.
 
-File operations go through `execute_code` using standard shell tools (`cat`, `grep`, `sed`, `ed`, `ssam` if plan9port is available, etc.).
+Additional capabilities (file I/O, memory, reasoning, task planning, sub-agents) are implemented as tool scripts in `OLLIE_TOOLS_PATH`, invoked via `execute_code` `{tool}` steps.
 
 MCP server tools are discovered at startup and available alongside the built-ins.
 
