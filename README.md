@@ -106,10 +106,6 @@ cat ${OLLIE_9MOUNT:-$HOME/mnt/ollie}/sk/<name>.md
 
 Skills are sourced from `OLLIE_SKILLS_PATH` (default: `~/.config/ollie/skills/`). The `sk/` directory in the mount exposes them as flat `<name>.md` files.
 
-## Integrations
-
-**[9beads-mcp](https://github.com/lneely/9beads-mcp)** provides task persistence using **[9beads](https://github.com/lneely/9beads)** — enabling the agent to track, list, and manage tasks across sessions.
-
 ## License
 
 GPLv3
