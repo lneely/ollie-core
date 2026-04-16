@@ -53,89 +53,51 @@ func (e *Server) ListTools() ([]tools.ToolInfo, error) {
 	return []tools.ToolInfo{
 		{
 			Name: "execute_code",
-			Description: `Run one or more code snippets in a sandboxed environment.
+			Description: `Run a pipeline of one or more stages in a sandboxed environment.
 
-Steps run in parallel when more than one is provided; results are returned in
-submission order under === step N === headers. Single-step calls return raw output.
+Stages run sequentially; each stage's stdout is fed as stdin to the next.
+A single stage with inline code or a tool script is the degenerate (non-pipeline) case
+and returns raw output. A parallel stage fans out concurrently and concatenates results
+in submission order before passing them to the next stage.
 
-Usage:
-- Default language: bash. Supported: bash, python3, perl, lua, awk, sed, jq, ed, expect, bc.
-- Default timeout: 30 seconds (applied per step).
-- Output includes stdout, stderr, and exit code.
+Each stage is one of:
+- {code, language}            — inline code (default language: bash)
+- {tool, args}                — named script from OLLIE_TOOLS_PATH (language from shebang)
+- {parallel: [{code/tool}...]}— concurrent fan-out; outputs concatenated in submission order
 
-Security:
-- Dangerous commands blocked: rm -rf, fork bombs, sudo, etc.
-- File system access limited to sandbox.
-- Network access restricted.
+Supported inline languages: bash, python3, perl, lua, awk, sed, jq, ed, expect, bc.
+Timeout applies per stage (default: 30s). A failed stage aborts the pipeline.
 
 Examples:
-- Single step:  steps=[{code: "ls -la"}]
-- Parallel:     steps=[{code: "wc -l a.txt"}, {code: "wc -l b.txt"}]
-- Mixed langs:  steps=[{code: "...", language: "python3"}, {code: "...", language: "bash"}]`,
+- Single step:        steps=[{code: "ls -la"}]
+- Pipeline:           steps=[{code: "grep error app.log"}, {code: "wc -l"}]
+- Parallel fan-out:   steps=[{parallel: [{code: "wc -l a.txt"}, {code: "wc -l b.txt"}]}]
+- Fan-out then sort:  steps=[{parallel: [{code: "cat a.txt"}, {code: "cat b.txt"}]}, {code: "sort"}]
+- Tool in pipeline:   steps=[{tool: "fetch.sh", args: ["--last=1h"]}, {code: "jq .result"}]`,
 			InputSchema: json.RawMessage(`{
 				"type": "object",
 				"required": ["steps"],
 				"properties": {
 					"steps": {
 						"type": "array",
-						"description": "One or more steps. Multiple steps run in parallel. Each step is either inline code or a named tool.",
+						"description": "Pipeline stages. Run sequentially, stdout piped to next stage's stdin. Each stage is inline code, a named tool script, or a parallel fan-out.",
 						"items": {
 							"type": "object",
 							"properties": {
 								"code":     {"type": "string", "description": "Inline code to execute."},
-								"language": {"type": "string", "description": "Language interpreter (default: bash). Ignored when tool is set."},
-								"tool":     {"type": "string", "description": "Named tool script from the tools directory. Takes precedence over code."},
-								"args":     {"type": "array", "items": {"type": "string"}, "description": "Arguments for the tool script."}
-							}
-						}
-					},
-					"timeout":  {"type": "integer", "description": "Timeout in seconds per step (default: 30)."},
-					"sandbox":  {"type": "string",  "description": "Sandbox name (default: default)."}
-				}
-			}`),
-		},
-		{
-			Name: "execute_pipe",
-			Description: `Run a sequential pipeline, chaining each stage's stdout to the next stage's stdin.
-
-Each stage is one of:
-- {code: "..."}               — inline bash
-- {tool: "name", args: [...]} — named script from the tools directory
-- {parallel: [{code,language}, ...]} — fan-out: N steps run concurrently, outputs
-                                        concatenated in submission order, result fed to next stage
-
-Use parallel stages when N independent operations produce the same output schema and
-their combined output should flow into the next stage as a single stream. For disparate
-schemas, normalize with an inner pipe stage before merging.
-
-Timeout applies per stage. Stages execute sequentially; a failed stage aborts the pipeline.
-
-Examples:
-- Filter and count:    pipe=[{code: "grep error log.txt"}, {code: "wc -l"}]
-- Parallel then sort:  pipe=[{parallel: [{code:"cat a.txt"},{code:"cat b.txt"}]}, {code:"sort"}]
-- Tool transform:      pipe=[{tool: "parse.py", args: ["data.json"]}, {code: "jq .result"}]`,
-			InputSchema: json.RawMessage(`{
-				"type": "object",
-				"required": ["pipe"],
-				"properties": {
-					"pipe": {
-						"type": "array",
-						"items": {
-							"type": "object",
-							"properties": {
-								"tool":     {"type": "string"},
-								"args":     {"type": "array", "items": {"type": "string"}},
-								"code":     {"type": "string"},
+								"language": {"type": "string", "description": "Language interpreter (default: bash). Ignored when tool or parallel is set."},
+								"tool":     {"type": "string", "description": "Named tool script from the tools directory."},
+								"args":     {"type": "array", "items": {"type": "string"}, "description": "Arguments for the tool script."},
 								"parallel": {
 									"type": "array",
-									"description": "Steps to run in parallel; outputs concatenated in submission order. Each step is inline code or a named tool.",
+									"description": "Fan-out: steps run concurrently, outputs concatenated in submission order, result fed to next stage.",
 									"items": {
 										"type": "object",
 										"properties": {
-											"code":     {"type": "string", "description": "Inline code to execute."},
-											"language": {"type": "string", "description": "Interpreter for inline code (default: bash). Ignored when tool is set."},
-											"tool":     {"type": "string", "description": "Named tool script; language detected from shebang."},
-											"args":     {"type": "array", "items": {"type": "string"}, "description": "Arguments for the tool script."}
+											"code":     {"type": "string"},
+											"language": {"type": "string"},
+											"tool":     {"type": "string"},
+											"args":     {"type": "array", "items": {"type": "string"}}
 										}
 									}
 								}
