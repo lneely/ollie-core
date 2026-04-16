@@ -30,7 +30,7 @@ pkg/backend/         — Backend interface + implementations (Ollama, OpenAI, An
 pkg/config/          — Config struct and loader
 pkg/mcp/             — MCP client
 pkg/tools/           — Server and Dispatcher interfaces; tool definitions
-pkg/tools/execute/   — execute.Server: execute_code, execute_pipe
+pkg/tools/execute/   — execute.Server: execute_code
 ```
 
 ## Install
@@ -72,11 +72,9 @@ Controls landrun sandboxing for `execute_code`. Created automatically with defau
 
 ## Tools
 
-Two built-in tools via `execute.Server`:
+One built-in tool via `execute.Server`:
 
-**`execute_code`** — run one or more steps in a sandbox. Accepts a `steps` array; multiple steps run concurrently and results are returned in submission order. Each step is either inline `{code, language}` or a named `{tool, args}` script (language detected from shebang). Supported inline languages: bash (default), python3, perl, lua, awk, sed, jq, ed, expect, bc. Accepts `timeout` (per-step, default 30s) and `sandbox` (default: `default`).
-
-**`execute_pipe`** — run a sequential pipeline, chaining each stage's stdout to the next stage's stdin. Each stage is `{code}`, `{tool, args}`, or `{parallel: [...]}` for concurrent fan-out within a stage. Accepts `timeout` (per-stage) and `sandbox`.
+**`execute_code`** — run a pipeline of one or more stages in a sandbox. Stages run sequentially, each stage's stdout fed to the next stage's stdin. A single stage is the degenerate case and returns raw output. Each stage is `{code, language}` for inline code, `{tool, args}` for a named script (language from shebang), or `{parallel: [...]}` for concurrent fan-out. Supported inline languages: bash (default), python3, perl, lua, awk, sed, jq, ed, expect, bc. Accepts `timeout` (per stage, default 30s) and `sandbox` (default: `default`).
 
 ## Session lifecycle
 

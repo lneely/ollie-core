@@ -8,16 +8,16 @@ import (
 	"ollie/internal/sandbox"
 	"regexp"
 	"strings"
-	"sync"
 )
 
-// CodeStep is one step in a parallel execute_code call or a parallel pipe stage.
-// Exactly one of Code or Tool must be set.
+// CodeStep is one stage in an execute_code pipeline.
+// Set Code/Language for inline code, Tool/Args for a named script, or Parallel for concurrent fan-out.
 type CodeStep struct {
-	Code     string   `json:"code"`
-	Language string   `json:"language"`
-	Tool     string   `json:"tool"`
-	Args     []string `json:"args"`
+	Code     string     `json:"code"`
+	Language string     `json:"language"`
+	Tool     string     `json:"tool"`
+	Args     []string   `json:"args"`
+	Parallel []CodeStep `json:"parallel"`
 }
 
 // resolveCodeStep loads a CodeStep into executable (code, language, trusted).
@@ -106,9 +106,7 @@ func (e *Server) Dispatch(ctx context.Context, name string, args json.RawMessage
 	switch name {
 	case "execute_code":
 		return dispatchExecuteCode(ctx, e, args)
-	case "execute_pipe":
-		return dispatchExecutePipe(ctx, e, args)
-	default:
+default:
 		return "", fmt.Errorf("unknown execute tool: %s", name)
 	}
 }
@@ -165,80 +163,59 @@ func (lw *limitedWriter) Write(p []byte) (n int, err error) {
 }
 
 func dispatchExecuteCode(ctx context.Context, e *Server, args json.RawMessage) (string, error) {
-	steps, timeout, sandboxName, err := execCodeArgs(args)
+	stages, timeout, sandboxName, err := execCodeArgs(args)
 	if err != nil {
 		return "", fmt.Errorf("execute_code: bad args: %w", err)
 	}
-	if len(steps) == 0 {
+	if len(stages) == 0 {
 		return "", fmt.Errorf("execute_code: at least one step is required")
 	}
 
-	// Build confirmation label and check upfront (before any goroutines).
-	stepLabel := func(s CodeStep) string {
-		if s.Tool != "" {
-			return fmt.Sprintf("tool:%s %s", s.Tool, strings.Join(s.Args, " "))
-		}
-		return s.Code
-	}
-	var label string
-	if len(steps) == 1 {
-		label = fmt.Sprintf("execute_code: %s", stepLabel(steps[0]))
-	} else {
-		var sb strings.Builder
-		fmt.Fprintf(&sb, "execute_code: %d parallel steps", len(steps))
-		for i, s := range steps {
-			fmt.Fprintf(&sb, "\n  [%d]: %s", i, stepLabel(s))
-		}
-		label = sb.String()
-	}
+	label := buildExecLabel(stages)
 	if !e.allowed("execute_code", label) {
 		return "", fmt.Errorf("execute_code: denied by user")
 	}
 
-	if len(steps) == 1 {
-		code, lang, trusted, err := resolveCodeStep(steps[0])
+	// Degenerate case: single simple stage, return raw output.
+	if len(stages) == 1 && len(stages[0].Parallel) == 0 {
+		code, lang, trusted, err := resolveCodeStep(stages[0])
 		if err != nil {
 			return "", err
 		}
 		return e.executeWithStdin(ctx, code, lang, timeout, sandboxName, trusted, "")
 	}
 
-	// Parallel fan-out: all steps run concurrently; results collected in submission order.
-	type result struct {
-		output string
-		err    error
-	}
-	results := make([]result, len(steps))
-	var wg sync.WaitGroup
-	for i, step := range steps {
-		wg.Add(1)
-		go func(idx int, s CodeStep) {
-			defer wg.Done()
-			code, lang, trusted, err := resolveCodeStep(s)
-			if err != nil {
-				results[idx] = result{err: err}
-				return
-			}
-			out, err := e.executeWithStdin(ctx, code, lang, timeout, sandboxName, trusted, "")
-			results[idx] = result{output: out, err: err}
-		}(i, step)
-	}
-	wg.Wait()
-
-	var sb strings.Builder
-	var firstErr error
-	for i, r := range results {
-		fmt.Fprintf(&sb, "=== step %d ===\n", i)
-		sb.WriteString(r.output)
-		if r.err != nil {
-			fmt.Fprintf(&sb, "\nerror: %v\n", r.err)
-			if firstErr == nil {
-				firstErr = r.err
-			}
+	// Pipeline: run stages sequentially, chaining stdout → stdin.
+	var input string
+	for i, stage := range stages {
+		out, err := e.runStage(ctx, i, stage, timeout, sandboxName, input)
+		if err != nil {
+			return out, fmt.Errorf("step %d: %w", i, err)
 		}
-		sb.WriteByte('\n')
+		input = out
 	}
-	return sb.String(), firstErr
+	return input, nil
+}
+
+func buildExecLabel(stages []CodeStep) string {
+	stageLabel := func(s CodeStep) string {
+		if len(s.Parallel) > 0 {
+			return fmt.Sprintf("parallel(%d)", len(s.Parallel))
+		}
+		if s.Tool != "" {
+			return fmt.Sprintf("tool:%s %s", s.Tool, strings.Join(s.Args, " "))
+		}
+		return s.Code
+	}
+	if len(stages) == 1 {
+		return fmt.Sprintf("execute_code: %s", stageLabel(stages[0]))
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "execute_code: %d stages", len(stages))
+	for i, s := range stages {
+		fmt.Fprintf(&sb, "\n  [%d]: %s", i, stageLabel(s))
+	}
+	return sb.String()
 }
 
 func execCodeArgs(args json.RawMessage) (steps []CodeStep, timeout int, sandboxName string, err error) {
