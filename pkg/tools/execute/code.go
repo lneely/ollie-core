@@ -106,8 +106,6 @@ func (e *Server) Dispatch(ctx context.Context, name string, args json.RawMessage
 	switch name {
 	case "execute_code":
 		return dispatchExecuteCode(ctx, e, args)
-	case "execute_tool":
-		return dispatchExecuteTool(ctx, e, args)
 	case "execute_pipe":
 		return dispatchExecutePipe(ctx, e, args)
 	default:
