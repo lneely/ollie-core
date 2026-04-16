@@ -53,30 +53,43 @@ func (e *Server) ListTools() ([]tools.ToolInfo, error) {
 	return []tools.ToolInfo{
 		{
 			Name: "execute_code",
-			Description: `Run inline shell code in a sandboxed environment.
+			Description: `Run one or more code snippets in a sandboxed environment.
+
+Steps run in parallel when more than one is provided; results are returned in
+submission order under === step N === headers. Single-step calls return raw output.
 
 Usage:
-- Run shell commands: grep, cat, sed, find, etc.
-- Default timeout: 30 seconds
-- Default language: bash
-- Output includes stdout, stderr, and exit code
+- Default language: bash. Supported: bash, python3, perl, lua, awk, sed, jq, ed, expect, bc.
+- Default timeout: 30 seconds (applied per step).
+- Output includes stdout, stderr, and exit code.
 
 Security:
 - Dangerous commands blocked: rm -rf, fork bombs, sudo, etc.
-- File system access limited to sandbox
-- Network access restricted
+- File system access limited to sandbox.
+- Network access restricted.
 
 Examples:
-- List files: code='ls -la'
-- Search content: code='grep -r "TODO" ./src/'
-- Count lines: code='wc -l file.txt'`,
+- Single step:  steps=[{code: "ls -la"}]
+- Parallel:     steps=[{code: "wc -l a.txt"}, {code: "wc -l b.txt"}]
+- Mixed langs:  steps=[{code: "...", language: "python3"}, {code: "...", language: "bash"}]`,
 			InputSchema: json.RawMessage(`{
 				"type": "object",
-				"required": ["code"],
+				"required": ["steps"],
 				"properties": {
-					"code":     {"type": "string",  "description": "Code to execute."},
-					"language": {"type": "string",  "description": "Language interpreter (default: bash)."},
-					"timeout":  {"type": "integer", "description": "Timeout in seconds (default: 30)."},
+					"steps": {
+						"type": "array",
+						"description": "One or more steps. Multiple steps run in parallel. Each step is either inline code or a named tool.",
+						"items": {
+							"type": "object",
+							"properties": {
+								"code":     {"type": "string", "description": "Inline code to execute."},
+								"language": {"type": "string", "description": "Language interpreter (default: bash). Ignored when tool is set."},
+								"tool":     {"type": "string", "description": "Named tool script from the tools directory. Takes precedence over code."},
+								"args":     {"type": "array", "items": {"type": "string"}, "description": "Arguments for the tool script."}
+							}
+						}
+					},
+					"timeout":  {"type": "integer", "description": "Timeout in seconds per step (default: 30)."},
 					"sandbox":  {"type": "string",  "description": "Sandbox name (default: default)."}
 				}
 			}`),
@@ -111,23 +124,24 @@ Examples:
 		},
 		{
 			Name: "execute_pipe",
-			Description: `Run a pipeline of commands, chaining stdout to stdin.
+			Description: `Run a sequential pipeline, chaining each stage's stdout to the next stage's stdin.
 
-Usage:
-- Pipe output between multiple commands
-- Each step: {code: "cmd"} or {tool: "name", args: [...]}
-- Default timeout: 30 seconds per pipeline
-- Steps execute sequentially
+Each stage is one of:
+- {code: "..."}               — inline bash
+- {tool: "name", args: [...]} — named script from the tools directory
+- {parallel: [{code,language}, ...]} — fan-out: N steps run concurrently, outputs
+                                        concatenated in submission order, result fed to next stage
 
-Structure:
-- pipe: array of step objects
-- Step with code: shell command string
-- Step with tool: named script from tools directory
-- Use code for shell commands, tool for scripts
+Use parallel stages when N independent operations produce the same output schema and
+their combined output should flow into the next stage as a single stream. For disparate
+schemas, normalize with an inner pipe stage before merging.
+
+Timeout applies per stage. Stages execute sequentially; a failed stage aborts the pipeline.
 
 Examples:
-- Filter and count: pipe=[{code: "grep error log.txt"}, {code: "wc -l"}]
-- Process with script: pipe=[{tool: "parse.py", args: ["data.json"]}, {code: "jq .result"}]`,
+- Filter and count:    pipe=[{code: "grep error log.txt"}, {code: "wc -l"}]
+- Parallel then sort:  pipe=[{parallel: [{code:"cat a.txt"},{code:"cat b.txt"}]}, {code:"sort"}]
+- Tool transform:      pipe=[{tool: "parse.py", args: ["data.json"]}, {code: "jq .result"}]`,
 			InputSchema: json.RawMessage(`{
 				"type": "object",
 				"required": ["pipe"],
@@ -137,13 +151,26 @@ Examples:
 						"items": {
 							"type": "object",
 							"properties": {
-								"tool": {"type": "string"},
-								"args": {"type": "array", "items": {"type": "string"}},
-								"code": {"type": "string"}
+								"tool":     {"type": "string"},
+								"args":     {"type": "array", "items": {"type": "string"}},
+								"code":     {"type": "string"},
+								"parallel": {
+									"type": "array",
+									"description": "Steps to run in parallel; outputs concatenated in submission order. Each step is inline code or a named tool.",
+									"items": {
+										"type": "object",
+										"properties": {
+											"code":     {"type": "string", "description": "Inline code to execute."},
+											"language": {"type": "string", "description": "Interpreter for inline code (default: bash). Ignored when tool is set."},
+											"tool":     {"type": "string", "description": "Named tool script; language detected from shebang."},
+											"args":     {"type": "array", "items": {"type": "string"}, "description": "Arguments for the tool script."}
+										}
+									}
+								}
 							}
 						}
 					},
-					"timeout": {"type": "integer", "description": "Timeout in seconds (default: 30)."},
+					"timeout": {"type": "integer", "description": "Timeout in seconds per stage (default: 30)."},
 					"sandbox": {"type": "string",  "description": "Sandbox name (default: default)."}
 				}
 			}`),
@@ -254,6 +281,12 @@ func (e *Server) recordValidationFailure() {
 
 // Execute runs code in a sandbox and returns combined stdout+stderr.
 func (e *Server) Execute(ctx context.Context, code, language string, timeout int, sandboxName string, trusted bool) (string, error) {
+	return e.executeWithStdin(ctx, code, language, timeout, sandboxName, trusted, "")
+}
+
+// executeWithStdin is like Execute but feeds stdinData to the command's stdin.
+// For languages where code is itself passed via stdin (ed, expect, bc), stdinData is ignored.
+func (e *Server) executeWithStdin(ctx context.Context, code, language string, timeout int, sandboxName string, trusted bool, stdinData string) (string, error) {
 	if timeout <= 0 {
 		timeout = 30
 	}
@@ -287,7 +320,9 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 
 	var cmd *exec.Cmd
 	var interpreter []string
-	var stdin string // non-empty: pipe this to cmd.Stdin instead of embedding in args
+	// codeStdin: non-empty means the code itself is fed via stdin (ed, expect, bc).
+	// In these cases stdinData cannot be used simultaneously.
+	var codeStdin string
 	switch language {
 	case "bash", "":
 		interpreter = []string{"bash", "-c", code}
@@ -305,21 +340,24 @@ func (e *Server) Execute(ctx context.Context, code, language string, timeout int
 		interpreter = []string{"jq", code}
 	case "ed":
 		interpreter = []string{"ed", "-s"}
-		stdin = code
+		codeStdin = code
 	case "expect":
 		interpreter = []string{"expect", "-"}
-		stdin = code
+		codeStdin = code
 	case "bc":
 		interpreter = []string{"bc", "-ql"}
-		stdin = code
+		codeStdin = code
 	default:
 		return "", fmt.Errorf("unsupported language: %s (supported: bash, python3, perl, awk, sed, ed, jq, expect, bc, lua)", language)
 	}
 	wrapped := sandbox.WrapCommand(cfg, interpreter, workDir)
 	cmd = exec.CommandContext(ctx, wrapped[0], wrapped[1:]...)
 	cmd.Dir = workDir
-	if stdin != "" {
-		cmd.Stdin = strings.NewReader(stdin)
+	switch {
+	case codeStdin != "":
+		cmd.Stdin = strings.NewReader(codeStdin)
+	case stdinData != "":
+		cmd.Stdin = strings.NewReader(stdinData)
 	}
 
 	// Inject per-session env vars so they're visible inside the sandbox.
