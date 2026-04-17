@@ -107,6 +107,7 @@ func DefaultConfig() *Config {
 			"OLLIE",
 			"OLLIE_CFG_PATH",
 			"OLLIE_DATA_PATH",
+			"OLLIE_TMP_PATH",
 			"OLLIE_MEMORY_PATH",
 		},
 		Advanced: AdvancedConfig{

@@ -307,6 +307,12 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 					ollie = home + "/mnt/ollie"
 				}
 				es.SetEnv("OLLIE", ollie)
+				tmpPath := os.Getenv("OLLIE_TMP_PATH")
+				if tmpPath == "" {
+					home, _ := os.UserHomeDir()
+					tmpPath = home + "/.local/share/ollie/tmp"
+				}
+				es.SetEnv("OLLIE_TMP_PATH", tmpPath)
 			}
 		}
 	}
@@ -448,6 +454,12 @@ func (s *agentCore) SetSessionID(newID string) error {
 					ollie = home + "/mnt/ollie"
 				}
 				es.SetEnv("OLLIE", ollie)
+				tmpPath := os.Getenv("OLLIE_TMP_PATH")
+				if tmpPath == "" {
+					home, _ := os.UserHomeDir()
+					tmpPath = home + "/.local/share/ollie/tmp"
+				}
+				es.SetEnv("OLLIE_TMP_PATH", tmpPath)
 			}
 		}
 	}
