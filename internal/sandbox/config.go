@@ -82,6 +82,7 @@ func DefaultConfig() *Config {
 			RW: []string{
 				"{CWD}",
 				"{TMPDIR}",
+				"{OLLIE_TMP_PATH}",
 				"{HOME}/.claude",
 				"{HOME}/.kiro",
 				"{HOME}/.claude.json",

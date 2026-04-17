@@ -312,6 +312,7 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 					home, _ := os.UserHomeDir()
 					tmpPath = home + "/.local/share/ollie/tmp"
 				}
+				os.MkdirAll(tmpPath, 0700) //nolint:errcheck
 				es.SetEnv("OLLIE_TMP_PATH", tmpPath)
 			}
 		}
