@@ -87,7 +87,6 @@ func DefaultConfig() *Config {
 			RWX: []string{
 				"{HOME}/.config/ollie",
 				"{OLLIE}",
-				"{HOME}/mnt/ollie",
 			},
 		},
 		Network: NetworkConfig{

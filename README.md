@@ -92,11 +92,11 @@ Skills are domain-specific knowledge files served from the ollie 9P mount (`sk/`
 
 ```sh
 # Discover
-ls ${OLLIE_9MOUNT:-$HOME/mnt/ollie}/sk/
-grep -li <keyword> ${OLLIE_9MOUNT:-$HOME/mnt/ollie}/sk/*.md
+ls ${OLLIE:-$HOME/mnt/ollie}/sk/
+grep -li <keyword> ${OLLIE:-$HOME/mnt/ollie}/sk/*.md
 
 # Load
-cat ${OLLIE_9MOUNT:-$HOME/mnt/ollie}/sk/<name>.md
+cat ${OLLIE:-$HOME/mnt/ollie}/sk/<name>.md
 ```
 
 Skills are sourced from `OLLIE_SKILLS_PATH` (default: `~/.config/ollie/skills/`). The `sk/` directory in the mount exposes them as flat `<name>.md` files.
