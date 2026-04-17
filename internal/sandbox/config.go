@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 
+	"ollie/pkg/paths"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -85,7 +87,7 @@ func DefaultConfig() *Config {
 				"{HOME}/.claude.json",
 			},
 			RWX: []string{
-				"{HOME}/.config/ollie",
+				"{OLLIE_CFG_PATH}",
 				"{OLLIE}",
 			},
 		},
@@ -103,6 +105,8 @@ func DefaultConfig() *Config {
 			"TERM",
 			"OLLIE_SESSION_ID",
 			"OLLIE",
+			"OLLIE_CFG_PATH",
+			"OLLIE_DATA_PATH",
 			"OLLIE_MEMORY_PATH",
 		},
 		Advanced: AdvancedConfig{
@@ -114,8 +118,7 @@ func DefaultConfig() *Config {
 
 // ConfigPath returns the path to the sandbox config file
 func ConfigPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "ollie", "sandbox.yaml")
+	return filepath.Join(paths.CfgDir(), "sandbox.yaml")
 }
 
 // Load loads the config from disk, creating defaults if it doesn't exist
@@ -236,6 +239,10 @@ func ExpandPath(pattern, cwd string) string {
 				return xdg
 			}
 			return fmt.Sprintf("/run/user/%d", os.Getuid())
+		case "OLLIE_CFG_PATH":
+			return paths.CfgDir()
+		case "OLLIE_DATA_PATH":
+			return paths.DataDir()
 		}
 
 		if val := os.Getenv(varName); val != "" {
@@ -350,18 +357,19 @@ func SystemDefaults() LayeredConfig {
 			"TERM",
 			"OLLIE_SESSION_ID",
 			"OLLIE",
+			"OLLIE_CFG_PATH",
+			"OLLIE_DATA_PATH",
 		},
 	}
 }
 
-// LoadSandbox loads a named sandbox layer config from ~/.config/ollie/sandbox/<name>.yaml
+// LoadSandbox loads a named sandbox layer config from $OLLIE_CFG_PATH/sandbox/<name>.yaml
 func LoadSandbox(name string) (LayeredConfig, error) {
 	if err := validateName(name); err != nil {
 		return LayeredConfig{}, fmt.Errorf("invalid sandbox name: %w", err)
 	}
 
-	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".config", "ollie", "sandbox", name+".yaml")
+	path := filepath.Join(paths.CfgDir(), "sandbox", name+".yaml")
 
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {

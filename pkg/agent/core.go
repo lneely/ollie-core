@@ -21,6 +21,7 @@ import (
 	"ollie/pkg/config"
 	olog "ollie/pkg/log"
 	"ollie/pkg/mcp"
+	"ollie/pkg/paths"
 	"ollie/pkg/tools"
 	"path/filepath"
 )
@@ -195,20 +196,17 @@ func (e *AgentEnv) Dispatcher() tools.Dispatcher { return e.dispatcher }
 
 // DefaultAgentsDir returns the default directory for agent config files.
 func DefaultAgentsDir() string {
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/agents"
+	return paths.CfgDir() + "/agents"
 }
 
 // DefaultPromptsDir returns the default directory for prompt templates.
 func DefaultPromptsDir() string {
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/prompts"
+	return paths.CfgDir() + "/prompts"
 }
 
 // DefaultSessionsDir returns the default directory for saved sessions.
 func DefaultSessionsDir() string {
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/sessions"
+	return paths.CfgDir() + "/sessions"
 }
 
 // AgentConfigPath resolves the config file path for a named agent.
@@ -218,8 +216,7 @@ func AgentConfigPath(agentsDir, name string) string {
 		return p
 	}
 	if name == "default" {
-		home, _ := os.UserHomeDir()
-		return home + "/.config/ollie/config.json"
+		return paths.CfgDir() + "/config.json"
 	}
 	return p
 }

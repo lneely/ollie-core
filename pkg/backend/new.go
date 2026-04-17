@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"ollie/pkg/paths"
 )
 
 // loadEnvFile reads KEY=VALUE pairs from path and sets any key that is not
@@ -52,8 +54,7 @@ func loadEnvFile(path string) {
 //	OLLIE_KIRO_TOKEN     bearer token or sqlite:// URL for kiro/codewhisperer
 //	                     (default: sqlite path auto-detected from Kiro CLI data dir)
 func New() (Backend, error) {
-	home, _ := os.UserHomeDir()
-	loadEnvFile(home + "/.config/ollie/env")
+	loadEnvFile(paths.CfgDir() + "/env")
 
 	which := os.Getenv("OLLIE_BACKEND")
 	if which == "" {
