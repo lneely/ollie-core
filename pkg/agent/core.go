@@ -102,8 +102,10 @@ type AgentEnv struct {
 // BuildAgentEnv constructs an AgentEnv from a pre-configured Dispatcher and
 // optional agent config. cwd sets the working directory reported in the
 // system prompt; if empty, the process working directory is used.
+// sessionEnv provides session-scoped values for ${VAR} expansion in MCP server
+// configs, without touching the process environment.
 // The caller is responsible for registering all servers on d before calling this.
-func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv {
+func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string, sessionEnv map[string]string) AgentEnv {
 	var messages []string
 
 	if cfg != nil {
@@ -111,7 +113,7 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 			if serverCfg.Disabled || serverCfg.Command == "" {
 				continue
 			}
-			transport := mcp.NewSTDIOTransport(serverCfg.Command, serverCfg.Args, serverCfg.Env)
+			transport := mcp.NewSTDIOTransport(serverCfg.Command, serverCfg.Args, serverCfg.Env, sessionEnv)
 			client, err := transport.Connect()
 			if err != nil {
 				messages = append(messages, fmt.Sprintf("MCP %s: failed to connect: %v", name, err))
@@ -277,6 +279,18 @@ type agentCore struct {
 	reply         string // assistant text from the most recently completed turn
 }
 
+// SetEnv injects a session-scoped variable into execute_code subprocesses.
+func (s *agentCore) SetEnv(key, value string) {
+	if s.dispatcher == nil {
+		return
+	}
+	if srv, ok := s.dispatcher.GetServer("execute"); ok {
+		if es, ok := srv.(tools.EnvSetter); ok {
+			es.SetEnv(key, value)
+		}
+	}
+}
+
 // pushSessionEnv injects session-scoped vars into the execute server's
 // subprocess environment without touching the process-global env.
 func (s *agentCore) pushSessionEnv() {
@@ -289,6 +303,7 @@ func (s *agentCore) pushSessionEnv() {
 		}
 	}
 }
+
 
 var _ Core = (*agentCore)(nil) // compile-time interface check
 
@@ -904,7 +919,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			s.dispatcher.Close()
 		}
 		d := s.newDispatcher()
-		env := BuildAgentEnv(cfg, d, s.cwd)
+		env := BuildAgentEnv(cfg, d, s.cwd, nil)
 		s.dispatcher = env.dispatcher
 		s.hooks = env.Hooks
 		s.loopcfg.systemPrompt = env.systemPrompt

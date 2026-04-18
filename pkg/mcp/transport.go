@@ -8,14 +8,17 @@ import (
 
 // STDIOTransport launches a subprocess and connects a Client to its stdin/stdout.
 type STDIOTransport struct {
-	command string
-	args    []string
-	env     map[string]string
+	command  string
+	args     []string
+	env      map[string]string
+	extraEnv map[string]string // session-scoped vars used to expand ${VAR} in env values
 }
 
 // NewSTDIOTransport creates a transport that will launch the given command.
-func NewSTDIOTransport(command string, args []string, env map[string]string) *STDIOTransport {
-	return &STDIOTransport{command: command, args: args, env: env}
+// sessionEnv provides values for ${VAR} expansion in env values, taking
+// precedence over the process environment.
+func NewSTDIOTransport(command string, args []string, env map[string]string, sessionEnv map[string]string) *STDIOTransport {
+	return &STDIOTransport{command: command, args: args, env: env, extraEnv: sessionEnv}
 }
 
 // Connect launches the subprocess and returns a connected Client.
@@ -23,8 +26,14 @@ func (t *STDIOTransport) Connect() (*Client, error) {
 	cmd := exec.Command(t.command, t.args...)
 	if len(t.env) > 0 {
 		cmd.Env = os.Environ()
+		lookup := func(name string) string {
+			if v, ok := t.extraEnv[name]; ok {
+				return v
+			}
+			return os.Getenv(name)
+		}
 		for k, v := range t.env {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, os.ExpandEnv(v)))
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, os.Expand(v, lookup)))
 		}
 	}
 

@@ -103,6 +103,10 @@ type Core interface {
 	// Returns an error if the agent is currently running.
 	SetGenerationParams(params backend.GenerationParams) error
 
+	// SetEnv injects a session-scoped environment variable into execute_code
+	// subprocesses. Does not affect the daemon process environment.
+	SetEnv(key, value string)
+
 	// Close releases resources associated with the session, including its
 	// temporary directory under /tmp/ollie/.
 	Close()
