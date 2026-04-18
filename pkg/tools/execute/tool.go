@@ -22,6 +22,19 @@ func ToolsPath() string {
 	return paths.CfgDir() + "/tools"
 }
 
+// PluginsPath returns the directory for server-invoked plugin scripts.
+// Resolved in order: first entry of OLLIE_PLUGINS_PATH (colon-separated),
+// then ~/.config/ollie/scripts/x.
+func PluginsPath() string {
+	if p := os.Getenv("OLLIE_PLUGINS_PATH"); p != "" {
+		if i := strings.Index(p, ":"); i >= 0 {
+			p = p[:i]
+		}
+		return p
+	}
+	return paths.CfgDir() + "/scripts/x"
+}
+
 // detectLanguage infers the script language from the shebang line.
 // Returns "python3", "perl", "awk", "sed", "ed", or "bash".
 func detectLanguage(code string) string {

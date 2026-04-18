@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -14,7 +16,6 @@ import (
 	"time"
 
 	"ollie/internal/sandbox"
-	"ollie/pkg/elevation"
 	"ollie/pkg/tools"
 )
 
@@ -23,9 +24,6 @@ type Server struct {
 	// Confirm is an optional function called before executing sensitive operations.
 	// Returns true to allow, false to deny. Trusted tools bypass this check.
 	Confirm func(string) bool
-
-	// Elevator, if set, is used to run steps with elevated:true outside the sandbox.
-	Elevator elevation.Elevator
 
 	// trusted is the set of tool names that bypass Confirm.
 	trustedMu sync.RWMutex
@@ -47,12 +45,10 @@ type Server struct {
 	blockedUntil       time.Time
 }
 
-// Decl returns a factory for an execute Server with the given working directory and elevator.
-func Decl(cwd string, el elevation.Elevator) func() tools.Server {
+// Decl returns a factory for an execute Server with the given working directory.
+func Decl(cwd string) func() tools.Server {
 	return func() tools.Server {
-		s := New(cwd)
-		s.Elevator = el
-		return s
+		return New(cwd)
 	}
 }
 
@@ -96,7 +92,7 @@ Examples:
 								"language": {"type": "string", "description": "Language interpreter (default: bash). Ignored when tool or parallel is set."},
 								"tool":     {"type": "string", "description": "Named tool script from the tools directory. Discover available tools: grep -iA2 'keyword' $OLLIE/t/idx"},
 								"args":     {"type": "array", "items": {"type": "string"}, "description": "Arguments for the tool script."},
-								"elevated": {"type": "boolean", "description": "Run this step outside the sandbox via the elevation backend (e.g. superpowers). Only bash code is supported. Omit or false for normal sandboxed execution."},
+								"elevated": {"type": "boolean", "description": "Run this step outside the sandbox via the elevation backend. Only bash code is supported. Omit or false for normal sandboxed execution."},
 								"parallel": {
 									"type": "array",
 									"description": "Fan-out: steps run concurrently, outputs concatenated in submission order, result fed to next stage. All parallel steps should produce the same output schema so the concatenated result is coherent.",
@@ -183,18 +179,23 @@ func (e *Server) SetEnv(key, value string) {
 	e.envMu.Unlock()
 }
 
-// executeElevated runs cmd as a bash command via the configured Elevator.
+// executeElevated runs cmd outside the sandbox via x/elevate.
 // Returns (output, error); a non-zero exit code is treated as an error.
 func (e *Server) executeElevated(ctx context.Context, cmd, dir string, timeout int) (string, error) {
-	if e.Elevator == nil {
-		return "", fmt.Errorf("elevation not available: no backend configured")
+	script := filepath.Join(PluginsPath(), "elevate")
+	if _, err := os.Stat(script); err != nil {
+		return "", fmt.Errorf("elevation not available: x/elevate not found")
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
+	c := exec.CommandContext(ctx, script, "--", cmd)
+	c.Dir = dir
 	var outBuf, errBuf bytes.Buffer
 	lw := &limitedWriter{w: &outBuf, limit: 10 * 1024 * 1024}
-	code, err := e.Elevator.Run(ctx, cmd, dir, lw, &errBuf)
+	c.Stdout = lw
+	c.Stderr = &errBuf
+	err := c.Run()
 	combined := outBuf.String()
 	if errBuf.Len() > 0 {
 		combined += errBuf.String()
@@ -206,10 +207,11 @@ func (e *Server) executeElevated(ctx context.Context, cmd, dir string, timeout i
 		return combined, fmt.Errorf("execution timeout after %d seconds", timeout)
 	}
 	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return combined, fmt.Errorf("elevated execution failed (exit %d)\nOutput: %s", exitErr.ExitCode(), combined)
+		}
 		return combined, fmt.Errorf("elevated execution failed: %v", err)
-	}
-	if code != 0 {
-		return combined, fmt.Errorf("elevated execution failed (exit %d)\nOutput: %s", code, combined)
 	}
 	return combined, nil
 }
