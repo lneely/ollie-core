@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"ollie/internal/sandbox"
+	"ollie/pkg/elevation"
 	"ollie/pkg/tools"
 )
 
@@ -23,14 +24,17 @@ type Server struct {
 	// Returns true to allow, false to deny. Trusted tools bypass this check.
 	Confirm func(string) bool
 
+	// Elevator, if set, is used to run steps with elevated:true outside the sandbox.
+	Elevator elevation.Elevator
+
 	// trusted is the set of tool names that bypass Confirm.
 	trustedMu sync.RWMutex
 	trusted   map[string]bool
 
 	// cwd is the working directory for sandboxed commands. If empty,
 	// the process working directory is used.
-	wdMu    sync.RWMutex
-	cwd string
+	wdMu sync.RWMutex
+	cwd  string
 
 	// envExtra holds per-session environment variables injected via SetEnv.
 	envMu    sync.RWMutex
@@ -43,9 +47,13 @@ type Server struct {
 	blockedUntil       time.Time
 }
 
-// Decl returns a factory for an execute Server with the given working directory.
-func Decl(cwd string) func() tools.Server {
-	return func() tools.Server { return New(cwd) }
+// Decl returns a factory for an execute Server with the given working directory and elevator.
+func Decl(cwd string, el elevation.Elevator) func() tools.Server {
+	return func() tools.Server {
+		s := New(cwd)
+		s.Elevator = el
+		return s
+	}
 }
 
 // ListTools implements tools.Server, returning the ToolInfo definitions for the execute_* built-in tools.
@@ -88,6 +96,7 @@ Examples:
 								"language": {"type": "string", "description": "Language interpreter (default: bash). Ignored when tool or parallel is set."},
 								"tool":     {"type": "string", "description": "Named tool script from the tools directory. Discover available tools: grep -iA2 'keyword' $OLLIE/t/idx"},
 								"args":     {"type": "array", "items": {"type": "string"}, "description": "Arguments for the tool script."},
+								"elevated": {"type": "boolean", "description": "Run this step outside the sandbox via the elevation backend (e.g. superpowers). Only bash code is supported. Omit or false for normal sandboxed execution."},
 								"parallel": {
 									"type": "array",
 									"description": "Fan-out: steps run concurrently, outputs concatenated in submission order, result fed to next stage. All parallel steps should produce the same output schema so the concatenated result is coherent.",
@@ -97,7 +106,8 @@ Examples:
 											"code":     {"type": "string"},
 											"language": {"type": "string"},
 											"tool":     {"type": "string"},
-											"args":     {"type": "array", "items": {"type": "string"}}
+											"args":     {"type": "array", "items": {"type": "string"}},
+											"elevated": {"type": "boolean"}
 										}
 									}
 								}
@@ -171,6 +181,37 @@ func (e *Server) SetEnv(key, value string) {
 	}
 	e.envExtra[key] = value
 	e.envMu.Unlock()
+}
+
+// executeElevated runs cmd as a bash command via the configured Elevator.
+// Returns (output, error); a non-zero exit code is treated as an error.
+func (e *Server) executeElevated(ctx context.Context, cmd, dir string, timeout int) (string, error) {
+	if e.Elevator == nil {
+		return "", fmt.Errorf("elevation not available: no backend configured")
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	var outBuf, errBuf bytes.Buffer
+	lw := &limitedWriter{w: &outBuf, limit: 10 * 1024 * 1024}
+	code, err := e.Elevator.Run(ctx, cmd, dir, lw, &errBuf)
+	combined := outBuf.String()
+	if errBuf.Len() > 0 {
+		combined += errBuf.String()
+	}
+	if lw.truncated {
+		combined += "\n[output truncated at 10MB]"
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return combined, fmt.Errorf("execution timeout after %d seconds", timeout)
+	}
+	if err != nil {
+		return combined, fmt.Errorf("elevated execution failed: %v", err)
+	}
+	if code != 0 {
+		return combined, fmt.Errorf("elevated execution failed (exit %d)\nOutput: %s", code, combined)
+	}
+	return combined, nil
 }
 
 var whitespacePattern = regexp.MustCompile(`\s+`)
@@ -292,7 +333,6 @@ func (e *Server) executeWithStdin(ctx context.Context, code, language string, ti
 		cmd.Stdin = strings.NewReader(stdinData)
 	}
 
-	// Inject per-session env vars so they're visible inside the sandbox.
 	e.envMu.RLock()
 	if len(e.envExtra) > 0 {
 		cmd.Env = os.Environ()

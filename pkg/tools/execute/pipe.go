@@ -17,6 +17,13 @@ func (e *Server) runStage(ctx context.Context, idx int, stage CodeStep, timeout 
 			wg.Add(1)
 			go func(j int, s CodeStep) {
 				defer wg.Done()
+				if s.Elevated {
+					e.wdMu.RLock()
+					dir := e.cwd
+					e.wdMu.RUnlock()
+					results[j], errs[j] = e.executeElevated(ctx, s.Code, dir, timeout)
+					return
+				}
 				code, lang, trusted, err := resolveCodeStep(s)
 				if err != nil {
 					errs[j] = err
@@ -34,6 +41,13 @@ func (e *Server) runStage(ctx context.Context, idx int, stage CodeStep, timeout 
 			}
 		}
 		return out, nil
+	}
+
+	if stage.Elevated {
+		e.wdMu.RLock()
+		dir := e.cwd
+		e.wdMu.RUnlock()
+		return e.executeElevated(ctx, stage.Code, dir, timeout)
 	}
 
 	if stage.Tool != "" || stage.Code != "" {

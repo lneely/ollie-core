@@ -12,12 +12,14 @@ import (
 
 // CodeStep is one stage in an execute_code pipeline.
 // Set Code/Language for inline code, Tool/Args for a named script, or Parallel for concurrent fan-out.
+// Set Elevated to run the step outside the sandbox via the configured elevation backend.
 type CodeStep struct {
 	Code     string     `json:"code"`
 	Language string     `json:"language"`
 	Tool     string     `json:"tool"`
 	Args     []string   `json:"args"`
 	Parallel []CodeStep `json:"parallel"`
+	Elevated bool       `json:"elevated"`
 }
 
 // resolveCodeStep loads a CodeStep into executable (code, language, trusted).
@@ -178,6 +180,12 @@ func dispatchExecuteCode(ctx context.Context, e *Server, args json.RawMessage) (
 
 	// Degenerate case: single simple stage, return raw output.
 	if len(stages) == 1 && len(stages[0].Parallel) == 0 {
+		if stages[0].Elevated {
+			e.wdMu.RLock()
+			dir := e.cwd
+			e.wdMu.RUnlock()
+			return e.executeElevated(ctx, stages[0].Code, dir, timeout)
+		}
 		code, lang, trusted, err := resolveCodeStep(stages[0])
 		if err != nil {
 			return "", err
@@ -199,13 +207,17 @@ func dispatchExecuteCode(ctx context.Context, e *Server, args json.RawMessage) (
 
 func buildExecLabel(stages []CodeStep) string {
 	stageLabel := func(s CodeStep) string {
+		prefix := ""
+		if s.Elevated {
+			prefix = "[elevated] "
+		}
 		if len(s.Parallel) > 0 {
-			return fmt.Sprintf("parallel(%d)", len(s.Parallel))
+			return fmt.Sprintf("%sparallel(%d)", prefix, len(s.Parallel))
 		}
 		if s.Tool != "" {
-			return fmt.Sprintf("tool:%s %s", s.Tool, strings.Join(s.Args, " "))
+			return fmt.Sprintf("%stool:%s %s", prefix, s.Tool, strings.Join(s.Args, " "))
 		}
-		return s.Code
+		return prefix + s.Code
 	}
 	if len(stages) == 1 {
 		return fmt.Sprintf("execute_code: %s", stageLabel(stages[0]))

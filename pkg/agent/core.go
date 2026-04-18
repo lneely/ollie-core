@@ -102,10 +102,8 @@ type AgentEnv struct {
 // BuildAgentEnv constructs an AgentEnv from a pre-configured Dispatcher and
 // optional agent config. cwd sets the working directory reported in the
 // system prompt; if empty, the process working directory is used.
-// sessionEnv provides session-scoped values for ${VAR} expansion in MCP server
-// configs, without touching the process environment.
 // The caller is responsible for registering all servers on d before calling this.
-func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string, sessionEnv map[string]string) AgentEnv {
+func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv {
 	var messages []string
 
 	if cfg != nil {
@@ -113,7 +111,7 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string, sessionEn
 			if serverCfg.Disabled || serverCfg.Command == "" {
 				continue
 			}
-			transport := mcp.NewSTDIOTransport(serverCfg.Command, serverCfg.Args, serverCfg.Env, sessionEnv)
+			transport := mcp.NewSTDIOTransport(serverCfg.Command, serverCfg.Args, serverCfg.Env)
 			client, err := transport.Connect()
 			if err != nil {
 				messages = append(messages, fmt.Sprintf("MCP %s: failed to connect: %v", name, err))
@@ -281,8 +279,7 @@ type agentCore struct {
 	env           map[string]string // session-scoped env vars
 }
 
-// SetEnv stores a session-scoped variable in the core env map and propagates
-// it to the execute server's subprocess environment.
+// SetEnv stores a session-scoped variable and propagates it to the execute server.
 func (s *agentCore) SetEnv(key, value string) {
 	s.envMu.Lock()
 	if s.env == nil {
@@ -300,8 +297,7 @@ func (s *agentCore) SetEnv(key, value string) {
 	}
 }
 
-// pushSessionEnv injects session-scoped vars into the execute server's
-// subprocess environment without touching the process-global env.
+// pushSessionEnv injects OLLIE_SESSION_ID into the execute server subprocess env.
 func (s *agentCore) pushSessionEnv() {
 	if s.dispatcher == nil || s.sessionID == "" {
 		return
@@ -312,7 +308,6 @@ func (s *agentCore) pushSessionEnv() {
 		}
 	}
 }
-
 
 var _ Core = (*agentCore)(nil) // compile-time interface check
 
@@ -933,7 +928,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			s.dispatcher.Close()
 		}
 		d := s.newDispatcher()
-		env := BuildAgentEnv(cfg, d, s.cwd, nil)
+		env := BuildAgentEnv(cfg, d, s.cwd)
 		s.dispatcher = env.dispatcher
 		s.hooks = env.Hooks
 		s.loopcfg.systemPrompt = env.systemPrompt
