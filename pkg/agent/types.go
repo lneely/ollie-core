@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"ollie/pkg/backend"
 )
 
 // ErrInterrupted is returned when the user cancels an agent turn (Ctrl-C).
@@ -93,6 +95,13 @@ type Core interface {
 
 	// SystemPrompt returns the fully rendered system prompt for this session.
 	SystemPrompt() string
+
+	// GenerationParams returns the current sampling parameters.
+	GenerationParams() backend.GenerationParams
+
+	// SetGenerationParams replaces the current sampling parameters.
+	// Returns an error if the agent is currently running.
+	SetGenerationParams(params backend.GenerationParams) error
 
 	// Close releases resources associated with the session, including its
 	// temporary directory under /tmp/ollie/.

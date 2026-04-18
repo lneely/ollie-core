@@ -581,6 +581,22 @@ func (s *agentCore) SystemPrompt() string {
 	return s.loopcfg.systemPrompt
 }
 
+func (s *agentCore) GenerationParams() backend.GenerationParams {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.loopcfg.GenerationParams
+}
+
+func (s *agentCore) SetGenerationParams(params backend.GenerationParams) error {
+	if s.IsRunning() {
+		return fmt.Errorf("cannot change params while agent is running")
+	}
+	s.mu.Lock()
+	s.loopcfg.GenerationParams = params
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *agentCore) ListModels() string {
 	clog.Debug("ListModels()")
 	models := s.loopcfg.Backend.Models(context.Background())
