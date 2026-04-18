@@ -86,11 +86,11 @@ Examples:
 							"properties": {
 								"code":     {"type": "string", "description": "Inline code to execute."},
 								"language": {"type": "string", "description": "Language interpreter (default: bash). Ignored when tool or parallel is set."},
-								"tool":     {"type": "string", "description": "Named tool script from the tools directory."},
+								"tool":     {"type": "string", "description": "Named tool script from the tools directory. Discover available tools: grep -iA2 'keyword' $OLLIE/t/idx"},
 								"args":     {"type": "array", "items": {"type": "string"}, "description": "Arguments for the tool script."},
 								"parallel": {
 									"type": "array",
-									"description": "Fan-out: steps run concurrently, outputs concatenated in submission order, result fed to next stage.",
+									"description": "Fan-out: steps run concurrently, outputs concatenated in submission order, result fed to next stage. All parallel steps should produce the same output schema so the concatenated result is coherent.",
 									"items": {
 										"type": "object",
 										"properties": {
@@ -162,11 +162,9 @@ func (e *Server) allowed(tool, detail string) bool {
 	return e.Confirm(detail)
 }
 
-// SetEnv adds a per-session environment variable to all subsequent commands.
-// It also exports the variable to the process environment so it is inherited
-// by sandboxed subprocesses that read os.Environ().
+// SetEnv adds a session-scoped environment variable injected into all
+// subsequent subprocess invocations for this session.
 func (e *Server) SetEnv(key, value string) {
-	os.Setenv(key, value) //nolint:errcheck
 	e.envMu.Lock()
 	if e.envExtra == nil {
 		e.envExtra = make(map[string]string)

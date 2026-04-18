@@ -243,14 +243,14 @@ type actionHandle struct {
 
 // AgentCoreConfig is the configuration for creating an agentCore.
 type AgentCoreConfig struct {
-	Backend     backend.Backend
-	ModelName   string // if non-empty, overrides backend's default model
-	AgentName   string
-	AgentsDir   string
-	SessionsDir string
-	SessionID   string
-	CWD     string // working directory for tool execution and system prompt
-	Session     *Session
+	Backend       backend.Backend
+	ModelName     string // if non-empty, overrides backend's default model
+	AgentName     string
+	AgentsDir     string
+	SessionsDir   string
+	SessionID     string
+	CWD           string // working directory for tool execution and system prompt
+	Session       *Session
 	Env           AgentEnv
 	NewDispatcher func() tools.Dispatcher
 }
@@ -267,7 +267,7 @@ type agentCore struct {
 	sessionID     string
 	dispatcher    tools.Dispatcher
 	newDispatcher func() tools.Dispatcher
-	cwd       string
+	cwd           string
 	agentPrompt   string // agent-specific prompt suffix; kept for system prompt rebuilds
 	currentAction atomic.Pointer[actionHandle]
 	fifo          PromptFIFO
@@ -275,6 +275,19 @@ type agentCore struct {
 	mu            sync.RWMutex
 	state         string // "idle", "thinking", "calling: <tool>"
 	reply         string // assistant text from the most recently completed turn
+}
+
+// pushSessionEnv injects session-scoped vars into the execute server's
+// subprocess environment without touching the process-global env.
+func (s *agentCore) pushSessionEnv() {
+	if s.dispatcher == nil || s.sessionID == "" {
+		return
+	}
+	if srv, ok := s.dispatcher.GetServer("execute"); ok {
+		if es, ok := srv.(tools.EnvSetter); ok {
+			es.SetEnv("OLLIE_SESSION_ID", s.sessionID)
+		}
+	}
 }
 
 var _ Core = (*agentCore)(nil) // compile-time interface check
@@ -293,32 +306,12 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 	}
 	if cfg.SessionID != "" {
 		os.MkdirAll("/tmp/ollie/"+cfg.SessionID, 0700) //nolint:errcheck
-	}
-
-	// Inject session env into the execute server so OLLIE_SESSION_ID and OLLIE
-	// are available to tool scripts from the very first turn, not just after rename.
-	if cfg.Env.dispatcher != nil && cfg.SessionID != "" {
-		if srv, ok := cfg.Env.dispatcher.GetServer("execute"); ok {
-			if es, ok := srv.(tools.EnvSetter); ok {
-				es.SetEnv("OLLIE_SESSION_ID", cfg.SessionID)
-				ollie := os.Getenv("OLLIE")
-				if ollie == "" {
-					home, _ := os.UserHomeDir()
-					ollie = home + "/mnt/ollie"
-				}
-				es.SetEnv("OLLIE", ollie)
-				tmpPath := os.Getenv("OLLIE_TMP_PATH")
-				if tmpPath == "" {
-					home, _ := os.UserHomeDir()
-					tmpPath = home + "/.local/share/ollie/tmp"
-				}
-				os.MkdirAll(tmpPath, 0700) //nolint:errcheck
-				es.SetEnv("OLLIE_TMP_PATH", tmpPath)
-			}
+		if p := os.Getenv("OLLIE_TMP_PATH"); p != "" {
+			os.MkdirAll(p, 0700) //nolint:errcheck
 		}
 	}
 
-	return &agentCore{
+	a := &agentCore{
 		session:       cfg.Session,
 		loopcfg:       loopcfg,
 		hooks:         cfg.Env.Hooks,
@@ -332,6 +325,8 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		newDispatcher: cfg.NewDispatcher,
 		state:         "idle",
 	}
+	a.pushSessionEnv()
+	return a
 }
 
 // Close releases resources for this session, including its tmpdir.
@@ -443,27 +438,7 @@ func (s *agentCore) SetSessionID(newID string) error {
 	if _, err := os.Stat(oldTemp); err == nil {
 		os.Rename(oldTemp, newTemp) //nolint:errcheck
 	}
-	// Propagate to the execute server env.
-	if s.dispatcher != nil {
-		if srv, ok := s.dispatcher.GetServer("execute"); ok {
-			if es, ok := srv.(tools.EnvSetter); ok {
-				es.SetEnv("OLLIE_SESSION_ID", newID)
-				// Ensure OLLIE is always set, resolving the default if unset.
-				ollie := os.Getenv("OLLIE")
-				if ollie == "" {
-					home, _ := os.UserHomeDir()
-					ollie = home + "/mnt/ollie"
-				}
-				es.SetEnv("OLLIE", ollie)
-				tmpPath := os.Getenv("OLLIE_TMP_PATH")
-				if tmpPath == "" {
-					home, _ := os.UserHomeDir()
-					tmpPath = home + "/.local/share/ollie/tmp"
-				}
-				es.SetEnv("OLLIE_TMP_PATH", tmpPath)
-			}
-		}
-	}
+	s.pushSessionEnv()
 	return nil
 }
 
@@ -802,6 +777,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		}
 		cmd := exec.Command("sh", "-c", cmdStr)
 		cmd.Dir = s.CWD()
+		cmd.Env = append(os.Environ(), "OLLIE_SESSION_ID="+s.sessionID)
 		o, err := cmd.CombinedOutput()
 		if err != nil {
 			handler(infoEvent("error: " + err.Error()))
@@ -939,6 +915,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		s.agentName = name
 		s.session = nil
 		s.sessionID = NewSessionID()
+		s.pushSessionEnv()
 		for _, msg := range env.Messages {
 			handler(infoEvent(msg))
 		}
