@@ -277,10 +277,19 @@ type agentCore struct {
 	mu            sync.RWMutex
 	state         string // "idle", "thinking", "calling: <tool>"
 	reply         string // assistant text from the most recently completed turn
+	envMu         sync.RWMutex
+	env           map[string]string // session-scoped env vars
 }
 
-// SetEnv injects a session-scoped variable into execute_code subprocesses.
+// SetEnv stores a session-scoped variable in the core env map and propagates
+// it to the execute server's subprocess environment.
 func (s *agentCore) SetEnv(key, value string) {
+	s.envMu.Lock()
+	if s.env == nil {
+		s.env = make(map[string]string)
+	}
+	s.env[key] = value
+	s.envMu.Unlock()
 	if s.dispatcher == nil {
 		return
 	}
@@ -793,6 +802,11 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		cmd := exec.Command("sh", "-c", cmdStr)
 		cmd.Dir = s.CWD()
 		cmd.Env = append(os.Environ(), "OLLIE_SESSION_ID="+s.sessionID)
+		s.envMu.RLock()
+		for k, v := range s.env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+		s.envMu.RUnlock()
 		o, err := cmd.CombinedOutput()
 		if err != nil {
 			handler(infoEvent("error: " + err.Error()))
