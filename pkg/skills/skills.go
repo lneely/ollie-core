@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"ollie/pkg/paths"
 )
 
 // Meta holds parsed front-matter from a SKILL.md file.
@@ -22,8 +24,7 @@ type Meta struct {
 
 // DefaultDir returns the default skills directory.
 func DefaultDir() string {
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/skills"
+	return paths.CfgDir() + "/skills"
 }
 
 // Dirs returns the skill directories from OLLIE_SKILLS_PATH,

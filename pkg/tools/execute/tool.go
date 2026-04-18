@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"ollie/pkg/paths"
 )
 
 // ToolsPath returns the directory to search for named tool scripts.
@@ -17,8 +19,7 @@ func ToolsPath() string {
 		}
 		return p
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "ollie", "tools")
+	return paths.CfgDir() + "/tools"
 }
 
 // detectLanguage infers the script language from the shebang line.

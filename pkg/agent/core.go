@@ -21,6 +21,7 @@ import (
 	"ollie/pkg/config"
 	olog "ollie/pkg/log"
 	"ollie/pkg/mcp"
+	"ollie/pkg/paths"
 	"ollie/pkg/tools"
 	"path/filepath"
 )
@@ -195,20 +196,17 @@ func (e *AgentEnv) Dispatcher() tools.Dispatcher { return e.dispatcher }
 
 // DefaultAgentsDir returns the default directory for agent config files.
 func DefaultAgentsDir() string {
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/agents"
+	return paths.CfgDir() + "/agents"
 }
 
 // DefaultPromptsDir returns the default directory for prompt templates.
 func DefaultPromptsDir() string {
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/prompts"
+	return paths.CfgDir() + "/prompts"
 }
 
 // DefaultSessionsDir returns the default directory for saved sessions.
 func DefaultSessionsDir() string {
-	home, _ := os.UserHomeDir()
-	return home + "/.config/ollie/sessions"
+	return paths.CfgDir() + "/sessions"
 }
 
 // AgentConfigPath resolves the config file path for a named agent.
@@ -218,8 +216,7 @@ func AgentConfigPath(agentsDir, name string) string {
 		return p
 	}
 	if name == "default" {
-		home, _ := os.UserHomeDir()
-		return home + "/.config/ollie/config.json"
+		return paths.CfgDir() + "/config.json"
 	}
 	return p
 }
@@ -310,6 +307,13 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 					ollie = home + "/mnt/ollie"
 				}
 				es.SetEnv("OLLIE", ollie)
+				tmpPath := os.Getenv("OLLIE_TMP_PATH")
+				if tmpPath == "" {
+					home, _ := os.UserHomeDir()
+					tmpPath = home + "/.local/share/ollie/tmp"
+				}
+				os.MkdirAll(tmpPath, 0700) //nolint:errcheck
+				es.SetEnv("OLLIE_TMP_PATH", tmpPath)
 			}
 		}
 	}
@@ -451,6 +455,12 @@ func (s *agentCore) SetSessionID(newID string) error {
 					ollie = home + "/mnt/ollie"
 				}
 				es.SetEnv("OLLIE", ollie)
+				tmpPath := os.Getenv("OLLIE_TMP_PATH")
+				if tmpPath == "" {
+					home, _ := os.UserHomeDir()
+					tmpPath = home + "/.local/share/ollie/tmp"
+				}
+				es.SetEnv("OLLIE_TMP_PATH", tmpPath)
 			}
 		}
 	}
@@ -569,6 +579,22 @@ func (s *agentCore) Usage() string {
 func (s *agentCore) SystemPrompt() string {
 	clog.Debug("SystemPrompt() len=%d", len(s.loopcfg.systemPrompt))
 	return s.loopcfg.systemPrompt
+}
+
+func (s *agentCore) GenerationParams() backend.GenerationParams {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.loopcfg.GenerationParams
+}
+
+func (s *agentCore) SetGenerationParams(params backend.GenerationParams) error {
+	if s.IsRunning() {
+		return fmt.Errorf("cannot change params while agent is running")
+	}
+	s.mu.Lock()
+	s.loopcfg.GenerationParams = params
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *agentCore) ListModels() string {
