@@ -352,7 +352,11 @@ func (s *agentCore) WaitChange(ctx context.Context, field, current string) (stri
 
 	// context.AfterFunc fires in a separate goroutine when ctx is done,
 	// broadcasting to unblock any waiters.
-	stop := context.AfterFunc(ctx, func() { s.changeCond.Broadcast() })
+	stop := context.AfterFunc(ctx, func() {
+		s.changeMu.Lock()
+		s.changeCond.Broadcast()
+		s.changeMu.Unlock()
+	})
 	defer stop()
 
 	s.changeMu.Lock()
