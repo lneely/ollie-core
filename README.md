@@ -58,8 +58,8 @@ No build step — ollie-core is a library.
   },
   "hooks": {
     "agentSpawn": [
-      "$OLLIE/x/prime 00_base",
-      "$OLLIE/x/prime 01_ollie",
+      "$OLLIE/x/prime sys-base",
+      "$OLLIE/x/prime sys-ollie",
       "notify-send ollie started"
     ],
     "preTurn": [],
