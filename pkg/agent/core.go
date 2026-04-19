@@ -779,8 +779,6 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 		handler(Event{Role: "error", Content: err.Error()})
 	}
 
-	handler(Event{Role: "newline"})
-
 	stopResult := s.hooks.Run(ctx, HookPostTurn, map[string]string{
 		"session_id": s.sessionID,
 		"cwd":        s.CWD(),
