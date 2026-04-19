@@ -8,6 +8,14 @@ import (
 	"ollie/pkg/backend"
 )
 
+// WatchField names supported by Core.WaitChange.
+const (
+	WatchState = "state"
+	WatchUsage = "usage"
+	WatchCtxSz = "ctxsz"
+	WatchCWD   = "cwd"
+)
+
 // ErrInterrupted is returned when the user cancels an agent turn (Ctrl-C).
 var ErrInterrupted = errors.New("interrupted")
 
@@ -106,6 +114,11 @@ type Core interface {
 	// SetEnv injects a session-scoped environment variable into execute_code
 	// subprocesses. Does not affect the daemon process environment.
 	SetEnv(key, value string)
+
+	// WaitChange blocks until the named field changes from current, then returns
+	// the new value. Returns ("", false) if ctx is cancelled before a change.
+	// Supported fields: WatchState, WatchUsage, WatchCtxSz, WatchCWD.
+	WaitChange(ctx context.Context, field, current string) (string, bool)
 
 	// Close releases resources associated with the session, including its
 	// temporary directory under /tmp/ollie/.

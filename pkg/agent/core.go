@@ -215,6 +215,8 @@ type agentCore struct {
 	reply           string // assistant text from the most recently completed turn
 	envMu           sync.RWMutex
 	env             map[string]string // session-scoped env vars
+	changeMu        sync.Mutex
+	changeCond      *sync.Cond
 }
 
 // SetEnv stores a session-scoped variable and propagates it to the execute server.
@@ -283,6 +285,7 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		newDispatcher:   cfg.NewDispatcher,
 		state:           "idle",
 	}
+	a.changeCond = sync.NewCond(&a.changeMu)
 	a.pushSessionEnv()
 	return a
 }
@@ -324,11 +327,49 @@ func (s *agentCore) State() string {
 	return s.state
 }
 
+func (s *agentCore) notifyChange() {
+	s.changeCond.Broadcast()
+}
+
+// WaitChange blocks until the named field changes from current, then returns
+// the new value. Returns ("", false) if ctx is cancelled.
+func (s *agentCore) WaitChange(ctx context.Context, field, current string) (string, bool) {
+	read := func() string {
+		switch field {
+		case WatchState:
+			return s.State()
+		case WatchUsage:
+			return s.Usage()
+		case WatchCtxSz:
+			return s.CtxSz()
+		case WatchCWD:
+			return s.CWD()
+		}
+		return ""
+	}
+
+	// context.AfterFunc fires in a separate goroutine when ctx is done,
+	// broadcasting to unblock any waiters.
+	stop := context.AfterFunc(ctx, func() { s.changeCond.Broadcast() })
+	defer stop()
+
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
+	for ctx.Err() == nil {
+		if v := read(); v != current {
+			return v, true
+		}
+		s.changeCond.Wait()
+	}
+	return "", false
+}
+
 func (s *agentCore) setState(state string) {
 	s.mu.Lock()
 	s.state = state
 	s.mu.Unlock()
 	clog.Debug("state -> %q", state)
+	s.notifyChange()
 }
 
 func (s *agentCore) Reply() string {
@@ -367,6 +408,7 @@ func (s *agentCore) SetCWD(dir string) error {
 			}
 		}
 	}
+	s.notifyChange()
 	return nil
 }
 
@@ -681,6 +723,7 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 			var in, out, est int
 			fmt.Sscanf(ev.Content, "%d %d %d", &in, &out, &est)
 			s.session.addUsage(backend.Usage{InputTokens: in, OutputTokens: out}, est != 0)
+			s.notifyChange()
 		}
 		handler(ev)
 	}
