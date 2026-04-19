@@ -336,11 +336,9 @@ func (e *Server) executeWithStdin(ctx context.Context, code, language string, ti
 	}
 
 	e.envMu.RLock()
-	if len(e.envExtra) > 0 {
-		cmd.Env = os.Environ()
-		for k, v := range e.envExtra {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
+	cmd.Env = prependOlliePath(os.Environ())
+	for k, v := range e.envExtra {
+		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	e.envMu.RUnlock()
 
@@ -370,6 +368,24 @@ func (e *Server) executeWithStdin(ctx context.Context, code, language string, ti
 		return string(output), fmt.Errorf("execution failed: %v\nOutput: %s", err, string(output))
 	}
 	return string(output), nil
+}
+
+// prependOlliePath returns env with $OLLIE/x/ prepended to PATH so wrapper
+// scripts placed there (e.g. ~/.config/ollie/scripts/x/) shadow system binaries.
+func prependOlliePath(env []string) []string {
+	ollie := os.Getenv("OLLIE")
+	if ollie == "" {
+		return env
+	}
+	xdir := filepath.Join(ollie, "x")
+	result := make([]string, 0, len(env))
+	for _, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			e = "PATH=" + xdir + string(filepath.ListSeparator) + e[5:]
+		}
+		result = append(result, e)
+	}
+	return result
 }
 
 // Close implements tools.Server (no-op).
