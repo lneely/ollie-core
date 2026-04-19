@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,12 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"crypto/rand"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"text/template"
 	"time"
 
 	"ollie/pkg/backend"
@@ -23,69 +20,11 @@ import (
 	"ollie/pkg/mcp"
 	"ollie/pkg/paths"
 	"ollie/pkg/tools"
-	"path/filepath"
 )
 
 var clog = olog.New("core")
 
 
-
-// systemPrompt assembles the system prompt from ordered *.md parts in DefaultPromptsDir().
-// Files are loaded in lexical order (00_base.md, 01_foo.md, ...) and separated by "---".
-// Each part is rendered as a Go template with session/environment variables.
-func systemPrompt(cwd string) string {
-	if cwd == "" {
-		cwd, _ = os.Getwd()
-	}
-
-	ollieMountPath := os.Getenv("OLLIE")
-	if ollieMountPath == "" {
-		home, _ := os.UserHomeDir()
-		ollieMountPath = home + "/mnt/ollie"
-	}
-
-	data := map[string]string{
-		"CWD":            cwd,
-		"Platform":       runtime.GOOS,
-		"Date":           time.Now().Format("2006-01-02"),
-		"IsGitRepo":      "unknown",
-		"SessionID":      os.Getenv("OLLIE_SESSION_ID"),
-		"OllieMountPath": ollieMountPath,
-	}
-
-	dir := DefaultPromptsDir()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "You are ollie, an agentic assistant."
-	}
-
-	var buf bytes.Buffer
-	first := true
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
-			continue
-		}
-		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			continue
-		}
-		if !first {
-			buf.WriteString("\n\n---\n\n")
-		}
-		tmpl, err := template.New(e.Name()).Parse(string(raw))
-		if err != nil {
-			buf.Write(raw)
-		} else {
-			tmpl.Execute(&buf, data) //nolint:errcheck
-		}
-		first = false
-	}
-
-	if buf.Len() == 0 {
-		return "You are ollie, an agentic assistant."
-	}
-	return buf.String()
-}
 
 // AgentEnv holds the runtime state derived from an agent config file.
 type AgentEnv struct {
@@ -157,10 +96,7 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 		}
 	}
 
-	sp := systemPrompt(cwd)
-	if agentPrompt != "" {
-		sp += "\n\n" + agentPrompt
-	}
+	sp := agentPrompt
 
 	exec := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
 		server, ok := serverOf[name]
@@ -431,12 +367,6 @@ func (s *agentCore) SetCWD(dir string) error {
 			}
 		}
 	}
-	// Rebuild system prompt so it reflects the new cwd.
-	sp := systemPrompt(dir)
-	if s.agentPrompt != "" {
-		sp += "\n\n" + s.agentPrompt
-	}
-	s.loopcfg.systemPrompt = sp
 	return nil
 }
 
