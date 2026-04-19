@@ -16,10 +16,8 @@ const (
 	HookAgentSpawn       = "agentSpawn"
 	HookUserPromptSubmit = "userPromptSubmit"
 	HookStop             = "stop"
-	HookPreCompact       = "preCompact"
-	HookPostCompact      = "postCompact"
-	HookPreClear         = "preClear"
-	HookPostClear        = "postClear"
+	HookPreCompact  = "preCompact"
+	HookPostCompact = "postCompact"
 )
 
 const defaultHookTimeout = 60
@@ -57,6 +55,11 @@ func (h Hooks) Run(ctx context.Context, name string, payload any) HookResult {
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
 	cmd.Stdin = bytes.NewReader(payloadJSON)
+	if m, ok := payload.(map[string]string); ok {
+		if dir := m["cwd"]; dir != "" {
+			cmd.Dir = dir
+		}
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

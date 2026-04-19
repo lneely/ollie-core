@@ -268,8 +268,9 @@ type agentCore struct {
 	dispatcher      tools.Dispatcher
 	newDispatcher   func() tools.Dispatcher
 	cwd             string
-	agentPrompt     string // agent-specific prompt suffix; kept for system prompt rebuilds
-	startupMessages []string
+	agentPrompt      string // agent-specific prompt suffix; kept for system prompt rebuilds
+	startupMessages  []string
+	agentSpawnFired  bool
 	currentAction   atomic.Pointer[actionHandle]
 	fifo            PromptFIFO
 	pendingInject   atomic.Pointer[string]
@@ -485,6 +486,27 @@ func (s *agentCore) autoCompactLimit(ctx context.Context) int {
 	return ctxLen * 3 / 4
 }
 
+// fireAgentSpawn runs the agentSpawn hook and appends any returned context to
+// the system prompt. It is idempotent: it fires at most once per agent lifetime
+// (reset when the active agent changes).
+func (s *agentCore) fireAgentSpawn(ctx context.Context, handler EventHandler) {
+	if s.agentSpawnFired {
+		return
+	}
+	s.agentSpawnFired = true
+	result := s.hooks.Run(ctx, HookAgentSpawn, map[string]string{
+		"session_id": s.sessionID,
+		"agent":      s.agentName,
+		"cwd":        s.CWD(),
+	})
+	if result.Ran {
+		handler(infoEvent(hooksRan(1)))
+	}
+	if result.Context != "" {
+		s.loopcfg.systemPrompt += "\n\n---\n\n" + result.Context
+	}
+}
+
 func (s *agentCore) saveSession() {
 	if s.session == nil || s.sessionID == "" || s.sessionsDir == "" {
 		return
@@ -686,6 +708,7 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 
 	hookResult := s.hooks.Run(ctx, HookUserPromptSubmit, map[string]string{
 		"session_id": s.sessionID,
+		"cwd":        s.CWD(),
 		"prompt":     input,
 	})
 	if hookResult.Blocked {
@@ -696,30 +719,19 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 		input += "\n" + hookResult.Context
 	}
 
+	s.setState("thinking")
+
 	if s.session == nil {
-		// First turn — emit startup messages (e.g. MCP connections) then fire
-		// agentSpawn, injecting any context it returns into the opening message.
 		for _, msg := range s.startupMessages {
 			clog.Debug("startup: %s", msg)
 			handler(infoEvent(msg))
 		}
 		s.startupMessages = nil
-		spawnResult := s.hooks.Run(ctx, HookAgentSpawn, map[string]string{
-			"session_id": s.sessionID,
-			"agent":      s.agentName,
-		})
-		if spawnResult.Ran {
-			handler(infoEvent(hooksRan(1)))
-		}
-		if spawnResult.Context != "" {
-			input += "\n" + spawnResult.Context
-		}
+		s.fireAgentSpawn(ctx, handler)
 		s.session = newSession(input)
 	} else {
 		s.session.appendUserMessage(input)
 	}
-
-	s.setState("thinking")
 
 	actCtx, actCancel := context.WithCancelCause(ctx)
 	handle := &actionHandle{cancel: actCancel}
@@ -752,17 +764,23 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	// Auto-compact before the turn if approaching the context limit.
 	if s.session != nil {
 		if limit := s.autoCompactLimit(ctx); limit > 0 && s.session.estimateTokens() >= limit {
-			payload := map[string]string{"session_id": s.sessionID, "trigger": "auto"}
+			payload := map[string]string{"session_id": s.sessionID, "trigger": "auto", "cwd": s.CWD()}
 			pre := s.hooks.Run(ctx, HookPreCompact, payload)
 			if pre.Ran {
 				handler(infoEvent(hooksRan(1)))
 			}
 			if !pre.Blocked {
+				if pre.Context != "" {
+					s.session.appendUserMessage(pre.Context)
+				}
 				emit(s.loopcfg, Event{Role: "info", Content: "auto-compacting context...\n"})
 				s.session.compact(ctx, s.loopcfg.Backend) //nolint:errcheck
 				post := s.hooks.Run(ctx, HookPostCompact, payload)
 				if post.Ran {
 					handler(infoEvent(hooksRan(1)))
+				}
+				if post.Context != "" {
+					s.session.appendUserMessage(post.Context)
 				}
 			}
 		}
@@ -786,6 +804,7 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 
 	stopResult := s.hooks.Run(ctx, HookStop, map[string]string{
 		"session_id": s.sessionID,
+		"cwd":        s.CWD(),
 	})
 
 	s.saveSession()
@@ -965,6 +984,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		s.agentName = name
 		s.session = nil
 		s.sessionID = NewSessionID()
+		s.agentSpawnFired = false
 		s.pushSessionEnv()
 		for _, msg := range env.Messages {
 			handler(infoEvent(msg))
@@ -982,7 +1002,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			return true
 		}
 		// Snapshot history before compaction for persistence.
-		payload := map[string]string{"session_id": s.sessionID, "trigger": "manual"}
+		payload := map[string]string{"session_id": s.sessionID, "trigger": "manual", "cwd": s.CWD()}
 		pre := s.hooks.Run(ctx, HookPreCompact, payload)
 		if pre.Ran {
 			handler(infoEvent(hooksRan(1)))
@@ -991,11 +1011,17 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			handler(infoEvent("compact cancelled by hook"))
 			return true
 		}
+		if pre.Context != "" {
+			s.session.appendUserMessage(pre.Context)
+		}
 		snapshot := s.session.PreCompactionSnapshot()
 		n, _, err := s.session.compact(ctx, s.loopcfg.Backend)
 		post := s.hooks.Run(ctx, HookPostCompact, payload)
 		if post.Ran {
 			handler(infoEvent(hooksRan(1)))
+		}
+		if post.Context != "" {
+			s.session.appendUserMessage(post.Context)
 		}
 		if err != nil {
 			handler(infoEvent("compact error: " + err.Error()))
@@ -1073,20 +1099,8 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			handler(infoEvent("error: cannot clear while agent is running"))
 			return true
 		}
-		pre := s.hooks.Run(ctx, HookPreClear, map[string]string{"session_id": s.sessionID})
-		if pre.Ran {
-			handler(infoEvent(hooksRan(1)))
-		}
-		if pre.Blocked {
-			handler(infoEvent("clear cancelled by hook"))
-			return true
-		}
 		s.session = nil
 		s.sessionID = NewSessionID()
-		post := s.hooks.Run(ctx, HookPostClear, map[string]string{"session_id": s.sessionID})
-		if post.Ran {
-			handler(infoEvent(hooksRan(1)))
-		}
 		handler(infoEvent("cleared"))
 		return true
 
