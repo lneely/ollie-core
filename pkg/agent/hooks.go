@@ -14,8 +14,8 @@ import (
 // Hook name constants for well-known agent lifecycle events.
 const (
 	HookAgentSpawn       = "agentSpawn"
-	HookUserPromptSubmit = "userPromptSubmit"
-	HookStop             = "stop"
+	HookPreTurn  = "preTurn"
+	HookPostTurn = "postTurn"
 	HookPreCompact  = "preCompact"
 	HookPostCompact = "postCompact"
 )

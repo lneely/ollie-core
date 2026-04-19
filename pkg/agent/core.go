@@ -636,7 +636,7 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 
 	handler(Event{Role: "user", Content: input})
 
-	hookResult := s.hooks.Run(ctx, HookUserPromptSubmit, map[string]string{
+	hookResult := s.hooks.Run(ctx, HookPreTurn, map[string]string{
 		"session_id": s.sessionID,
 		"cwd":        s.CWD(),
 		"prompt":     input,
@@ -732,7 +732,7 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 
 	handler(Event{Role: "newline"})
 
-	stopResult := s.hooks.Run(ctx, HookStop, map[string]string{
+	stopResult := s.hooks.Run(ctx, HookPostTurn, map[string]string{
 		"session_id": s.sessionID,
 		"cwd":        s.CWD(),
 	})

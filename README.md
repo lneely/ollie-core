@@ -14,7 +14,7 @@ The reference frontend is [ollie-tui](https://github.com/lneely/ollie-tui), a te
 
 **`agent.AgentEnv`** — wires together a backend, tool dispatcher, config, and hooks into the environment passed to `NewAgentCore`. Built via `BuildAgentEnv`.
 
-**`agent.Hooks`** — lifecycle callbacks (`agentSpawn`, `userPromptSubmit`, `stop`) executed as shell commands with a JSON payload. Run via `Hooks.Run`.
+**`agent.Hooks`** — lifecycle callbacks (`agentSpawn`, `preTurn`, `postTurn`, `preCompact`, `postCompact`) executed as shell commands with a JSON payload. Run via `Hooks.Run`.
 
 **`backend.Backend`** — the LLM interface: `ChatStream`, `Models`, `ContextLength`, `Name`, `Model`/`SetModel`, `DefaultModel`. Implementations: Ollama, OpenAI-compatible, Anthropic, Copilot, Kiro.
 
@@ -62,8 +62,8 @@ No build step — ollie-core is a library.
       "$OLLIE/x/prime 01_ollie",
       "notify-send ollie started"
     ],
-    "userPromptSubmit": [],
-    "stop": []
+    "preTurn": [],
+    "postTurn": []
   }
 }
 ```

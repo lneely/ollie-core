@@ -6,7 +6,7 @@ import (
 )
 
 func TestLoad(t *testing.T) {
-	content := `{"hooks": {"stop": "notify-send done"}}`
+	content := `{"hooks": {"postTurn": "notify-send done"}}`
 
 	tmpfile, err := os.CreateTemp("", "config*.json")
 	if err != nil {
@@ -24,8 +24,8 @@ func TestLoad(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	if len(cfg.Hooks["stop"]) != 1 || cfg.Hooks["stop"][0] != "notify-send done" {
-		t.Errorf("Expected hook 'notify-send done', got %q", cfg.Hooks["stop"])
+	if len(cfg.Hooks["postTurn"]) != 1 || cfg.Hooks["postTurn"][0] != "notify-send done" {
+		t.Errorf("Expected hook 'notify-send done', got %q", cfg.Hooks["postTurn"])
 	}
 }
 
