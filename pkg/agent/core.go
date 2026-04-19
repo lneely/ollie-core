@@ -689,6 +689,14 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	}
 
 	if s.session == nil {
+		// First turn — fire agentSpawn and inject any context it provides into
+		// the opening message so the agent sees it from the start.
+		if spawnResult := s.hooks.Run(ctx, HookAgentSpawn, map[string]string{
+			"session_id": s.sessionID,
+			"agent":      s.agentName,
+		}); spawnResult.Context != "" {
+			input += "\n" + spawnResult.Context
+		}
 		s.session = newSession(input)
 	} else {
 		s.session.appendUserMessage(input)
@@ -733,14 +741,14 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	// Auto-compact before the turn if approaching the context limit.
 	if s.session != nil {
 		if limit := s.autoCompactLimit(ctx); limit > 0 && s.session.estimateTokens() >= limit {
-			emit(s.loopcfg, Event{Role: "info", Content: "auto-compacting context...\n"})
-			s.session.compact(ctx, s.loopcfg.Backend) //nolint:errcheck
+			payload := map[string]string{"session_id": s.sessionID, "trigger": "auto"}
+			if pre := s.hooks.Run(ctx, HookPreCompact, payload); !pre.Blocked {
+				emit(s.loopcfg, Event{Role: "info", Content: "auto-compacting context...\n"})
+				s.session.compact(ctx, s.loopcfg.Backend) //nolint:errcheck
+				s.hooks.Run(ctx, HookPostCompact, payload)
+			}
 		}
 	}
-
-	s.hooks.Run(ctx, HookAgentSpawn, map[string]string{
-		"session_id": s.sessionID,
-	})
 
 	err := run(actCtx, s.loopcfg, s.session)
 	actCancel(nil)
@@ -956,8 +964,14 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			return true
 		}
 		// Snapshot history before compaction for persistence.
+		payload := map[string]string{"session_id": s.sessionID, "trigger": "manual"}
+		if pre := s.hooks.Run(ctx, HookPreCompact, payload); pre.Blocked {
+			handler(infoEvent("compact cancelled by hook"))
+			return true
+		}
 		snapshot := s.session.PreCompactionSnapshot()
 		n, _, err := s.session.compact(ctx, s.loopcfg.Backend)
+		s.hooks.Run(ctx, HookPostCompact, payload)
 		if err != nil {
 			handler(infoEvent("compact error: " + err.Error()))
 		} else if n == 0 {
@@ -1034,8 +1048,13 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			handler(infoEvent("error: cannot clear while agent is running"))
 			return true
 		}
+		if pre := s.hooks.Run(ctx, HookPreClear, map[string]string{"session_id": s.sessionID}); pre.Blocked {
+			handler(infoEvent("clear cancelled by hook"))
+			return true
+		}
 		s.session = nil
 		s.sessionID = NewSessionID()
+		s.hooks.Run(ctx, HookPostClear, map[string]string{"session_id": s.sessionID})
 		handler(infoEvent("cleared"))
 		return true
 

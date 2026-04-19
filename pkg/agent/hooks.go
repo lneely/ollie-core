@@ -15,6 +15,10 @@ const (
 	HookAgentSpawn       = "agentSpawn"
 	HookUserPromptSubmit = "userPromptSubmit"
 	HookStop             = "stop"
+	HookPreCompact       = "preCompact"
+	HookPostCompact      = "postCompact"
+	HookPreClear         = "preClear"
+	HookPostClear        = "postClear"
 )
 
 const defaultHookTimeout = 60
