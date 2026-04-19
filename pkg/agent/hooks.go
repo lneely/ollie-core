@@ -22,8 +22,8 @@ const (
 
 const defaultHookTimeout = 60
 
-// Hooks maps hook names to shell command strings.
-type Hooks map[string]string
+// Hooks maps hook names to one or more shell commands.
+type Hooks map[string][]string
 
 // HookResult holds the outcome of running a hook.
 type HookResult struct {
@@ -36,29 +36,47 @@ type HookResult struct {
 	Context string
 }
 
-// Run executes the hook for the named event, sending payload as JSON on stdin.
-// Returns a HookResult describing whether the hook ran, blocked, and any context.
+// Run executes all commands for the named hook in order, sending payload as
+// JSON on stdin for each. Returns a combined HookResult.
 //
-// Exit codes:
-//   - 0: success. Stdout is added as conversation context.
-//   - 2: block. For UserPromptSubmit: don't send the prompt.
-//     For Stop: don't stop, continue with stderr as the next prompt.
+// Exit codes per command:
+//   - 0: success. Stdout is appended to combined context.
+//   - 2: block. Stops execution immediately and returns blocked.
 //   - other: non-blocking warning (stderr logged, execution continues).
 func (h Hooks) Run(ctx context.Context, name string, payload any) HookResult {
-	cmdStr := h[name]
-	clog.Debug("hook %s: cmd=%q", name, cmdStr)
-	if cmdStr == "" {
+	cmds := h[name]
+	if len(cmds) == 0 {
 		return HookResult{}
 	}
 
 	payloadJSON, _ := json.Marshal(payload)
+	var cwd string
+	if m, ok := payload.(map[string]string); ok {
+		cwd = m["cwd"]
+	}
 
+	var contextParts []string
+	for _, cmdStr := range cmds {
+		clog.Debug("hook %s: cmd=%q", name, cmdStr)
+		result := runHookCmd(ctx, name, cmdStr, payloadJSON, cwd)
+		if !result.Ran {
+			continue
+		}
+		if result.Blocked {
+			return HookResult{Ran: true, Blocked: true, Context: result.Context}
+		}
+		if result.Context != "" {
+			contextParts = append(contextParts, result.Context)
+		}
+	}
+	return HookResult{Ran: true, Context: strings.Join(contextParts, "\n")}
+}
+
+func runHookCmd(ctx context.Context, name, cmdStr string, payloadJSON []byte, cwd string) HookResult {
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
 	cmd.Stdin = bytes.NewReader(payloadJSON)
-	if m, ok := payload.(map[string]string); ok {
-		if dir := m["cwd"]; dir != "" {
-			cmd.Dir = dir
-		}
+	if cwd != "" {
+		cmd.Dir = cwd
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -85,7 +103,6 @@ func (h Hooks) Run(ctx context.Context, name string, payload any) HookResult {
 				return HookResult{}
 			}
 		}
-
 		switch exitCode {
 		case 0:
 			out := strings.TrimSpace(stdout.String())
@@ -99,13 +116,11 @@ func (h Hooks) Run(ctx context.Context, name string, payload any) HookResult {
 			clog.Debug("hook %s: exit=%d (non-blocking error) stderr=%q", name, exitCode, stderr.String())
 			return HookResult{Ran: true}
 		}
-
 	case <-ctx.Done():
 		cmd.Process.Kill() //nolint:errcheck
 		<-done
 		clog.Debug("hook %s: cancelled (context done)", name)
 		return HookResult{}
-
 	case <-timeout:
 		cmd.Process.Kill() //nolint:errcheck
 		<-done

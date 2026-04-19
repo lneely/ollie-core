@@ -138,8 +138,8 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 	agentPrompt := ""
 	var genParams backend.GenerationParams
 	if cfg != nil {
-		if cfg.Hooks != nil {
-			hooks = cfg.Hooks
+		for k, v := range cfg.Hooks {
+			hooks[k] = []string(v)
 		}
 		agentPrompt = cfg.Prompt
 		genParams = backend.GenerationParams{

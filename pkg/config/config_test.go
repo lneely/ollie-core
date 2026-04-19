@@ -24,7 +24,7 @@ func TestLoad(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	if cfg.Hooks["stop"] != "notify-send done" {
+	if len(cfg.Hooks["stop"]) != 1 || cfg.Hooks["stop"][0] != "notify-send done" {
 		t.Errorf("Expected hook 'notify-send done', got %q", cfg.Hooks["stop"])
 	}
 }

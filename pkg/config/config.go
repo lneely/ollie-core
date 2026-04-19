@@ -5,9 +5,27 @@ import (
 	"os"
 )
 
+// HookCmds holds one or more shell commands for a hook. It unmarshals from
+// either a JSON string ("cmd") or array (["cmd1","cmd2"]).
+type HookCmds []string
+
+func (h *HookCmds) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*h = HookCmds{s}
+		return nil
+	}
+	var ss []string
+	if err := json.Unmarshal(data, &ss); err != nil {
+		return err
+	}
+	*h = HookCmds(ss)
+	return nil
+}
+
 type Config struct {
 	MCPServers       map[string]ServerConfig `json:"mcpServers,omitempty"`
-	Hooks            map[string]string       `json:"hooks,omitempty"`
+	Hooks            map[string]HookCmds     `json:"hooks,omitempty"`
 	Prompt           string                  `json:"prompt,omitempty"`
 	TrustedTools     []string                `json:"trustedTools,omitempty"`
 	MaxTokens        int                     `json:"maxTokens,omitempty"`
