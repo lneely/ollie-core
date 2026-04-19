@@ -328,7 +328,9 @@ func (s *agentCore) State() string {
 }
 
 func (s *agentCore) notifyChange() {
+	s.changeMu.Lock()
 	s.changeCond.Broadcast()
+	s.changeMu.Unlock()
 }
 
 // WaitChange blocks until the named field changes from current, then returns
