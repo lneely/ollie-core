@@ -57,14 +57,24 @@ No build step — ollie-core is a library.
     }
   },
   "hooks": {
-    "agentSpawn": "notify-send ollie started",
-    "userPromptSubmit": "",
-    "stop": ""
+    "agentSpawn": [
+      "$OLLIE/x/prime 00_base",
+      "$OLLIE/x/prime 01_ollie",
+      "notify-send ollie started"
+    ],
+    "userPromptSubmit": [],
+    "stop": []
   }
 }
 ```
 
 MCP server `env` values support `${VAR}` expansion from the parent environment.
+
+Hook values accept a string or an array of strings. Commands run in order; each command's stdout is appended to the system prompt context. Exit code 2 blocks the triggering action; any other non-zero exit is a non-blocking warning.
+
+### System prompt
+
+There is no built-in system prompt. The system prompt is assembled entirely from `agentSpawn` hook output. The `prime` script (`$OLLIE/x/prime <name>`) reads a file from `p/` and writes it to stdout with environment variable substitution — use it in `agentSpawn` to compose the system prompt from prompt template files. The fully assembled result is readable at `s/<id>/systemprompt`.
 
 ### Sandbox config: `~/.config/ollie/sandbox.yaml`
 
