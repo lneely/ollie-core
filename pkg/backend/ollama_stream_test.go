@@ -140,3 +140,53 @@ func TestOllamaNDJSON_ScannerError(t *testing.T) {
 		t.Errorf("final = %+v", fin)
 	}
 }
+
+// --- parseOllamaContextLength ---
+
+func TestParseOllamaContextLength_Found(t *testing.T) {
+	body := `{"model_info":{"general.context_length":8192}}`
+	if cl := parseOllamaContextLength(strings.NewReader(body)); cl != 8192 {
+		t.Errorf("cl = %d; want 8192", cl)
+	}
+}
+
+func TestParseOllamaContextLength_DifferentPrefix(t *testing.T) {
+	body := `{"model_info":{"llama.context_length":4096}}`
+	if cl := parseOllamaContextLength(strings.NewReader(body)); cl != 4096 {
+		t.Errorf("cl = %d; want 4096", cl)
+	}
+}
+
+func TestParseOllamaContextLength_NoKey(t *testing.T) {
+	body := `{"model_info":{"general.embedding_length":768}}`
+	if cl := parseOllamaContextLength(strings.NewReader(body)); cl != 0 {
+		t.Errorf("cl = %d; want 0", cl)
+	}
+}
+
+func TestParseOllamaContextLength_EmptyModelInfo(t *testing.T) {
+	body := `{"model_info":{}}`
+	if cl := parseOllamaContextLength(strings.NewReader(body)); cl != 0 {
+		t.Errorf("cl = %d; want 0", cl)
+	}
+}
+
+func TestParseOllamaContextLength_MalformedJSON(t *testing.T) {
+	if cl := parseOllamaContextLength(strings.NewReader("not json")); cl != 0 {
+		t.Errorf("cl = %d; want 0", cl)
+	}
+}
+
+func TestParseOllamaContextLength_ZeroValue(t *testing.T) {
+	body := `{"model_info":{"general.context_length":0}}`
+	if cl := parseOllamaContextLength(strings.NewReader(body)); cl != 0 {
+		t.Errorf("cl = %d; want 0", cl)
+	}
+}
+
+func TestParseOllamaContextLength_NonNumeric(t *testing.T) {
+	body := `{"model_info":{"general.context_length":"not a number"}}`
+	if cl := parseOllamaContextLength(strings.NewReader(body)); cl != 0 {
+		t.Errorf("cl = %d; want 0", cl)
+	}
+}

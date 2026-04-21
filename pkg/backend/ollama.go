@@ -84,18 +84,26 @@ func (b *OllamaBackend) ContextLength(ctx context.Context) int {
 		return 0
 	}
 	defer resp.Body.Close()
+	cl := parseOllamaContextLength(resp.Body)
+	if cl > 0 {
+		b.ctxLength = cl
+		b.ctxModel = b.model
+	}
+	return cl
+}
+
+// parseOllamaContextLength extracts the context_length from an /api/show response body.
+func parseOllamaContextLength(r io.Reader) int {
 	var result struct {
 		ModelInfo map[string]any `json:"model_info"`
 	}
-	if json.NewDecoder(resp.Body).Decode(&result) != nil {
+	if json.NewDecoder(r).Decode(&result) != nil {
 		return 0
 	}
 	for k, v := range result.ModelInfo {
 		if strings.HasSuffix(k, ".context_length") {
 			if f, ok := v.(float64); ok && f > 0 {
-				b.ctxLength = int(f)
-				b.ctxModel = b.model
-				return b.ctxLength
+				return int(f)
 			}
 		}
 	}
