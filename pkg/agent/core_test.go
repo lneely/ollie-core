@@ -22,6 +22,7 @@ type mockBackend struct {
 	name    string
 	model   string
 	ctxLen  int
+	models  []string
 	respond func(context.Context, []backend.Message, []backend.Tool, backend.GenerationParams) (<-chan backend.StreamEvent, error)
 }
 
@@ -39,7 +40,11 @@ func (m *mockBackend) DefaultModel() string                { return m.model }
 func (m *mockBackend) Model() string                       { m.mu.Lock(); defer m.mu.Unlock(); return m.model }
 func (m *mockBackend) SetModel(s string)                   { m.mu.Lock(); m.model = s; m.mu.Unlock() }
 func (m *mockBackend) ContextLength(_ context.Context) int { return m.ctxLen }
-func (m *mockBackend) Models(_ context.Context) []string   { return nil }
+func (m *mockBackend) Models(_ context.Context) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.models
+}
 
 // textStream returns a single-event stream carrying the given text.
 func textStream(text string) <-chan backend.StreamEvent {
@@ -627,5 +632,423 @@ func TestQueuePopQueue(t *testing.T) {
 	}
 	if got, ok := c.PopQueue(); ok {
 		t.Errorf("PopQueue on empty = %q, true; want empty, false", got)
+	}
+}
+
+// --- /backend ---
+
+func TestCommand_Backend_Show(t *testing.T) {
+	c := newCore(t, nil, nil)
+	evs := collectEvents(context.Background(), c, "/backend")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "mock") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/backend: backend name not in info events: %v", byRole(evs, "info"))
+	}
+}
+
+func TestCommand_Backend_WhileRunning(t *testing.T) {
+	unblock := make(chan struct{})
+	be := defaultBE()
+	be.respond = func(ctx context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		return blockedStream(ctx, unblock), nil
+	}
+	c := newCore(t, be, nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.Submit(context.Background(), "hello", func(Event) {})
+	}()
+	waitState(t, c, "thinking")
+
+	evs := collectEvents(context.Background(), c, "/backend newbackend")
+
+	close(unblock)
+	<-done
+
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "error") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/backend while running: expected error event, got: %v", byRole(evs, "info"))
+	}
+}
+
+// --- /model ---
+
+func TestCommand_Model_Show(t *testing.T) {
+	c := newCore(t, nil, nil)
+	evs := collectEvents(context.Background(), c, "/model")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "test") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/model: model name not in info events: %v", byRole(evs, "info"))
+	}
+}
+
+func TestCommand_Model_Set(t *testing.T) {
+	be := defaultBE()
+	c := newCore(t, be, nil)
+	collectEvents(context.Background(), c, "/model gpt-4")
+	if got := be.Model(); got != "gpt-4" {
+		t.Errorf("after /model gpt-4: Model() = %q; want gpt-4", got)
+	}
+}
+
+func TestCommand_Model_WhileRunning(t *testing.T) {
+	unblock := make(chan struct{})
+	be := defaultBE()
+	be.respond = func(ctx context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		return blockedStream(ctx, unblock), nil
+	}
+	c := newCore(t, be, nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.Submit(context.Background(), "hello", func(Event) {})
+	}()
+	waitState(t, c, "thinking")
+
+	evs := collectEvents(context.Background(), c, "/model new-model")
+
+	close(unblock)
+	<-done
+
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "error") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/model while running: expected error event, got: %v", byRole(evs, "info"))
+	}
+}
+
+// --- /models ---
+
+func TestCommand_Models_Empty(t *testing.T) {
+	c := newCore(t, nil, nil) // defaultBE has nil models
+	evs := collectEvents(context.Background(), c, "/models")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "no models") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/models with no models: expected 'no models available', got: %v", byRole(evs, "info"))
+	}
+}
+
+func TestCommand_Models_List(t *testing.T) {
+	be := &mockBackend{name: "mock", model: "b", ctxLen: 128000, models: []string{"a", "b", "c"}}
+	c := newCore(t, be, nil)
+	evs := collectEvents(context.Background(), c, "/models")
+	infos := byRole(evs, "info")
+	if len(infos) < 3 {
+		t.Fatalf("/models: expected ≥3 info events; got: %v", infos)
+	}
+	markedCurrent := false
+	for _, s := range infos {
+		if strings.Contains(s, "* ") && strings.Contains(s, "b") {
+			markedCurrent = true
+		}
+	}
+	if !markedCurrent {
+		t.Errorf("/models: current model 'b' not marked with '* '; got: %v", infos)
+	}
+}
+
+// --- /agent ---
+
+func TestCommand_Agent_Show(t *testing.T) {
+	c := newCore(t, nil, nil)
+	evs := collectEvents(context.Background(), c, "/agent")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "test") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/agent: agent name not in info events: %v", byRole(evs, "info"))
+	}
+}
+
+func TestCommand_Agent_WhileRunning(t *testing.T) {
+	unblock := make(chan struct{})
+	be := defaultBE()
+	be.respond = func(ctx context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		return blockedStream(ctx, unblock), nil
+	}
+	c := newCore(t, be, nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.Submit(context.Background(), "hello", func(Event) {})
+	}()
+	waitState(t, c, "thinking")
+
+	evs := collectEvents(context.Background(), c, "/agent other")
+
+	close(unblock)
+	<-done
+
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "error") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/agent while running: expected error event, got: %v", byRole(evs, "info"))
+	}
+}
+
+func TestCommand_Agent_NotFound(t *testing.T) {
+	c := newCore(t, nil, nil) // agentsDir is a fresh temp dir
+	evs := collectEvents(context.Background(), c, "/agent nonexistent")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "error") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/agent nonexistent: expected error event, got: %v", byRole(evs, "info"))
+	}
+}
+
+// --- /agents ---
+
+func TestCommand_Agents_Empty(t *testing.T) {
+	c := newCore(t, nil, nil) // agentsDir is a fresh temp dir
+	evs := collectEvents(context.Background(), c, "/agents")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "no agents found") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/agents with empty dir: expected 'no agents found', got: %v", byRole(evs, "info"))
+	}
+}
+
+// --- /sessions ---
+
+func TestCommand_Sessions_Empty(t *testing.T) {
+	c := newCore(t, nil, nil) // sessionsDir is a fresh temp dir
+	evs := collectEvents(context.Background(), c, "/sessions")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "no sessions found") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/sessions with empty dir: expected 'no sessions found', got: %v", byRole(evs, "info"))
+	}
+}
+
+func TestCommand_Sessions_List(t *testing.T) {
+	c := newCore(t, nil, nil)
+	collectEvents(context.Background(), c, "hello") // creates and saves session
+	evs := collectEvents(context.Background(), c, "/sessions")
+	markedCurrent := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "* ") {
+			markedCurrent = true
+		}
+	}
+	if !markedCurrent {
+		t.Errorf("/sessions: current session not marked with '* '; got: %v", byRole(evs, "info"))
+	}
+}
+
+// --- /cwd ---
+
+func TestCommand_CWD_Show(t *testing.T) {
+	c := newCore(t, nil, nil)
+	cwd := c.CWD()
+	evs := collectEvents(context.Background(), c, "/cwd")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, cwd) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/cwd: path %q not in info events: %v", cwd, byRole(evs, "info"))
+	}
+}
+
+func TestCommand_CWD_Set(t *testing.T) {
+	c := newCore(t, nil, nil)
+	dir := t.TempDir()
+	evs := collectEvents(context.Background(), c, "/cwd "+dir)
+	if got := c.CWD(); got != dir {
+		t.Errorf("CWD() = %q; want %q", got, dir)
+	}
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, dir) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/cwd set: new path not confirmed in info events: %v", byRole(evs, "info"))
+	}
+}
+
+func TestCommand_CWD_SetNonExistent(t *testing.T) {
+	c := newCore(t, nil, nil)
+	old := c.CWD()
+	evs := collectEvents(context.Background(), c, "/cwd /nonexistent/xyz/abc")
+	if got := c.CWD(); got != old {
+		t.Errorf("CWD changed to %q after invalid path; want unchanged %q", got, old)
+	}
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "error") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/cwd nonexistent: expected error event, got: %v", byRole(evs, "info"))
+	}
+}
+
+// --- /context ---
+
+func TestCommand_Context_NoSession(t *testing.T) {
+	c := newCore(t, nil, nil)
+	evs := collectEvents(context.Background(), c, "/context")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "no active session") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/context before any turn: expected 'no active session', got: %v", byRole(evs, "info"))
+	}
+}
+
+func TestCommand_Context_WithSession(t *testing.T) {
+	c := newCore(t, nil, nil)
+	collectEvents(context.Background(), c, "hello")
+	evs := collectEvents(context.Background(), c, "/context")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "tokens") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/context after turn: expected token usage line, got: %v", byRole(evs, "info"))
+	}
+}
+
+// --- /usage ---
+
+func TestCommand_Usage_NoSession(t *testing.T) {
+	c := newCore(t, nil, nil)
+	evs := collectEvents(context.Background(), c, "/usage")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "no active session") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/usage before any turn: expected 'no active session', got: %v", byRole(evs, "info"))
+	}
+}
+
+func TestCommand_Usage_WithSession(t *testing.T) {
+	c := newCore(t, nil, nil)
+	collectEvents(context.Background(), c, "hello")
+	evs := collectEvents(context.Background(), c, "/usage")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "requests") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/usage after turn: expected 'requests' in output, got: %v", byRole(evs, "info"))
+	}
+}
+
+// --- /history ---
+
+func TestCommand_History_NoSession(t *testing.T) {
+	c := newCore(t, nil, nil)
+	evs := collectEvents(context.Background(), c, "/history")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "no active session") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/history before any turn: expected 'no active session', got: %v", byRole(evs, "info"))
+	}
+}
+
+func TestCommand_History_WithSession(t *testing.T) {
+	c := newCore(t, nil, nil)
+	collectEvents(context.Background(), c, "remember this")
+	evs := collectEvents(context.Background(), c, "/history")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "user") && strings.Contains(s, "remember this") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/history: user message not found in output: %v", byRole(evs, "info"))
+	}
+}
+
+// --- /mcp ---
+
+func TestCommand_MCP(t *testing.T) {
+	c := newCore(t, nil, nil)
+	evs := collectEvents(context.Background(), c, "/mcp")
+	if len(byRole(evs, "info")) == 0 {
+		t.Error("/mcp: no info events emitted")
+	}
+}
+
+// --- /sp ---
+
+func TestCommand_SP(t *testing.T) {
+	c := newCore(t, nil, nil)
+	evs := collectEvents(context.Background(), c, "/sp")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "test system prompt") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/sp: system prompt not in info events: %v", byRole(evs, "info"))
 	}
 }
