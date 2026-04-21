@@ -1,0 +1,616 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"ollie/pkg/backend"
+	"ollie/pkg/tools"
+)
+
+// --- mock backend ---
+
+type mockBackend struct {
+	mu      sync.Mutex
+	name    string
+	model   string
+	ctxLen  int
+	respond func(context.Context, []backend.Message, []backend.Tool, backend.GenerationParams) (<-chan backend.StreamEvent, error)
+}
+
+func (m *mockBackend) ChatStream(ctx context.Context, msgs []backend.Message, ts []backend.Tool, p backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+	m.mu.Lock()
+	fn := m.respond
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, msgs, ts, p)
+	}
+	return textStream("ok"), nil
+}
+func (m *mockBackend) Name() string                        { return m.name }
+func (m *mockBackend) DefaultModel() string                { return m.model }
+func (m *mockBackend) Model() string                       { m.mu.Lock(); defer m.mu.Unlock(); return m.model }
+func (m *mockBackend) SetModel(s string)                   { m.mu.Lock(); m.model = s; m.mu.Unlock() }
+func (m *mockBackend) ContextLength(_ context.Context) int { return m.ctxLen }
+func (m *mockBackend) Models(_ context.Context) []string   { return nil }
+
+// textStream returns a single-event stream carrying the given text.
+func textStream(text string) <-chan backend.StreamEvent {
+	ch := make(chan backend.StreamEvent, 1)
+	ch <- backend.StreamEvent{
+		Content:    text,
+		Done:       true,
+		StopReason: "stop",
+		Usage:      backend.Usage{InputTokens: 10, OutputTokens: 5},
+	}
+	close(ch)
+	return ch
+}
+
+// blockedStream returns a channel that delivers a response when unblock is
+// closed, or drains silently if ctx is cancelled first.
+func blockedStream(ctx context.Context, unblock <-chan struct{}) <-chan backend.StreamEvent {
+	ch := make(chan backend.StreamEvent, 1)
+	go func() {
+		defer close(ch)
+		select {
+		case <-ctx.Done():
+		case <-unblock:
+			ch <- backend.StreamEvent{Content: "ok", Done: true, StopReason: "stop"}
+		}
+	}()
+	return ch
+}
+
+// --- test helpers ---
+
+func defaultBE() *mockBackend {
+	return &mockBackend{name: "mock", model: "test", ctxLen: 128000}
+}
+
+// newCore builds a minimal *agentCore for tests, bypassing loadSystemPrompt
+// by directly setting systemPrompt on AgentEnv.
+func newCore(t *testing.T, be backend.Backend, hooks Hooks) *agentCore {
+	t.Helper()
+	if be == nil {
+		be = defaultBE()
+	}
+	if hooks == nil {
+		hooks = Hooks{}
+	}
+	env := AgentEnv{
+		Hooks:        hooks,
+		systemPrompt: "test system prompt",
+	}
+	c := NewAgentCore(AgentCoreConfig{
+		Backend:       be,
+		AgentName:     "test",
+		AgentsDir:     t.TempDir(),
+		SessionsDir:   t.TempDir(),
+		SessionID:     NewSessionID(),
+		CWD:           t.TempDir(),
+		Env:           env,
+		NewDispatcher: tools.NewDispatcher,
+	})
+	t.Cleanup(c.Close)
+	return c.(*agentCore)
+}
+
+// collectEvents runs Submit synchronously and returns all emitted events.
+func collectEvents(ctx context.Context, c Core, input string) []Event {
+	var evs []Event
+	c.Submit(ctx, input, func(ev Event) { evs = append(evs, ev) })
+	return evs
+}
+
+// byRole returns the Content of every event with the given role.
+func byRole(evs []Event, role string) []string {
+	var out []string
+	for _, ev := range evs {
+		if ev.Role == role {
+			out = append(out, ev.Content)
+		}
+	}
+	return out
+}
+
+// waitState blocks until c.State() == want, failing after 2 s.
+func waitState(t *testing.T, c Core, want string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for c.State() != want {
+		if _, ok := c.WaitChange(ctx, WatchState, c.State()); !ok {
+			t.Fatalf("timed out waiting for state %q (current: %q)", want, c.State())
+		}
+	}
+}
+
+// --- Submit: happy path ---
+
+func TestSubmit_HappyPath(t *testing.T) {
+	be := defaultBE()
+	be.respond = func(_ context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		return textStream("hello back"), nil
+	}
+	c := newCore(t, be, nil)
+
+	evs := collectEvents(context.Background(), c, "hello")
+
+	if got := byRole(evs, "user"); len(got) == 0 || got[0] != "hello" {
+		t.Errorf("user event: %v", got)
+	}
+	if got := byRole(evs, "assistant"); len(got) == 0 || got[0] != "hello back" {
+		t.Errorf("assistant event: %v", got)
+	}
+	if got := c.State(); got != "idle" {
+		t.Errorf("State() = %q; want idle", got)
+	}
+	if got := c.Reply(); got != "hello back" {
+		t.Errorf("Reply() = %q; want %q", got, "hello back")
+	}
+	if c.IsRunning() {
+		t.Error("IsRunning() = true after turn; want false")
+	}
+}
+
+// --- State transitions ---
+
+func TestSubmit_StateTransitions(t *testing.T) {
+	unblock := make(chan struct{})
+	be := defaultBE()
+	be.respond = func(ctx context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		return blockedStream(ctx, unblock), nil
+	}
+	c := newCore(t, be, nil)
+
+	if got := c.State(); got != "idle" {
+		t.Fatalf("initial state = %q; want idle", got)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.Submit(context.Background(), "hello", func(Event) {})
+	}()
+
+	waitState(t, c, "thinking")
+	close(unblock)
+	<-done
+
+	if got := c.State(); got != "idle" {
+		t.Errorf("final state = %q; want idle", got)
+	}
+}
+
+func TestSubmit_ToolCallStateTransitions(t *testing.T) {
+	const toolName = "my_tool"
+	callCount := 0
+	be := defaultBE()
+	be.respond = func(_ context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		callCount++
+		if callCount == 1 {
+			ch := make(chan backend.StreamEvent, 1)
+			ch <- backend.StreamEvent{
+				ToolCalls:  []backend.ToolCall{{Name: toolName, Arguments: json.RawMessage(`{}`)}},
+				Done:       true,
+				StopReason: "tool_calls",
+			}
+			close(ch)
+			return ch, nil
+		}
+		return textStream("done"), nil
+	}
+
+	c := newCore(t, be, nil)
+
+	var stateAtExec string
+	c.loopcfg.Exec = func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
+		stateAtExec = c.State()
+		return `{}`, nil
+	}
+
+	collectEvents(context.Background(), c, "run tool")
+
+	wantState := "calling: " + toolName
+	if stateAtExec != wantState {
+		t.Errorf("state during tool exec = %q; want %q", stateAtExec, wantState)
+	}
+	if got := c.State(); got != "idle" {
+		t.Errorf("final state = %q; want idle", got)
+	}
+}
+
+// --- preTurn hook ---
+
+func TestSubmit_PreTurnHookBlocks(t *testing.T) {
+	callCount := 0
+	be := defaultBE()
+	be.respond = func(_ context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		callCount++
+		return textStream("should not be called"), nil
+	}
+	c := newCore(t, be, Hooks{HookPreTurn: []string{"exit 2"}})
+
+	evs := collectEvents(context.Background(), c, "hello")
+
+	if callCount > 0 {
+		t.Error("backend called despite preTurn hook blocking")
+	}
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "hook blocked prompt") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'hook blocked prompt' info event; got: %v", byRole(evs, "info"))
+	}
+}
+
+func TestSubmit_PreTurnHookContext(t *testing.T) {
+	var lastUserMsg string
+	be := defaultBE()
+	be.respond = func(_ context.Context, msgs []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		for _, m := range msgs {
+			if m.Role == "user" {
+				lastUserMsg = m.Content
+			}
+		}
+		return textStream("ok"), nil
+	}
+	c := newCore(t, be, Hooks{HookPreTurn: []string{`echo "extra context"`}})
+
+	collectEvents(context.Background(), c, "base prompt")
+
+	if !strings.Contains(lastUserMsg, "extra context") {
+		t.Errorf("user message %q does not contain hook-injected context", lastUserMsg)
+	}
+}
+
+// --- postTurn hook continuation ---
+
+func TestSubmit_PostTurnHookContinue(t *testing.T) {
+	flagFile := filepath.Join(t.TempDir(), "fired")
+	hookScript := fmt.Sprintf(
+		`if [ ! -f %q ]; then touch %q; printf "auto-continue" >&2; exit 2; fi`,
+		flagFile, flagFile,
+	)
+	callCount := 0
+	be := defaultBE()
+	be.respond = func(_ context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		callCount++
+		return textStream(fmt.Sprintf("response %d", callCount)), nil
+	}
+	c := newCore(t, be, Hooks{HookPostTurn: []string{hookScript}})
+
+	collectEvents(context.Background(), c, "first prompt")
+
+	if callCount != 2 {
+		t.Errorf("backend called %d times; want 2 (original + hook continuation)", callCount)
+	}
+}
+
+// --- FIFO drain ---
+
+func TestSubmit_FIFODrain(t *testing.T) {
+	callCount := 0
+	be := defaultBE()
+	be.respond = func(_ context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		callCount++
+		return textStream("ok"), nil
+	}
+	c := newCore(t, be, nil)
+	c.Queue("second")
+	c.Queue("third")
+
+	collectEvents(context.Background(), c, "first")
+
+	if callCount != 3 {
+		t.Errorf("backend called %d times; want 3 (first + second + third)", callCount)
+	}
+}
+
+// --- pendingInject as next turn ---
+
+// TestSubmit_PendingInjectAsNextTurn verifies that a pendingInject left
+// unconsumed (no tool calls) becomes the next prompt after the turn.
+func TestSubmit_PendingInjectAsNextTurn(t *testing.T) {
+	callCount := 0
+	be := defaultBE()
+	be.respond = func(_ context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		callCount++
+		return textStream("ok"), nil
+	}
+	c := newCore(t, be, nil)
+
+	inject := "injected follow-up"
+	c.pendingInject.Store(&inject)
+
+	collectEvents(context.Background(), c, "first")
+
+	if callCount != 2 {
+		t.Errorf("backend called %d times; want 2 (first turn + inject turn)", callCount)
+	}
+}
+
+// --- Interrupt ---
+
+func TestInterrupt_Running(t *testing.T) {
+	unblock := make(chan struct{})
+	be := defaultBE()
+	be.respond = func(ctx context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		return blockedStream(ctx, unblock), nil
+	}
+	c := newCore(t, be, nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.Submit(context.Background(), "hello", func(Event) {})
+	}()
+
+	waitState(t, c, "thinking")
+
+	if !c.Interrupt(ErrInterrupted) {
+		t.Error("Interrupt() = false; want true (action was running)")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Submit did not return after Interrupt")
+	}
+	if got := c.State(); got != "idle" {
+		t.Errorf("State() = %q after interrupt; want idle", got)
+	}
+	if c.IsRunning() {
+		t.Error("IsRunning() = true after interrupt; want false")
+	}
+}
+
+func TestInterrupt_Idle(t *testing.T) {
+	c := newCore(t, nil, nil)
+	if c.Interrupt(ErrInterrupted) {
+		t.Error("Interrupt() = true when idle; want false")
+	}
+}
+
+// --- Submit while running ---
+
+func TestSubmit_WhileRunning(t *testing.T) {
+	unblock := make(chan struct{})
+	be := defaultBE()
+	be.respond = func(ctx context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		return blockedStream(ctx, unblock), nil
+	}
+	c := newCore(t, be, nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.Submit(context.Background(), "first", func(Event) {})
+	}()
+
+	waitState(t, c, "thinking")
+
+	// Concurrent Submit must not start a new turn — goes to inject / FIFO.
+	c.Submit(context.Background(), "concurrent", func(Event) {})
+
+	stored := c.pendingInject.Load()
+	_, inFIFO := c.PopQueue()
+	if (stored == nil || *stored != "concurrent") && !inFIFO {
+		t.Error("concurrent Submit neither set pendingInject nor pushed to FIFO")
+	}
+
+	close(unblock)
+	<-done
+}
+
+// --- compaction ---
+
+func TestManualCompact(t *testing.T) {
+	callCount := 0
+	be := defaultBE()
+	be.respond = func(_ context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		callCount++
+		return textStream("summary or answer"), nil
+	}
+	c := newCore(t, be, nil)
+
+	// Seed a session with more than 4 messages so compact() doesn't short-circuit.
+	c.session = newSession("goal")
+	for i := range 5 {
+		c.session.messages = append(c.session.messages,
+			backend.Message{Role: "assistant", Content: fmt.Sprintf("response %d with enough text to count", i)},
+			backend.Message{Role: "user", Content: fmt.Sprintf("follow up %d", i)},
+		)
+	}
+	before := len(c.session.messages)
+
+	evs := collectEvents(context.Background(), c, "/compact")
+
+	if c.session == nil {
+		t.Fatal("session nil after compact")
+	}
+	if after := len(c.session.messages); after >= before {
+		t.Errorf("messages: before=%d after=%d; want fewer after compact", before, after)
+	}
+	if callCount == 0 {
+		t.Error("backend not called for compaction")
+	}
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "compacted") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no 'compacted' info event; got: %v", byRole(evs, "info"))
+	}
+}
+
+func TestAutoCompact(t *testing.T) {
+	callCount := 0
+	// ctxLen=10 → autoCompactLimit = 7 tokens; our seeded session exceeds this.
+	be := &mockBackend{name: "mock", model: "test", ctxLen: 10}
+	be.respond = func(_ context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		callCount++
+		if callCount == 1 {
+			return textStream("summary text for compaction"), nil
+		}
+		return textStream("answer"), nil
+	}
+	c := newCore(t, be, nil)
+
+	c.session = newSession("goal")
+	for range 3 {
+		c.session.messages = append(c.session.messages,
+			backend.Message{Role: "assistant", Content: "a long response that exceeds seven tokens of content"},
+			backend.Message{Role: "user", Content: "follow up question with enough text to push over the limit"},
+		)
+	}
+
+	collectEvents(context.Background(), c, "next prompt")
+
+	if callCount < 2 {
+		t.Errorf("backend called %d times; want ≥2 (compact + turn)", callCount)
+	}
+}
+
+// --- agentSpawn ---
+
+func TestAgentSpawnFiresOnce(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "spawned")
+	hookScript := fmt.Sprintf(`printf "spawn\n" >> %q`, logFile)
+	c := newCore(t, nil, Hooks{HookAgentSpawn: []string{hookScript}})
+
+	collectEvents(context.Background(), c, "first")
+	collectEvents(context.Background(), c, "second")
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("spawn log not written: %v", err)
+	}
+	lines := strings.Count(string(data), "\n")
+	if lines != 1 {
+		t.Errorf("agentSpawn hook fired %d time(s); want 1", lines)
+	}
+}
+
+// --- loadSystemPrompt ---
+
+func TestLoadSystemPrompt_MissingFile(t *testing.T) {
+	t.Setenv("OLLIE_CFG_PATH", t.TempDir()) // no SYSTEM_PROMPT.md written
+
+	defer func() {
+		if recover() == nil {
+			t.Error("expected panic from loadSystemPrompt; got none")
+		}
+	}()
+	loadSystemPrompt("")
+}
+
+// --- panic recovery ---
+
+func TestSubmit_PanicRecovery(t *testing.T) {
+	be := defaultBE()
+	be.respond = func(_ context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
+		panic("backend exploded")
+	}
+	c := newCore(t, be, nil)
+
+	var errEvents []Event
+	c.Submit(context.Background(), "hello", func(ev Event) {
+		if ev.Role == "error" {
+			errEvents = append(errEvents, ev)
+		}
+	})
+
+	if len(errEvents) == 0 {
+		t.Error("no error event after panic; expected one")
+	}
+	if got := c.State(); got != "idle" {
+		t.Errorf("State() = %q after panic; want idle", got)
+	}
+	if c.IsRunning() {
+		t.Error("IsRunning() = true after panic; want false")
+	}
+}
+
+// --- commands ---
+
+func TestCommand_Help(t *testing.T) {
+	c := newCore(t, nil, nil)
+	evs := collectEvents(context.Background(), c, "/help")
+	found := false
+	for _, s := range byRole(evs, "info") {
+		if strings.Contains(s, "Available commands") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/help: 'Available commands' not found in info events: %v", byRole(evs, "info"))
+	}
+}
+
+func TestCommand_Clear(t *testing.T) {
+	c := newCore(t, nil, nil)
+	collectEvents(context.Background(), c, "first turn")
+	if c.session == nil {
+		t.Fatal("session nil after first turn")
+	}
+	oldID := c.sessionID
+	collectEvents(context.Background(), c, "/clear")
+	if c.session != nil {
+		t.Error("session not nil after /clear")
+	}
+	if c.sessionID == oldID {
+		t.Error("sessionID unchanged after /clear; want a new ID")
+	}
+}
+
+// --- CWD ---
+
+func TestSetCWD(t *testing.T) {
+	c := newCore(t, nil, nil)
+	dir := t.TempDir()
+	if err := c.SetCWD(dir); err != nil {
+		t.Fatalf("SetCWD(%q): %v", dir, err)
+	}
+	if got := c.CWD(); got != dir {
+		t.Errorf("CWD() = %q; want %q", got, dir)
+	}
+}
+
+func TestSetCWD_NonExistent(t *testing.T) {
+	c := newCore(t, nil, nil)
+	if err := c.SetCWD("/nonexistent/path/xyz/abc"); err == nil {
+		t.Error("SetCWD with nonexistent path returned nil; want error")
+	}
+}
+
+// --- Queue / PopQueue ---
+
+func TestQueuePopQueue(t *testing.T) {
+	c := newCore(t, nil, nil)
+	c.Queue("a")
+	c.Queue("b")
+
+	if got, ok := c.PopQueue(); !ok || got != "a" {
+		t.Errorf("PopQueue() = %q, %v; want %q, true", got, ok, "a")
+	}
+	if got, ok := c.PopQueue(); !ok || got != "b" {
+		t.Errorf("PopQueue() = %q, %v; want %q, true", got, ok, "b")
+	}
+	if got, ok := c.PopQueue(); ok {
+		t.Errorf("PopQueue on empty = %q, true; want empty, false", got)
+	}
+}
