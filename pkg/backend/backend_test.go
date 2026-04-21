@@ -560,6 +560,108 @@ func TestAnthropicErrorRateLimit(t *testing.T) {
 	checkErrorRateLimit(t, b)
 }
 
+// --- Ollama: Models and ContextLength HTTP paths ---
+
+func ollamaModelsServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			json.NewEncoder(w).Encode(map[string]any{
+				"models": []map[string]any{{"name": "qwen:7b"}, {"name": "llama3:8b"}},
+			})
+		case "/api/show":
+			json.NewEncoder(w).Encode(map[string]any{
+				"model_info": map[string]any{"general.context_length": 8192.0},
+			})
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+}
+
+func TestOllamaModels_Success(t *testing.T) {
+	srv := ollamaModelsServer()
+	defer srv.Close()
+	b := mustNewOllama(t, srv.URL)
+	models := b.Models(context.Background())
+	if len(models) != 2 || models[0] != "qwen:7b" {
+		t.Errorf("models = %v", models)
+	}
+}
+
+func TestOllamaModels_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	b := mustNewOllama(t, srv.URL)
+	if models := b.Models(context.Background()); models != nil {
+		t.Errorf("models = %v; want nil", models)
+	}
+}
+
+func TestOllamaModels_MalformedJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "not json")
+	}))
+	defer srv.Close()
+	b := mustNewOllama(t, srv.URL)
+	if models := b.Models(context.Background()); models != nil {
+		t.Errorf("models = %v; want nil", models)
+	}
+}
+
+func TestOllamaModels_ConnectionRefused(t *testing.T) {
+	b := mustNewOllama(t, "http://127.0.0.1:1")
+	if models := b.Models(context.Background()); models != nil {
+		t.Errorf("models = %v; want nil", models)
+	}
+}
+
+func TestOllamaContextLength_Success(t *testing.T) {
+	srv := ollamaModelsServer()
+	defer srv.Close()
+	b := mustNewOllama(t, srv.URL)
+	if cl := b.ContextLength(context.Background()); cl != 8192 {
+		t.Errorf("cl = %d; want 8192", cl)
+	}
+}
+
+func TestOllamaContextLength_Cached(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		json.NewEncoder(w).Encode(map[string]any{
+			"model_info": map[string]any{"general.context_length": 4096.0},
+		})
+	}))
+	defer srv.Close()
+	b := mustNewOllama(t, srv.URL)
+	b.ContextLength(context.Background())
+	b.ContextLength(context.Background())
+	if calls != 1 {
+		t.Errorf("calls = %d; want 1", calls)
+	}
+}
+
+func TestOllamaContextLength_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	b := mustNewOllama(t, srv.URL)
+	if cl := b.ContextLength(context.Background()); cl != 0 {
+		t.Errorf("cl = %d; want 0", cl)
+	}
+}
+
+func TestOllamaContextLength_ConnectionRefused(t *testing.T) {
+	b := mustNewOllama(t, "http://127.0.0.1:1")
+	if cl := b.ContextLength(context.Background()); cl != 0 {
+		t.Errorf("cl = %d; want 0", cl)
+	}
+}
+
 // --- CodeWhisperer ---
 
 func TestCodeWhispererContract(t *testing.T) {

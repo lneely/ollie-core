@@ -134,6 +134,20 @@ func TestNewFromEnv_Unknown(t *testing.T) {
 	}
 }
 
+func TestNewOllama_InvalidURL(t *testing.T) {
+	_, err := NewOllama("://bad")
+	if err == nil {
+		t.Fatal("expected error for invalid URL")
+	}
+}
+
+func TestNewOpenAI_InvalidURL(t *testing.T) {
+	_, err := NewOpenAI("openai", "://bad", "k")
+	if err == nil {
+		t.Fatal("expected error for invalid URL")
+	}
+}
+
 func TestNewFromEnv_EnvFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "env")
