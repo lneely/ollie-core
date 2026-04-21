@@ -526,17 +526,17 @@ func TestAgentSpawnFiresOnce(t *testing.T) {
 	}
 }
 
-// --- loadSystemPrompt ---
+// --- BuildAgentEnv: missing system prompt ---
 
-func TestLoadSystemPrompt_MissingFile(t *testing.T) {
+func TestBuildAgentEnv_MissingSystemPrompt(t *testing.T) {
 	t.Setenv("OLLIE_CFG_PATH", t.TempDir()) // no SYSTEM_PROMPT.md written
 
 	defer func() {
 		if recover() == nil {
-			t.Error("expected panic from loadSystemPrompt; got none")
+			t.Error("expected panic from BuildAgentEnv; got none")
 		}
 	}()
-	loadSystemPrompt("")
+	BuildAgentEnv(nil, tools.NewDispatcher(), "")
 }
 
 // --- panic recovery ---

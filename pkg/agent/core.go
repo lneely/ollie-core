@@ -79,7 +79,12 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 		}
 	}
 
-	base := loadSystemPrompt(cwd)
+	path := DefaultPromptsDir() + "/SYSTEM_PROMPT.md"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		panic(fmt.Sprintf("loadSystemPrompt: %s: %v", path, err))
+	}
+	base := expandSystemPrompt(string(data), cwd)
 	sp := base
 	if agentPrompt != "" {
 		if sp != "" {
@@ -121,17 +126,6 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 // DefaultPromptsDir returns the default directory for prompt templates.
 func DefaultPromptsDir() string {
 	return paths.CfgDir() + "/prompts"
-}
-
-// loadSystemPrompt reads SYSTEM_PROMPT.md from DefaultPromptsDir and expands
-// environment variables, including computed PRIME_* values.
-func loadSystemPrompt(cwd string) string {
-	path := DefaultPromptsDir() + "/SYSTEM_PROMPT.md"
-	data, err := os.ReadFile(path)
-	if err != nil {
-		panic(fmt.Sprintf("loadSystemPrompt: %s: %v", path, err))
-	}
-	return expandSystemPrompt(string(data), cwd)
 }
 
 func expandSystemPrompt(content, cwd string) string {
