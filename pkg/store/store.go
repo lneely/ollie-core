@@ -5,6 +5,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // ReadableStore is a named collection of byte blobs supporting only read operations.
@@ -36,6 +37,50 @@ type BlobStore interface {
 type Store interface {
 	BlobStore
 	Rename(oldName, newName string) error
+}
+
+// SyntheticFileInfo implements os.FileInfo for entries with no backing file.
+type SyntheticFileInfo struct {
+	Name_  string
+	Mode_  os.FileMode
+	Size_  int64
+	IsDir_ bool
+}
+
+func (f *SyntheticFileInfo) Name() string       { return f.Name_ }
+func (f *SyntheticFileInfo) Size() int64        { return f.Size_ }
+func (f *SyntheticFileInfo) Mode() os.FileMode  { return f.Mode_ }
+func (f *SyntheticFileInfo) ModTime() time.Time { return time.Time{} }
+func (f *SyntheticFileInfo) IsDir() bool        { return f.IsDir_ }
+func (f *SyntheticFileInfo) Sys() any           { return nil }
+
+// SyntheticEntry implements os.DirEntry for entries with no backing file.
+type SyntheticEntry struct {
+	Name_  string
+	Mode_  os.FileMode
+	IsDir_ bool
+}
+
+func (e *SyntheticEntry) Name() string      { return e.Name_ }
+func (e *SyntheticEntry) IsDir() bool       { return e.IsDir_ }
+func (e *SyntheticEntry) Type() os.FileMode {
+	if e.IsDir_ {
+		return os.ModeDir
+	}
+	return 0
+}
+func (e *SyntheticEntry) Info() (os.FileInfo, error) {
+	return &SyntheticFileInfo{Name_: e.Name_, Mode_: e.Mode_, IsDir_: e.IsDir_}, nil
+}
+
+// FileEntry returns a synthetic file DirEntry.
+func FileEntry(name string, mode os.FileMode) os.DirEntry {
+	return &SyntheticEntry{Name_: name, Mode_: mode}
+}
+
+// DirEntry returns a synthetic directory DirEntry.
+func DirEntry(name string, mode os.FileMode) os.DirEntry {
+	return &SyntheticEntry{Name_: name, Mode_: mode, IsDir_: true}
 }
 
 // FlatDir implements Store backed by a directory on the local filesystem.
