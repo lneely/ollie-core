@@ -707,6 +707,9 @@ func firstSentence(s string) string {
 // and shell shortcuts are dispatched immediately via handler; any other input
 // starts an agent turn that streams events to handler. If a turn is already
 // in progress the prompt is queued as an in-stream interruption instead.
+//
+// Continuations (post-turn hook context, unconsumed inject, FIFO drain) are
+// handled via an explicit loop rather than recursion to avoid stack growth.
 func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandler) {
 	clog.Debug("Submit() input_len=%d running=%v", len(input), s.IsRunning())
 	if input == "" {
@@ -715,12 +718,19 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	if s.handleCommand(ctx, input, handler) {
 		return
 	}
-
 	if s.IsRunning() {
 		s.Inject(input)
 		return
 	}
 
+	for input != "" && ctx.Err() == nil {
+		input = s.executeTurn(ctx, input, handler)
+	}
+}
+
+// executeTurn runs a single agent turn and returns the next prompt to execute,
+// or "" if there is nothing more to do.
+func (s *agentCore) executeTurn(ctx context.Context, input string, handler EventHandler) string {
 	handler(Event{Role: "user", Content: input})
 
 	hookResult := s.hooks.Run(ctx, HookPreTurn, map[string]string{
@@ -730,7 +740,7 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 	})
 	if hookResult.Blocked {
 		handler(infoEvent("hook blocked prompt"))
-		return
+		return ""
 	}
 	if hookResult.Context != "" {
 		input += "\n" + hookResult.Context
@@ -825,27 +835,23 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 
 	s.saveSession()
 
-	// Stop hook said "continue" — re-enter with the hook's context as the prompt.
-	if stopResult.Blocked && stopResult.Context != "" && ctx.Err() == nil {
-		s.Submit(ctx, stopResult.Context, handler)
-		return
+	// Post-turn hook said "continue" — its context becomes the next prompt.
+	if stopResult.Blocked && stopResult.Context != "" {
+		return stopResult.Context
 	}
 
-	// If an inject was pending but never consumed (e.g. text-only response
-	// with no tool calls), treat it as the next user message.
-	if p := s.pendingInject.Swap(nil); p != nil && ctx.Err() == nil {
-		s.Submit(ctx, *p, handler)
-		return
+	// Inject that was pending but never consumed (text-only response with no
+	// tool calls) — treat it as the next user message.
+	if p := s.pendingInject.Swap(nil); p != nil {
+		return *p
 	}
 
-	// Drain the FIFO: run queued prompts sequentially.
-	for ctx.Err() == nil {
-		next, ok := s.fifo.Pop()
-		if !ok {
-			break
-		}
-		s.Submit(ctx, next, handler)
+	// Drain one item from the FIFO; the outer loop handles the rest.
+	if next, ok := s.fifo.Pop(); ok {
+		return next
 	}
+
+	return ""
 }
 
 func (s *agentCore) handleCommand(ctx context.Context, input string, handler EventHandler) bool {
