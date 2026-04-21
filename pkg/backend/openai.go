@@ -54,10 +54,7 @@ func (b *OpenAIBackend) fetchModels(ctx context.Context) []openAIModelInfo {
 	if len(b.cachedModels) > 0 {
 		return b.cachedModels
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", b.baseURL.JoinPath("/v1/models").String(), nil)
-	if err != nil {
-		return nil
-	}
+	req, _ := http.NewRequestWithContext(ctx, "GET", b.baseURL.JoinPath("/v1/models").String(), nil)
 	if b.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+b.apiKey)
 	}

@@ -40,10 +40,7 @@ func (b *OllamaBackend) Model() string        { return b.model }
 func (b *OllamaBackend) SetModel(m string)    { b.model = m; b.ctxLength = 0 }
 
 func (b *OllamaBackend) Models(ctx context.Context) []string {
-	req, err := http.NewRequestWithContext(ctx, "GET", b.baseURL.JoinPath("/api/tags").String(), nil)
-	if err != nil {
-		return nil
-	}
+	req, _ := http.NewRequestWithContext(ctx, "GET", b.baseURL.JoinPath("/api/tags").String(), nil)
 	resp, err := b.client.Do(req)
 	if err != nil || resp.StatusCode != 200 {
 		if resp != nil {
@@ -72,10 +69,7 @@ func (b *OllamaBackend) ContextLength(ctx context.Context) int {
 		return b.ctxLength
 	}
 	body, _ := json.Marshal(map[string]string{"name": b.model})
-	req, err := http.NewRequestWithContext(ctx, "POST", b.baseURL.JoinPath("/api/show").String(), bytes.NewReader(body))
-	if err != nil {
-		return 0
-	}
+	req, _ := http.NewRequestWithContext(ctx, "POST", b.baseURL.JoinPath("/api/show").String(), bytes.NewReader(body))
 	resp, err := b.client.Do(req)
 	if err != nil || resp.StatusCode != 200 {
 		if resp != nil {
