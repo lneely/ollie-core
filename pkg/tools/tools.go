@@ -6,8 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-
-	"ollie/pkg/mcp"
 )
 
 // ToolInfo describes a tool provided by a server.
@@ -116,51 +114,4 @@ type EnvSetter interface {
 // list. Tools in the list bypass the Confirm callback.
 type TrustedToolsSetter interface {
 	SetTrustedTools(tools []string)
-}
-
-// NewServer wraps an mcp.Client as a Server.
-func NewServer(client *mcp.Client) Server {
-	return &mcpServer{client: client}
-}
-
-// mcpServer wraps an mcp.Client as a Server.
-type mcpServer struct {
-	client *mcp.Client
-}
-
-func (m *mcpServer) ListTools() ([]ToolInfo, error) {
-	result, err := m.client.Call("tools/list", nil)
-	if err != nil {
-		return nil, err
-	}
-	var resp struct {
-		Tools []struct {
-			Name        string          `json:"name"`
-			Description string          `json:"description"`
-			InputSchema json.RawMessage `json:"inputSchema"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal(result, &resp); err != nil {
-		return nil, err
-	}
-	var tools []ToolInfo
-	for _, t := range resp.Tools {
-		tools = append(tools, ToolInfo{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
-		})
-	}
-	return tools, nil
-}
-
-func (m *mcpServer) CallTool(_ context.Context, tool string, args json.RawMessage) (json.RawMessage, error) {
-	return m.client.Call("tools/call", map[string]any{
-		"name":      tool,
-		"arguments": args,
-	})
-}
-
-func (m *mcpServer) Close() {
-	m.client.Close()
 }

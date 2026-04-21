@@ -24,7 +24,6 @@ func (h *HookCmds) UnmarshalJSON(data []byte) error {
 }
 
 type Config struct {
-	MCPServers       map[string]ServerConfig `json:"mcpServers,omitempty"`
 	Hooks            map[string]HookCmds     `json:"hooks,omitempty"`
 	Prompt           string                  `json:"prompt,omitempty"`
 	TrustedTools     []string                `json:"trustedTools,omitempty"`
@@ -32,13 +31,6 @@ type Config struct {
 	Temperature      *float64                `json:"temperature,omitempty"`
 	FrequencyPenalty *float64                `json:"frequencyPenalty,omitempty"`
 	PresencePenalty  *float64                `json:"presencePenalty,omitempty"`
-}
-
-type ServerConfig struct {
-	Command  string            `json:"command,omitempty"`
-	Args     []string          `json:"args,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
-	Disabled bool              `json:"disabled,omitempty"`
 }
 
 func Load(path string) (*Config, error) {

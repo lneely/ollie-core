@@ -1,0 +1,19 @@
+filesystem:
+  rwx:
+    - "{CWD}"
+    - "/tmp"
+    - "/usr"
+    - "/bin"
+    - "/lib"
+    - "/lib64"
+    - "/etc"
+  ro:
+    - "/proc"
+    - "/dev"
+env:
+  - HOME
+  - PATH
+  - TMPDIR
+  - MY_TEST_VAR
+network:
+  unrestricted: true

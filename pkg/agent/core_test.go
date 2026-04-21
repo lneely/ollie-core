@@ -1389,16 +1389,6 @@ func TestCommand_History_WithSession(t *testing.T) {
 	}
 }
 
-// --- /mcp ---
-
-func TestCommand_MCP(t *testing.T) {
-	c := newCore(t, nil, nil)
-	evs := collectEvents(context.Background(), c, "/mcp")
-	if len(byRole(evs, "info")) == 0 {
-		t.Error("/mcp: no info events emitted")
-	}
-}
-
 // --- /sp ---
 
 func TestCommand_SP(t *testing.T) {
@@ -1940,11 +1930,11 @@ func TestCommand_Backend_Error(t *testing.T) {
 	}
 }
 
-// --- extractMCPResult ---
+// --- extractToolResult ---
 
-func TestExtractMCPResult_Success(t *testing.T) {
+func TestExtractToolResult_Success(t *testing.T) {
 	raw := json.RawMessage(`{"isError":false,"content":[{"type":"text","text":"hello"}]}`)
-	text, isErr := extractMCPResult(raw)
+	text, isErr := extractToolResult(raw)
 	if text != "hello" {
 		t.Errorf("text = %q; want %q", text, "hello")
 	}
@@ -1953,9 +1943,9 @@ func TestExtractMCPResult_Success(t *testing.T) {
 	}
 }
 
-func TestExtractMCPResult_IsError(t *testing.T) {
+func TestExtractToolResult_IsError(t *testing.T) {
 	raw := json.RawMessage(`{"isError":true,"content":[{"type":"text","text":"something failed"}]}`)
-	text, isErr := extractMCPResult(raw)
+	text, isErr := extractToolResult(raw)
 	if text != "something failed" {
 		t.Errorf("text = %q; want %q", text, "something failed")
 	}
@@ -1964,25 +1954,25 @@ func TestExtractMCPResult_IsError(t *testing.T) {
 	}
 }
 
-func TestExtractMCPResult_MultipleContentItems(t *testing.T) {
+func TestExtractToolResult_MultipleContentItems(t *testing.T) {
 	raw := json.RawMessage(`{"isError":false,"content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}`)
-	text, _ := extractMCPResult(raw)
+	text, _ := extractToolResult(raw)
 	if text != "a\nb" {
 		t.Errorf("text = %q; want %q", text, "a\nb")
 	}
 }
 
-func TestExtractMCPResult_NonTextItemsSkipped(t *testing.T) {
+func TestExtractToolResult_NonTextItemsSkipped(t *testing.T) {
 	raw := json.RawMessage(`{"isError":false,"content":[{"type":"image","text":"ignored"},{"type":"text","text":"kept"}]}`)
-	text, _ := extractMCPResult(raw)
+	text, _ := extractToolResult(raw)
 	if text != "kept" {
 		t.Errorf("text = %q; want %q", text, "kept")
 	}
 }
 
-func TestExtractMCPResult_InvalidJSON(t *testing.T) {
+func TestExtractToolResult_InvalidJSON(t *testing.T) {
 	raw := json.RawMessage(`not json`)
-	text, isErr := extractMCPResult(raw)
+	text, isErr := extractToolResult(raw)
 	if text != "not json" {
 		t.Errorf("text = %q; want raw input on parse failure", text)
 	}
@@ -1991,15 +1981,15 @@ func TestExtractMCPResult_InvalidJSON(t *testing.T) {
 	}
 }
 
-// --- mcpToolsToBackend ---
+// --- toolInfosToBackend ---
 
-func TestMcpToolsToBackend(t *testing.T) {
+func TestToolInfosToBackend(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object"}`)
 	infos := []tools.ToolInfo{
 		{Name: "tool_a", Description: "does A.", InputSchema: schema},
 		{Name: "tool_b", Description: "does B.", InputSchema: schema},
 	}
-	got := mcpToolsToBackend(infos)
+	got := toolInfosToBackend(infos)
 	if len(got) != 2 {
 		t.Fatalf("len = %d; want 2", len(got))
 	}
@@ -2011,8 +2001,8 @@ func TestMcpToolsToBackend(t *testing.T) {
 	}
 }
 
-func TestMcpToolsToBackend_Empty(t *testing.T) {
-	got := mcpToolsToBackend(nil)
+func TestToolInfosToBackend_Empty(t *testing.T) {
+	got := toolInfosToBackend(nil)
 	if len(got) != 0 {
 		t.Errorf("expected empty slice, got %v", got)
 	}

@@ -83,10 +83,6 @@ type Core interface {
 	// ListModels returns available model names, one per line.
 	ListModels() string
 
-	// ListServers returns all registered tool servers and their tools,
-	// grouped by server name.
-	ListServers() string
-
 	// CWD returns the current working directory used for tool execution.
 	CWD() string
 

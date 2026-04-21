@@ -20,7 +20,6 @@ import (
 	"ollie/pkg/backend"
 	"ollie/pkg/config"
 	olog "ollie/pkg/log"
-	"ollie/pkg/mcp"
 	"ollie/pkg/paths"
 	"ollie/pkg/tools"
 )
@@ -48,22 +47,6 @@ type AgentEnv struct {
 func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv {
 	var messages []string
 
-	if cfg != nil {
-		for name, serverCfg := range cfg.MCPServers {
-			if serverCfg.Disabled || serverCfg.Command == "" {
-				continue
-			}
-			transport := mcp.NewSTDIOTransport(serverCfg.Command, serverCfg.Args, serverCfg.Env)
-			client, err := transport.Connect()
-			if err != nil {
-				messages = append(messages, fmt.Sprintf("MCP %s: failed to connect: %v", name, err))
-				continue
-			}
-			d.AddServer(name, tools.NewServer(client))
-			messages = append(messages, fmt.Sprintf("MCP %s: connected", name))
-		}
-	}
-
 	allToolInfos, listErr := d.ListTools()
 	if listErr != nil {
 		messages = append(messages, fmt.Sprintf("list tools: %v", listErr))
@@ -74,7 +57,7 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 		serverOf[t.Name] = t.Server
 	}
 
-	allTools := mcpToolsToBackend(allToolInfos)
+	allTools := toolInfosToBackend(allToolInfos)
 
 	hooks := Hooks{}
 	agentPrompt := ""
@@ -118,7 +101,7 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 		if err != nil {
 			return "", err
 		}
-		text, isErr := extractMCPResult(raw)
+		text, isErr := extractToolResult(raw)
 		if isErr {
 			return "", fmt.Errorf("%s", text)
 		}
@@ -644,50 +627,6 @@ func (s *agentCore) ListModels() string {
 	clog.Debug("ListModels()")
 	models := s.loopcfg.Backend.Models(context.Background())
 	return strings.Join(models, "\n")
-}
-
-func (s *agentCore) ListServers() string {
-	clog.Debug("ListServers()")
-	if s.dispatcher == nil {
-		return "no dispatcher"
-	}
-	allTools, err := s.dispatcher.ListTools()
-	if err != nil {
-		return "error: " + err.Error()
-	}
-	if len(allTools) == 0 {
-		return "no servers registered"
-	}
-
-	// Group tools by server, preserving first-seen order.
-	type serverEntry struct {
-		name  string
-		tools []tools.ToolInfo
-	}
-	index := map[string]int{}
-	var servers []serverEntry
-	for _, t := range allTools {
-		i, ok := index[t.Server]
-		if !ok {
-			i = len(servers)
-			index[t.Server] = i
-			servers = append(servers, serverEntry{name: t.Server})
-		}
-		servers[i].tools = append(servers[i].tools, t)
-	}
-
-	var sb strings.Builder
-	for si, srv := range servers {
-		if si > 0 {
-			sb.WriteByte('\n')
-		}
-		fmt.Fprintf(&sb, "%s\n", srv.name)
-		for _, t := range srv.tools {
-			desc := firstSentence(t.Description)
-			fmt.Fprintf(&sb, "  %-22s %s\n", t.Name, desc)
-		}
-	}
-	return strings.TrimRight(sb.String(), "\n")
 }
 
 // firstSentence returns the first sentence of s (up to the first period or
@@ -1226,10 +1165,6 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		"/skills": func(args []string) { listMountDir("sk") },
 		"/tools":  func(args []string) { listMountDir("t") },
 
-		"/mcp": func(args []string) {
-			handler(infoEvent(s.ListServers()))
-		},
-
 		"/sp": func(args []string) {
 			handler(infoEvent(s.loopcfg.systemPrompt))
 		},
@@ -1245,7 +1180,6 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 				"  /models          - list available models",
 				"  /skills          - list available skills",
 				"  /tools           - list available tools",
-				"  /mcp             - list registered tool servers and their tools",
 				"  /cwd [path]      - show or change working directory",
 				"  /i <prompt>       - inject prompt into the running turn",
 				"  /irw <prompt>     - rewrite the pending inject",
@@ -1276,9 +1210,9 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 	return true
 }
 
-func mcpToolsToBackend(mcpTools []tools.ToolInfo) []backend.Tool {
-	out := make([]backend.Tool, len(mcpTools))
-	for i, t := range mcpTools {
+func toolInfosToBackend(infos []tools.ToolInfo) []backend.Tool {
+	out := make([]backend.Tool, len(infos))
+	for i, t := range infos {
 		out[i] = backend.Tool{
 			Name:        t.Name,
 			Description: t.Description,
@@ -1288,7 +1222,7 @@ func mcpToolsToBackend(mcpTools []tools.ToolInfo) []backend.Tool {
 	return out
 }
 
-func extractMCPResult(raw json.RawMessage) (text string, isError bool) {
+func extractToolResult(raw json.RawMessage) (text string, isError bool) {
 	var result struct {
 		IsError bool `json:"isError"`
 		Content []struct {
