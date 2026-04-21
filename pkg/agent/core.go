@@ -292,8 +292,21 @@ func (s *agentCore) pushSessionEnv() {
 
 var _ Core = (*agentCore)(nil) // compile-time interface check
 
+var sweepTmpOnce sync.Once
+
+// sweepStaleTmpDirs removes any /tmp/ollie/ directories left by a previous
+// crash. All session tmpdirs are owned by a single process, so anything
+// present at startup is stale.
+func sweepStaleTmpDirs() {
+	sweepTmpOnce.Do(func() {
+		os.RemoveAll("/tmp/ollie")          //nolint:errcheck
+		os.MkdirAll("/tmp/ollie", 0700)     //nolint:errcheck
+	})
+}
+
 // NewAgentCore creates an agentCore from the given configuration.
 func NewAgentCore(cfg AgentCoreConfig) Core {
+	sweepStaleTmpDirs()
 	if cfg.ModelName != "" {
 		cfg.Backend.SetModel(cfg.ModelName)
 	}
