@@ -2269,3 +2269,135 @@ func TestBuildAgentEnv_ExecUnknownTool(t *testing.T) {
 		t.Errorf("expected unknown tool error; got %v", err)
 	}
 }
+
+// --- mock dispatcher for BuildAgentEnv tests ---
+
+type mockDispatcher struct {
+	tools    []tools.ToolInfo
+	listErr  error
+	servers  map[string]tools.Server
+	dispatch func(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error)
+}
+
+func (m *mockDispatcher) AddServer(name string, s tools.Server) {
+	if m.servers == nil {
+		m.servers = make(map[string]tools.Server)
+	}
+	m.servers[name] = s
+}
+func (m *mockDispatcher) GetServer(name string) (tools.Server, bool) {
+	s, ok := m.servers[name]
+	return s, ok
+}
+func (m *mockDispatcher) ListTools() ([]tools.ToolInfo, error) {
+	return m.tools, m.listErr
+}
+func (m *mockDispatcher) Dispatch(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error) {
+	if m.dispatch != nil {
+		return m.dispatch(ctx, server, tool, args)
+	}
+	return nil, fmt.Errorf("not implemented")
+}
+
+type mockTrustedSetter struct {
+	tools.Server
+	trusted []string
+}
+
+func (m *mockTrustedSetter) SetTrustedTools(t []string) { m.trusted = t }
+func (m *mockTrustedSetter) ListTools() ([]tools.ToolInfo, error) {
+	return nil, nil
+}
+func (m *mockTrustedSetter) CallTool(ctx context.Context, tool string, args json.RawMessage) (json.RawMessage, error) {
+	return nil, nil
+}
+
+func TestBuildAgentEnv_ListToolsError(t *testing.T) {
+	setupCfgDir(t, "")
+	d := &mockDispatcher{listErr: fmt.Errorf("boom")}
+	env := BuildAgentEnv(nil, d, t.TempDir())
+	if len(env.Messages) != 1 || !strings.Contains(env.Messages[0], "boom") {
+		t.Errorf("Messages = %v", env.Messages)
+	}
+}
+
+func TestBuildAgentEnv_ToolsPopulated(t *testing.T) {
+	setupCfgDir(t, "")
+	d := &mockDispatcher{
+		tools: []tools.ToolInfo{{Server: "s1", Name: "mytool", Description: "desc", InputSchema: json.RawMessage(`{}`)}},
+	}
+	env := BuildAgentEnv(nil, d, t.TempDir())
+	if len(env.tools) != 1 || env.tools[0].Name != "mytool" {
+		t.Errorf("tools = %+v", env.tools)
+	}
+}
+
+func TestBuildAgentEnv_TrustedTools(t *testing.T) {
+	setupCfgDir(t, "")
+	setter := &mockTrustedSetter{}
+	d := &mockDispatcher{servers: map[string]tools.Server{"execute": setter}}
+	cfg := &config.Config{TrustedTools: []string{"bash"}}
+	BuildAgentEnv(cfg, d, t.TempDir())
+	if len(setter.trusted) != 1 || setter.trusted[0] != "bash" {
+		t.Errorf("trusted = %v", setter.trusted)
+	}
+}
+
+func TestBuildAgentEnv_AgentPromptNoSystemPrompt(t *testing.T) {
+	// Empty system prompt file — agentPrompt should be the entire system prompt.
+	setupCfgDir(t, "")
+	d := tools.NewDispatcher()
+	cfg := &config.Config{Prompt: "only agent"}
+	env := BuildAgentEnv(cfg, d, t.TempDir())
+	if env.systemPrompt != "only agent" {
+		t.Errorf("systemPrompt = %q; want %q", env.systemPrompt, "only agent")
+	}
+}
+
+func TestBuildAgentEnv_ExecDispatchSuccess(t *testing.T) {
+	setupCfgDir(t, "")
+	d := &mockDispatcher{
+		tools: []tools.ToolInfo{{Server: "s1", Name: "mytool"}},
+		dispatch: func(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error) {
+			return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
+		},
+	}
+	env := BuildAgentEnv(nil, d, t.TempDir())
+	result, err := env.exec(context.Background(), "mytool", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "ok" {
+		t.Errorf("result = %q", result)
+	}
+}
+
+func TestBuildAgentEnv_ExecDispatchError(t *testing.T) {
+	setupCfgDir(t, "")
+	d := &mockDispatcher{
+		tools: []tools.ToolInfo{{Server: "s1", Name: "mytool"}},
+		dispatch: func(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error) {
+			return nil, fmt.Errorf("dispatch failed")
+		},
+	}
+	env := BuildAgentEnv(nil, d, t.TempDir())
+	_, err := env.exec(context.Background(), "mytool", json.RawMessage(`{}`))
+	if err == nil || !strings.Contains(err.Error(), "dispatch failed") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestBuildAgentEnv_ExecToolResultIsError(t *testing.T) {
+	setupCfgDir(t, "")
+	d := &mockDispatcher{
+		tools: []tools.ToolInfo{{Server: "s1", Name: "mytool"}},
+		dispatch: func(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error) {
+			return json.RawMessage(`{"isError":true,"content":[{"type":"text","text":"bad thing"}]}`), nil
+		},
+	}
+	env := BuildAgentEnv(nil, d, t.TempDir())
+	_, err := env.exec(context.Background(), "mytool", json.RawMessage(`{}`))
+	if err == nil || !strings.Contains(err.Error(), "bad thing") {
+		t.Errorf("err = %v", err)
+	}
+}

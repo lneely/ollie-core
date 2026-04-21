@@ -131,6 +131,10 @@ func loadSystemPrompt(cwd string) string {
 	if err != nil {
 		panic(fmt.Sprintf("loadSystemPrompt: %s: %v", path, err))
 	}
+	return expandSystemPrompt(string(data), cwd)
+}
+
+func expandSystemPrompt(content, cwd string) string {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
@@ -150,7 +154,7 @@ func loadSystemPrompt(cwd string) string {
 			return os.Getenv(key)
 		}
 	}
-	return os.Expand(string(data), mapper)
+	return os.Expand(content, mapper)
 }
 
 
