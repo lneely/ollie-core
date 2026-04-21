@@ -31,13 +31,33 @@ type stubCore struct {
 	reply     string
 	params    backend.GenerationParams
 	closed    bool
+
+	// For testing WaitChange: send a value to unblock.
+	waitCh chan string
+
+	// Records
+	submitted  []string
+	queued     []string
+	interrupted bool
 }
 
-func (c *stubCore) Submit(context.Context, string, agent.EventHandler)          {}
-func (c *stubCore) Interrupt(error) bool                                        { return c.running }
+func (c *stubCore) Submit(_ context.Context, input string, handler agent.EventHandler) {
+	c.submitted = append(c.submitted, input)
+	if handler != nil && c.reply != "" {
+		handler(agent.Event{Role: "assistant", Content: c.reply})
+	}
+}
+func (c *stubCore) Interrupt(error) bool                                        { c.interrupted = true; return c.running }
 func (c *stubCore) Inject(string)                                               {}
-func (c *stubCore) Queue(string)                                                {}
-func (c *stubCore) PopQueue() (string, bool)                                    { return "", false }
+func (c *stubCore) Queue(s string)                                              { c.queued = append(c.queued, s) }
+func (c *stubCore) PopQueue() (string, bool) {
+	if len(c.queued) == 0 {
+		return "", false
+	}
+	s := c.queued[0]
+	c.queued = c.queued[1:]
+	return s, true
+}
 func (c *stubCore) IsRunning() bool                                             { return c.running }
 func (c *stubCore) State() string                                               { return c.state }
 func (c *stubCore) Reply() string                                               { return c.reply }
@@ -54,8 +74,36 @@ func (c *stubCore) SystemPrompt() string                                        
 func (c *stubCore) GenerationParams() backend.GenerationParams                  { return c.params }
 func (c *stubCore) SetGenerationParams(p backend.GenerationParams) error        { c.params = p; return nil }
 func (c *stubCore) SetEnv(string, string)                                       {}
-func (c *stubCore) WaitChange(ctx context.Context, _, _ string) (string, bool)  { <-ctx.Done(); return "", false }
+func (c *stubCore) WaitChange(ctx context.Context, _, _ string) (string, bool) {
+	if c.waitCh != nil {
+		select {
+		case v := <-c.waitCh:
+			return v, true
+		case <-ctx.Done():
+			return "", false
+		}
+	}
+	<-ctx.Done()
+	return "", false
+}
 func (c *stubCore) Close()                                                      { c.closed = true }
+
+// publishCore wraps stubCore and emits a realistic event sequence on Submit.
+type publishCore struct {
+	*stubCore
+}
+
+func (c *publishCore) Submit(_ context.Context, input string, handler agent.EventHandler) {
+	c.submitted = append(c.submitted, input)
+	if handler == nil {
+		return
+	}
+	handler(agent.Event{Role: "user", Content: input})
+	handler(agent.Event{Role: "assistant", Content: "thinking..."})
+	handler(agent.Event{Role: "call", Name: "fn", Content: "arg1"})
+	handler(agent.Event{Role: "tool", Content: "result"})
+	handler(agent.Event{Role: "assistant", Content: "done"})
+}
 
 // --- helpers ---
 
@@ -93,6 +141,31 @@ func newBatchStore(t *testing.T) *store.BatchStore {
 		Log:  sink.NewLogger("test"),
 		Sink: sink,
 	})
+}
+
+func newSessionFileStore(t *testing.T, sess *store.Session) (*store.SessionFileStore, *stubCore) {
+	t.Helper()
+	sink := testSink()
+	core := sess.Core.(*stubCore)
+	var killed bool
+	var renamed string
+	var saved []byte
+	sf := store.NewSessionFileStore(sess, sink.NewLogger("test"),
+		func() { killed = true },
+		func(id string) error { renamed = id; return nil },
+		func(data []byte) error { saved = data; return nil },
+	)
+	_ = killed
+	_ = renamed
+	_ = saved
+	return sf, core
+}
+
+// newSessionFileStoreWith returns a SessionFileStore with custom callbacks.
+func newSessionFileStoreWith(t *testing.T, sess *store.Session, kill func(), rename func(string) error, save func([]byte) error) *store.SessionFileStore {
+	t.Helper()
+	sink := testSink()
+	return store.NewSessionFileStore(sess, sink.NewLogger("test"), kill, rename, save)
 }
 
 // storeRead is a test helper: Open + Read.
@@ -632,11 +705,649 @@ func TestSessionFileStorePutEmpty(t *testing.T) {
 	}
 }
 
+// ===== SessionFileStore: content, writeFile, handleCtl, blockingRead, makePublish =====
+
+func TestSessionFileStoreContentAllFields(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	core := sess.Core.(*stubCore)
+	core.usage = "100"
+	core.ctxsz = "4096"
+	core.models = "m1\nm2"
+	core.sysprompt = "you are helpful"
+	sess.ChatOffset = 5
+	sf, _ := newSessionFileStore(t, sess)
+
+	for _, tc := range []struct {
+		name, want string
+	}{
+		{"backend", "stub\n"},
+		{"agent", "default\n"},
+		{"model", "m\n"},
+		{"state", "idle\n"},
+		{"cwd", "/tmp\n"},
+		{"usage", "100\n"},
+		{"ctxsz", "4096\n"},
+		{"models", "m1\nm2\n"},
+		{"systemprompt", "you are helpful"},
+		{"offset", "5\n"},
+	} {
+		data := storeRead(t, sf, tc.name)
+		if string(data) != tc.want {
+			t.Errorf("Read(%q) = %q; want %q", tc.name, data, tc.want)
+		}
+	}
+}
+
+func TestSessionFileStoreReadFifoOut(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	core := sess.Core.(*stubCore)
+	core.queued = []string{"queued-item"}
+	sf, _ := newSessionFileStore(t, sess)
+
+	data := storeRead(t, sf, "fifo.out")
+	if string(data) != "queued-item" {
+		t.Errorf("Read(fifo.out) = %q; want queued-item", data)
+	}
+	// Empty queue returns nil
+	data2 := storeRead(t, sf, "fifo.out")
+	if len(data2) != 0 {
+		t.Errorf("Read(fifo.out) empty queue = %q; want empty", data2)
+	}
+}
+
+func TestSessionFileStoreReadNotFound(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	sf, _ := newSessionFileStore(t, sess)
+
+	if _, err := sf.Open("__bogus__"); err == nil {
+		t.Error("Open(bogus) should error")
+	}
+}
+
+func TestSessionFileStoreWritePrompt(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	sf, core := newSessionFileStore(t, sess)
+
+	storeWrite(t, sf, "prompt", []byte("hello agent"))
+	if len(core.submitted) != 1 || core.submitted[0] != "hello agent" {
+		t.Errorf("submitted = %v; want [hello agent]", core.submitted)
+	}
+}
+
+func TestSessionFileStoreWriteFifoIn(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	sf, core := newSessionFileStore(t, sess)
+
+	storeWrite(t, sf, "fifo.in", []byte("inject this"))
+	if len(core.queued) != 1 || core.queued[0] != "inject this" {
+		t.Errorf("queued = %v; want [inject this]", core.queued)
+	}
+}
+
+func TestSessionFileStoreWriteChat(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	var saved []byte
+	sf := newSessionFileStoreWith(t, sess,
+		func() {}, func(string) error { return nil },
+		func(data []byte) error { saved = data; return nil })
+
+	storeWrite(t, sf, "chat", []byte("transcript data"))
+	if string(saved) != "transcript data" {
+		t.Errorf("saved = %q; want transcript data", saved)
+	}
+}
+
+func TestSessionFileStoreWriteBackendModelAgent(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	sf, core := newSessionFileStore(t, sess)
+
+	storeWrite(t, sf, "backend", []byte("openai"))
+	if len(core.submitted) != 1 || core.submitted[0] != "/backend openai" {
+		t.Errorf("submitted = %v; want [/backend openai]", core.submitted)
+	}
+	storeWrite(t, sf, "model", []byte("gpt-4"))
+	if core.submitted[1] != "/model gpt-4" {
+		t.Errorf("submitted[1] = %q; want /model gpt-4", core.submitted[1])
+	}
+	storeWrite(t, sf, "agent", []byte("coder"))
+	if core.submitted[2] != "/agent coder" {
+		t.Errorf("submitted[2] = %q; want /agent coder", core.submitted[2])
+	}
+}
+
+func TestSessionFileStoreWriteBackendWhileRunning(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	core := sess.Core.(*stubCore)
+	core.running = true
+	sf, _ := newSessionFileStore(t, sess)
+
+	e, _ := sf.Open("backend")
+	if err := e.Write([]byte("openai")); err == nil {
+		t.Error("Write(backend) while running should error")
+	}
+	e2, _ := sf.Open("model")
+	if err := e2.Write([]byte("gpt-4")); err == nil {
+		t.Error("Write(model) while running should error")
+	}
+	e3, _ := sf.Open("agent")
+	if err := e3.Write([]byte("coder")); err == nil {
+		t.Error("Write(agent) while running should error")
+	}
+}
+
+func TestSessionFileStoreWriteParams(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	sf, core := newSessionFileStore(t, sess)
+
+	storeWrite(t, sf, "params", []byte("maxTokens=2048"))
+	if core.params.MaxTokens != 2048 {
+		t.Errorf("MaxTokens = %d; want 2048", core.params.MaxTokens)
+	}
+}
+
+func TestSessionFileStoreWriteParamsWhileRunning(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	core := sess.Core.(*stubCore)
+	core.running = true
+	sf, _ := newSessionFileStore(t, sess)
+
+	e, _ := sf.Open("params")
+	if err := e.Write([]byte("maxTokens=2048")); err == nil {
+		t.Error("Write(params) while running should error")
+	}
+}
+
+func TestSessionFileStoreHandleCtl(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	core := sess.Core.(*stubCore)
+	core.running = true
+	sf, _ := newSessionFileStore(t, sess)
+
+	// stop
+	storeWrite(t, sf, "ctl", []byte("stop"))
+	if !core.interrupted {
+		t.Error("ctl stop should interrupt")
+	}
+
+	// kill
+	var killed bool
+	sf2 := newSessionFileStoreWith(t, sess,
+		func() { killed = true },
+		func(string) error { return nil },
+		func([]byte) error { return nil })
+	storeWrite(t, sf2, "ctl", []byte("kill"))
+	if !killed {
+		t.Error("ctl kill should call kill callback")
+	}
+
+	// rn (rename)
+	var renamed string
+	sf3 := newSessionFileStoreWith(t, sess,
+		func() {},
+		func(id string) error { renamed = id; return nil },
+		func([]byte) error { return nil })
+	storeWrite(t, sf3, "ctl", []byte("rn newname"))
+	if renamed != "newname" {
+		t.Errorf("renamed = %q; want newname", renamed)
+	}
+
+	// save
+	sess.AppendLog([]byte("log data"))
+	var saved []byte
+	sf4 := newSessionFileStoreWith(t, sess,
+		func() {},
+		func(string) error { return nil },
+		func(data []byte) error { saved = data; return nil })
+	storeWrite(t, sf4, "ctl", []byte("save"))
+	if !strings.Contains(string(saved), "log data") {
+		t.Errorf("saved = %q; want to contain log data", saved)
+	}
+
+	// slash commands forwarded to Submit
+	core5 := &stubCore{state: "idle", backend: "stub", model: "m", agentName: "default", cwd: "/tmp"}
+	ctx5, cancel5 := context.WithCancel(context.Background())
+	defer cancel5()
+	sess5 := store.NewSession("s5", core5, ctx5, cancel5)
+	sf5, _ := newSessionFileStore(t, sess5)
+	for _, cmd := range []string{"compact", "clear", "help", "history", "tools", "skills"} {
+		storeWrite(t, sf5, "ctl", []byte(cmd))
+	}
+	for i, cmd := range []string{"compact", "clear", "help", "history", "tools", "skills"} {
+		want := "/" + cmd
+		if i >= len(core5.submitted) || core5.submitted[i] != want {
+			t.Errorf("submitted[%d] = %q; want %q", i, core5.submitted[i], want)
+		}
+	}
+}
+
+func TestSessionFileStoreHandleCtlErrors(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	sf, _ := newSessionFileStore(t, sess)
+
+	// unknown command
+	e, _ := sf.Open("ctl")
+	if err := e.Write([]byte("boguscmd")); err == nil {
+		t.Error("unknown ctl command should error")
+	}
+}
+
+func TestSessionFileStoreBlockingRead(t *testing.T) {
+	core := &stubCore{state: "idle", backend: "stub", model: "m", agentName: "default", cwd: "/tmp", waitCh: make(chan string, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	sess := store.NewSession("s1", core, ctx, cancel)
+	defer cancel()
+	sf, _ := newSessionFileStore(t, sess)
+
+	core.waitCh <- "running"
+
+	e, err := sf.Open("statewait")
+	if err != nil {
+		t.Fatalf("Open(statewait): %v", err)
+	}
+	data, err := e.BlockingRead(context.Background(), "idle")
+	if err != nil {
+		t.Fatalf("BlockingRead: %v", err)
+	}
+	if string(data) != "running\n" {
+		t.Errorf("BlockingRead = %q; want running\\n", data)
+	}
+}
+
+func TestSessionFileStoreBlockingReadCancel(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	sf, _ := newSessionFileStore(t, sess)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	e, _ := sf.Open("statewait")
+	data, err := e.BlockingRead(ctx, "idle")
+	if err != nil {
+		t.Fatalf("BlockingRead error: %v", err)
+	}
+	if data != nil {
+		t.Errorf("BlockingRead cancelled = %q; want nil", data)
+	}
+}
+
+func TestSessionFileStoreBlockingReadNotWaitFile(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	sf, _ := newSessionFileStore(t, sess)
+
+	e, _ := sf.Open("chat")
+	if _, err := e.BlockingRead(context.Background(), ""); err == nil {
+		t.Error("BlockingRead(chat) should error")
+	}
+}
+
+func TestSessionFileStoreBlockingReadAllWaitFiles(t *testing.T) {
+	core := &stubCore{state: "idle", backend: "stub", model: "m", agentName: "default", cwd: "/tmp", usage: "0", ctxsz: "0", waitCh: make(chan string, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	sess := store.NewSession("s1", core, ctx, cancel)
+	defer cancel()
+	sf, _ := newSessionFileStore(t, sess)
+
+	for _, name := range []string{"statewait", "usagewait", "ctxszwait", "cwdwait"} {
+		core.waitCh <- "newval"
+		e, err := sf.Open(name)
+		if err != nil {
+			t.Fatalf("Open(%q): %v", name, err)
+		}
+		data, err := e.BlockingRead(context.Background(), "")
+		if err != nil {
+			t.Fatalf("BlockingRead(%q): %v", name, err)
+		}
+		if string(data) != "newval\n" {
+			t.Errorf("BlockingRead(%q) = %q; want newval\\n", name, data)
+		}
+	}
+}
+
+func TestSessionFileStoreMakePublish(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	core := sess.Core.(*stubCore)
+	core.reply = "hello back"
+	sf, _ := newSessionFileStore(t, sess)
+
+	storeWrite(t, sf, "prompt", []byte("hi"))
+
+	l, _ := sess.LogInfo()
+	if l == 0 {
+		t.Error("session log should be non-empty after prompt+reply")
+	}
+
+	// Read the log to verify format
+	data := storeRead(t, sf, "chat")
+	if !strings.Contains(string(data), "assistant: hello back") {
+		t.Errorf("chat log = %q; want to contain 'assistant: hello back'", data)
+	}
+}
+
+func TestSessionFileStoreMakePublishMultipleEvents(t *testing.T) {
+	// Manually exercise makePublish with varied event sequences
+	core := &stubCore{state: "idle", backend: "stub", model: "m", agentName: "default", cwd: "/tmp"}
+	// Override Submit to emit a sequence of events
+	core2 := &publishCore{stubCore: core}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sess := store.NewSession("s1", core2, ctx, cancel)
+	sf := newSessionFileStoreWith(t, sess,
+		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
+
+	storeWrite(t, sf, "prompt", []byte("test"))
+
+	data := storeRead(t, sf, "chat")
+	s := string(data)
+	// Should contain user prefix, assistant prefix, tool call
+	if !strings.Contains(s, "user: ") {
+		t.Errorf("missing user prefix in %q", s)
+	}
+	if !strings.Contains(s, "assistant: ") {
+		t.Errorf("missing assistant prefix in %q", s)
+	}
+	if !strings.Contains(s, "-> fn(") {
+		t.Errorf("missing call in %q", s)
+	}
+}
+
+func TestSessionFileStoreEntryStat(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	sess.AppendLog([]byte("hello"))
+	sf, _ := newSessionFileStore(t, sess)
+
+	e, _ := sf.Open("chat")
+	fi, err := e.Stat()
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if fi.Size() != 5 {
+		t.Errorf("entry Stat(chat).Size() = %d; want 5", fi.Size())
+	}
+
+	e2, _ := sf.Open("statewait")
+	fi2, err := e2.Stat()
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if fi2.Size() != 0 {
+		t.Errorf("entry Stat(statewait).Size() = %d; want 0", fi2.Size())
+	}
+
+	e3, _ := sf.Open("state")
+	fi3, err := e3.Stat()
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if fi3.Size() != int64(len("idle\n")) {
+		t.Errorf("entry Stat(state).Size() = %d; want %d", fi3.Size(), len("idle\n"))
+	}
+}
+
+func TestSessionStoreOpenStore(t *testing.T) {
+	s := newSessionStore(t)
+	sess := testSession("s1")
+	defer sess.Cancel()
+	s.AddSession(sess)
+
+	rs, err := s.OpenStore("s1")
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	data := storeRead(t, rs, "state")
+	if string(data) != "idle\n" {
+		t.Errorf("Read(state) = %q; want idle\\n", data)
+	}
+	if _, err := s.OpenStore("nope"); err == nil {
+		t.Error("OpenStore(nonexistent) should error")
+	}
+}
+
+// ===== BatchJobStore: additional coverage =====
+
+func TestBatchJobStoreAppendLogAndLogInfo(t *testing.T) {
+	s := newBatchStore(t)
+	s.AddJob("j1", "running", "", "")
+	js, _ := s.OpenStore("j1")
+
+	js.AppendLog([]byte("line 1\n"))
+	js.AppendLog(nil)
+	js.AppendLog([]byte("line 2\n"))
+
+	l, v := js.LogInfo()
+	if l != 14 {
+		t.Errorf("LogInfo length = %d; want 14", l)
+	}
+	if v != 2 {
+		t.Errorf("LogInfo vers = %d; want 2", v)
+	}
+
+	data := storeRead(t, js, "log")
+	if string(data) != "line 1\nline 2\n" {
+		t.Errorf("Read(log) = %q", data)
+	}
+}
+
+func TestBatchJobStoreRunnableID(t *testing.T) {
+	s := newBatchStore(t)
+	s.AddJob("j1", "done", "", "")
+	js, _ := s.OpenStore("j1")
+	if js.RunnableID() != "j1" {
+		t.Errorf("RunnableID = %q; want j1", js.RunnableID())
+	}
+}
+
+func TestBatchJobStoreInterruptAndCancel(t *testing.T) {
+	s := newBatchStore(t)
+	s.AddJob("j1", "done", "", "")
+	js, _ := s.OpenStore("j1")
+	js.Interrupt() // should not panic
+	js.Cancel()    // should not panic
+}
+
+func TestBatchJobStoreWriteReadOnly(t *testing.T) {
+	s := newBatchStore(t)
+	s.AddJob("j1", "done", "result", "spec")
+	js, _ := s.OpenStore("j1")
+
+	for _, name := range []string{"spec", "state", "result", "log"} {
+		e, err := js.Open(name)
+		if err != nil {
+			t.Fatalf("Open(%q): %v", name, err)
+		}
+		if err := e.Write([]byte("x")); err == nil {
+			t.Errorf("Write(%q) should error (read-only)", name)
+		}
+	}
+}
+
+func TestBatchJobStoreOpenNotFound(t *testing.T) {
+	s := newBatchStore(t)
+	s.AddJob("j1", "done", "", "")
+	js, _ := s.OpenStore("j1")
+	if _, err := js.Open("__bogus__"); err == nil {
+		t.Error("Open(bogus) should error")
+	}
+}
+
+func TestBatchJobStoreStatNotFound(t *testing.T) {
+	s := newBatchStore(t)
+	s.AddJob("j1", "done", "", "")
+	js, _ := s.OpenStore("j1")
+	if _, err := js.Stat("__bogus__"); err == nil {
+		t.Error("Stat(bogus) should error")
+	}
+}
+
+func TestBatchJobStoreStatLog(t *testing.T) {
+	s := newBatchStore(t)
+	s.AddJob("j1", "done", "", "")
+	js, _ := s.OpenStore("j1")
+	js.AppendLog([]byte("data"))
+
+	fi, err := js.Stat("log")
+	if err != nil {
+		t.Fatalf("Stat(log): %v", err)
+	}
+	if fi.Size() != 4 {
+		t.Errorf("Stat(log).Size() = %d; want 4", fi.Size())
+	}
+}
+
+func TestBatchJobStoreEntryStatLog(t *testing.T) {
+	s := newBatchStore(t)
+	s.AddJob("j1", "done", "", "")
+	js, _ := s.OpenStore("j1")
+	js.AppendLog([]byte("data"))
+
+	e, _ := js.Open("log")
+	fi, err := e.Stat()
+	if err != nil {
+		t.Fatalf("entry Stat(log): %v", err)
+	}
+	if fi.Size() != 4 {
+		t.Errorf("entry Stat(log).Size() = %d; want 4", fi.Size())
+	}
+}
+
+func TestBatchJobStoreUsageCtxsz(t *testing.T) {
+	s := newBatchStore(t)
+	s.AddJob("j1", "done", "", "")
+	js, _ := s.OpenStore("j1")
+
+	for _, name := range []string{"usage", "ctxsz"} {
+		data := storeRead(t, js, name)
+		if string(data) != "\n" {
+			t.Errorf("Read(%q) = %q; want \\n", name, data)
+		}
+	}
+}
+
+func TestBatchStoreInterruptAll(t *testing.T) {
+	s := newBatchStore(t)
+	s.AddJob("j1", "running", "", "")
+	s.InterruptAll() // should not panic
+}
+
+func TestSessionInterrupt(t *testing.T) {
+	sess := testSession("s1")
+	defer sess.Cancel()
+	sess.Core.(*stubCore).running = true
+	sess.Interrupt()
+	if !sess.Core.(*stubCore).interrupted {
+		t.Error("Interrupt should call Core.Interrupt")
+	}
+}
+
+func TestBatchStoreOpenEntryNew(t *testing.T) {
+	s := newBatchStore(t)
+	// Read the new template
+	data := storeRead(t, s, "new")
+	if !strings.Contains(string(data), "cwd=") {
+		t.Errorf("Read(new) = %q; want to contain cwd=", data)
+	}
+	// Stat on new entry
+	e, _ := s.Open("new")
+	fi, _ := e.Stat()
+	if fi.Name() != "new" {
+		t.Errorf("Stat(new).Name() = %q", fi.Name())
+	}
+}
+
+func TestBatchStoreOpenEntryNotFound(t *testing.T) {
+	s := newBatchStore(t)
+	if _, err := s.Open("__bogus__"); err == nil {
+		t.Error("Open(bogus) should error")
+	}
+}
+
+func TestSessionStoreOpenEntryNew(t *testing.T) {
+	s := newSessionStore(t)
+	data := storeRead(t, s, "new")
+	if !strings.Contains(string(data), "name=") {
+		t.Errorf("Read(new) = %q; want to contain name=", data)
+	}
+}
+
+func TestSessionStoreCreateSessionErrors(t *testing.T) {
+	s := newSessionStore(t)
+
+	// invalid option format
+	e, _ := s.Open("new")
+	if err := e.Write([]byte("badformat")); err == nil {
+		t.Error("Write(new) with bad format should error")
+	}
+
+	// unknown option
+	e2, _ := s.Open("new")
+	if err := e2.Write([]byte("bogus=val")); err == nil {
+		t.Error("Write(new) with unknown option should error")
+	}
+
+	// missing cwd
+	e3, _ := s.Open("new")
+	if err := e3.Write([]byte("name=test")); err == nil {
+		t.Error("Write(new) without cwd should error")
+	}
+}
+
+func TestSessionStoreOpenEntryNotFound(t *testing.T) {
+	s := newSessionStore(t)
+	if _, err := s.Open("__bogus__"); err == nil {
+		t.Error("Open(bogus) should error")
+	}
+}
+
+func TestSkillStoreOpenWrite(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OLLIE_SKILLS_PATH", dir)
+	seedSkill(t, dir, "existing")
+	s := store.NewSkillStore()
+
+	// Write to existing skill
+	content := []byte("---\ndescription: updated\n---\nnew body\n")
+	storeWrite(t, s, "existing.md", content)
+	got := storeRead(t, s, "existing.md")
+	if string(got) != string(content) {
+		t.Errorf("Read after Write = %q; want %q", got, content)
+	}
+
+	// Write to new skill (creates dir)
+	storeWrite(t, s, "brand-new.md", content)
+	got2 := storeRead(t, s, "brand-new.md")
+	if string(got2) != string(content) {
+		t.Errorf("Read new skill = %q; want %q", got2, content)
+	}
+
+	// Stat on non-existent skill should error
+	e, _ := s.Open("nope.md")
+	if _, err := e.Stat(); err == nil {
+		t.Error("Stat on non-existent skill should error")
+	}
+}
+
 // ===== FormatParams / ParseParams =====
 
 func TestFormatParseParamsRoundTrip(t *testing.T) {
 	temp := 0.7
-	p := backend.GenerationParams{MaxTokens: 1024, Temperature: &temp}
+	freq := 0.5
+	pres := 0.3
+	p := backend.GenerationParams{MaxTokens: 1024, Temperature: &temp, FrequencyPenalty: &freq, PresencePenalty: &pres}
 	s := store.FormatParams(p)
 	got, err := store.ParseParams(s, backend.GenerationParams{})
 	if err != nil {
@@ -647,6 +1358,18 @@ func TestFormatParseParamsRoundTrip(t *testing.T) {
 	}
 	if got.Temperature == nil || *got.Temperature != 0.7 {
 		t.Errorf("Temperature = %v; want 0.7", got.Temperature)
+	}
+	if got.FrequencyPenalty == nil || *got.FrequencyPenalty != 0.5 {
+		t.Errorf("FrequencyPenalty = %v; want 0.5", got.FrequencyPenalty)
+	}
+	if got.PresencePenalty == nil || *got.PresencePenalty != 0.3 {
+		t.Errorf("PresencePenalty = %v; want 0.3", got.PresencePenalty)
+	}
+
+	// Nil optional fields
+	s2 := store.FormatParams(backend.GenerationParams{})
+	if !strings.Contains(s2, "temperature=\n") {
+		t.Errorf("FormatParams nil temp = %q; want temperature=\\n", s2)
 	}
 }
 
@@ -862,10 +1585,12 @@ func TestBatchJobStoreNotFound(t *testing.T) {
 // ===== ParseBatchSpec =====
 
 func TestParseBatchSpec(t *testing.T) {
-	input := "name=test\ncwd=/tmp\nagent=default\n---\ndo something"
-	if _, err := store.ParseBatchSpec(input); err != nil {
+	input := "name=test\ncwd=/tmp\nagent=default\noutput=json\nparallel=3\n---\ndo something"
+	spec, err := store.ParseBatchSpec(input)
+	if err != nil {
 		t.Fatalf("ParseBatchSpec: %v", err)
 	}
+	_ = spec
 }
 
 func TestParseBatchSpecErrors(t *testing.T) {
@@ -914,6 +1639,7 @@ func TestFormatEvent(t *testing.T) {
 		{agent.Event{Role: "tool", Content: "result\n"}, "result\n"},
 		{agent.Event{Role: "retry", Content: "5"}, "retrying in 5s...\n"},
 		{agent.Event{Role: "stalled"}, "agent stalled\n"},
+		{agent.Event{Role: "info", Content: "note"}, "note"},
 		{agent.Event{Role: "unknown"}, ""},
 	} {
 		got := string(store.FormatEvent(tc.ev))
