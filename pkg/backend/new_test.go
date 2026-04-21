@@ -6,6 +6,165 @@ import (
 	"testing"
 )
 
+// setEnv sets env vars for a test and restores them on cleanup.
+func setEnv(t *testing.T, vars map[string]string) {
+	t.Helper()
+	for k, v := range vars {
+		old, existed := os.LookupEnv(k)
+		os.Setenv(k, v)
+		if existed {
+			t.Cleanup(func() { os.Setenv(k, old) })
+		} else {
+			t.Cleanup(func() { os.Unsetenv(k) })
+		}
+	}
+}
+
+func clearEnv(t *testing.T, keys ...string) {
+	t.Helper()
+	for _, k := range keys {
+		old, existed := os.LookupEnv(k)
+		os.Unsetenv(k)
+		if existed {
+			t.Cleanup(func() { os.Setenv(k, old) })
+		}
+	}
+}
+
+func TestNewFromEnv_DefaultOllama(t *testing.T) {
+	clearEnv(t, "OLLIE_BACKEND", "OLLIE_OLLAMA_URL")
+	b, err := newFromEnv("/nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Name() != "ollama" {
+		t.Errorf("name = %q; want ollama", b.Name())
+	}
+}
+
+func TestNewFromEnv_Ollama(t *testing.T) {
+	setEnv(t, map[string]string{"OLLIE_BACKEND": "ollama", "OLLIE_OLLAMA_URL": "http://myhost:11434"})
+	b, err := newFromEnv("/nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Name() != "ollama" {
+		t.Errorf("name = %q", b.Name())
+	}
+}
+
+func TestNewFromEnv_OpenAI(t *testing.T) {
+	setEnv(t, map[string]string{"OLLIE_BACKEND": "openai", "OLLIE_OPENAI_URL": "https://api.openai.com", "OLLIE_OPENAI_KEY": "sk-test"})
+	b, err := newFromEnv("/nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Name() != "openai" {
+		t.Errorf("name = %q", b.Name())
+	}
+}
+
+func TestNewFromEnv_OpenRouter(t *testing.T) {
+	setEnv(t, map[string]string{"OLLIE_BACKEND": "openrouter", "OLLIE_OPENAI_URL": "https://openrouter.ai/api", "OLLIE_OPENAI_KEY": "sk-or-test"})
+	b, err := newFromEnv("/nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Name() != "openrouter" {
+		t.Errorf("name = %q", b.Name())
+	}
+}
+
+func TestNewFromEnv_Anthropic(t *testing.T) {
+	setEnv(t, map[string]string{"OLLIE_BACKEND": "anthropic", "OLLIE_ANTHROPIC_KEY": "sk-ant-test"})
+	b, err := newFromEnv("/nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Name() != "anthropic" {
+		t.Errorf("name = %q", b.Name())
+	}
+}
+
+func TestNewFromEnv_AnthropicMissingKey(t *testing.T) {
+	setEnv(t, map[string]string{"OLLIE_BACKEND": "anthropic"})
+	clearEnv(t, "OLLIE_ANTHROPIC_KEY")
+	_, err := newFromEnv("/nonexistent")
+	if err == nil {
+		t.Fatal("expected error for missing key")
+	}
+}
+
+func TestNewFromEnv_Copilot(t *testing.T) {
+	setEnv(t, map[string]string{"OLLIE_BACKEND": "copilot", "OLLIE_COPILOT_TOKEN": "tok"})
+	b, err := newFromEnv("/nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Name() != "copilot" {
+		t.Errorf("name = %q", b.Name())
+	}
+}
+
+func TestNewFromEnv_CopilotMissingToken(t *testing.T) {
+	setEnv(t, map[string]string{"OLLIE_BACKEND": "copilot"})
+	clearEnv(t, "OLLIE_COPILOT_TOKEN")
+	_, err := newFromEnv("/nonexistent")
+	if err == nil {
+		t.Fatal("expected error for missing token")
+	}
+}
+
+func TestNewFromEnv_Kiro(t *testing.T) {
+	setEnv(t, map[string]string{"OLLIE_BACKEND": "kiro", "OLLIE_KIRO_TOKEN": "fake"})
+	b, err := newFromEnv("/nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Name() != "kiro" {
+		t.Errorf("name = %q", b.Name())
+	}
+}
+
+func TestNewFromEnv_Unknown(t *testing.T) {
+	setEnv(t, map[string]string{"OLLIE_BACKEND": "bogus"})
+	_, err := newFromEnv("/nonexistent")
+	if err == nil {
+		t.Fatal("expected error for unknown backend")
+	}
+}
+
+func TestNewFromEnv_EnvFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "env")
+	os.WriteFile(path, []byte("OLLIE_BACKEND=anthropic\nOLLIE_ANTHROPIC_KEY=from-file\n"), 0644)
+
+	clearEnv(t, "OLLIE_BACKEND", "OLLIE_ANTHROPIC_KEY")
+	b, err := newFromEnv(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Name() != "anthropic" {
+		t.Errorf("name = %q; want anthropic (from env file)", b.Name())
+	}
+}
+
+func TestNewFromEnv_EnvOverridesFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "env")
+	os.WriteFile(path, []byte("OLLIE_BACKEND=anthropic\n"), 0644)
+
+	setEnv(t, map[string]string{"OLLIE_BACKEND": "ollama"})
+	clearEnv(t, "OLLIE_OLLAMA_URL")
+	b, err := newFromEnv(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Name() != "ollama" {
+		t.Errorf("name = %q; want ollama (env overrides file)", b.Name())
+	}
+}
+
 func TestOpenAIName(t *testing.T) {
 	tests := []struct {
 		which, url, want string
