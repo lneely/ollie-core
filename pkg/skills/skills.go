@@ -1,18 +1,15 @@
-// Package skills discovers and serves skill definitions from OLLIE_SKILLS_PATH.
+// Package skills parses skill metadata from SKILL.md front-matter.
 //
 // Skills are directories containing a SKILL.md file with YAML front-matter
-// (name, description). They are exposed as a flat namespace of <name>.md files.
-// OLLIE_SKILLS_PATH is colon-separated; the first occurrence of a name wins.
+// (name, description). This package provides the parser and an in-memory
+// registry; all filesystem access is the caller's responsibility.
 package skills
 
 import (
 	"bufio"
+	"io"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
-
-	"ollie/pkg/paths"
 )
 
 // Meta holds parsed front-matter from a SKILL.md file.
@@ -22,66 +19,11 @@ type Meta struct {
 	Dir         string // directory containing SKILL.md
 }
 
-// DefaultDir returns the default skills directory.
-func DefaultDir() string {
-	return paths.CfgDir() + "/skills"
-}
-
-// Dirs returns the skill directories from OLLIE_SKILLS_PATH,
-// falling back to DefaultDir if unset.
-func Dirs() []string {
-	if env := os.Getenv("OLLIE_SKILLS_PATH"); env != "" {
-		return strings.Split(env, ":")
-	}
-	return []string{DefaultDir()}
-}
-
-// List scans all skill directories and returns deduplicated metadata.
-// First occurrence by directory order wins on name collision.
-func List() []Meta {
-	seen := make(map[string]bool)
-	var skills []Meta
-	for _, dir := range Dirs() {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if !e.IsDir() || seen[e.Name()] {
-				continue
-			}
-			skillDir := filepath.Join(dir, e.Name())
-			meta, err := parseFrontMatter(skillDir)
-			if err != nil {
-				continue
-			}
-			seen[meta.Name] = true
-			skills = append(skills, *meta)
-		}
-	}
-	sort.Slice(skills, func(i, j int) bool { return skills[i].Name < skills[j].Name })
-	return skills
-}
-
-// Read returns the SKILL.md content for the named skill.
-func Read(name string) ([]byte, error) {
-	for _, m := range List() {
-		if m.Name == name {
-			return os.ReadFile(filepath.Join(m.Dir, "SKILL.md"))
-		}
-	}
-	return nil, os.ErrNotExist
-}
-
-func parseFrontMatter(skillDir string) (*Meta, error) {
-	f, err := os.Open(filepath.Join(skillDir, "SKILL.md"))
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	meta := &Meta{Name: filepath.Base(skillDir), Dir: skillDir}
-	scanner := bufio.NewScanner(f)
+// ParseFrontMatter reads YAML front-matter from r, extracting name and
+// description fields. defaultName and dir are used as fallbacks/metadata.
+func ParseFrontMatter(r io.Reader, defaultName, dir string) (*Meta, error) {
+	meta := &Meta{Name: defaultName, Dir: dir}
+	scanner := bufio.NewScanner(r)
 	inFM := false
 	for scanner.Scan() {
 		line := scanner.Text()

@@ -966,7 +966,13 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			}
 			name := args[0]
 			cfgPath := AgentConfigPath(s.agentsDir, name)
-			cfg, err := config.Load(cfgPath)
+			f, err := os.Open(cfgPath)
+			if err != nil {
+				handler(infoEvent(fmt.Sprintf("error: agent %q: %v", name, err)))
+				return
+			}
+			cfg, err := config.Load(f)
+			f.Close()
 			if err != nil {
 				handler(infoEvent(fmt.Sprintf("error: agent %q: %v", name, err)))
 				return

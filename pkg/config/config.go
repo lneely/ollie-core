@@ -2,7 +2,7 @@ package config
 
 import (
 	"encoding/json"
-	"os"
+	"io"
 )
 
 // HookCmds holds one or more shell commands for a hook. It unmarshals from
@@ -33,13 +33,10 @@ type Config struct {
 	PresencePenalty  *float64                `json:"presencePenalty,omitempty"`
 }
 
-func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
+// Load parses a Config from r.
+func Load(r io.Reader) (*Config, error) {
 	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := json.NewDecoder(r).Decode(&cfg); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
