@@ -193,9 +193,6 @@ func streamAnthropicSSE(body io.Reader, ch chan<- StreamEvent) {
 	done := false
 
 	process := func(typ, data string) {
-		if done {
-			return
-		}
 		raw := []byte(data)
 		switch typ {
 		case "message_start":
