@@ -87,7 +87,8 @@ type SessionStoreConfig struct {
 	MkdirAll    func(string, os.FileMode) error
 	// OnRename is called after a session is renamed in the map,
 	// for protocol-level fixups (e.g. fid path rewriting).
-	OnRename func(oldID, newID string)
+	OnRename       func(oldID, newID string)
+	SaveTranscript func([]byte) error
 }
 
 // SessionStore implements Store for session management.
@@ -189,6 +190,21 @@ func (s *SessionStore) Session(id string) *Session {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.sessions[id]
+}
+
+// SessionFileStore returns a SessionFileStore for the given session ID.
+func (s *SessionStore) SessionFileStore(id string) (*SessionFileStore, bool) {
+	sess := s.Session(id)
+	if sess == nil {
+		return nil, false
+	}
+	return NewSessionFileStore(
+		sess,
+		s.cfg.Log,
+		func() { s.KillSession(id) },
+		func(newID string) error { return s.Rename(id, newID) },
+		s.cfg.SaveTranscript,
+	), true
 }
 
 // InterruptAll interrupts every active session.
