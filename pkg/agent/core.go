@@ -154,14 +154,7 @@ func expandSystemPrompt(content, cwd string) string {
 
 // AgentConfigPath resolves the config file path for a named agent.
 func AgentConfigPath(agentsDir, name string) string {
-	p := agentsDir + "/" + name + ".json"
-	if _, err := os.Stat(p); err == nil {
-		return p
-	}
-	if name == "default" {
-		return paths.CfgDir() + "/config.json"
-	}
-	return p
+	return agentsDir + "/" + name + ".json"
 }
 
 // NewSessionID generates a unique, lexicographically sortable session identifier.
