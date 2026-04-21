@@ -500,6 +500,9 @@ func (s *agentCore) fireAgentSpawn(ctx context.Context, handler EventHandler) {
 	if result.Ran {
 		handler(infoEvent(hooksRan(1)))
 	}
+	if result.Warning != "" {
+		handler(infoEvent(result.Warning))
+	}
 	if result.Context != "" {
 		s.loopcfg.systemPrompt += "\n\n---\n\n" + result.Context
 	}
@@ -689,6 +692,9 @@ func (s *agentCore) executeTurn(ctx context.Context, input string, handler Event
 		handler(infoEvent("hook blocked prompt"))
 		return ""
 	}
+	if hookResult.Warning != "" {
+		handler(infoEvent(hookResult.Warning))
+	}
 	if hookResult.Context != "" {
 		input += "\n" + hookResult.Context
 	}
@@ -744,6 +750,9 @@ func (s *agentCore) executeTurn(ctx context.Context, input string, handler Event
 			if pre.Ran {
 				handler(infoEvent(hooksRan(1)))
 			}
+			if pre.Warning != "" {
+				handler(infoEvent(pre.Warning))
+			}
 			if !pre.Blocked {
 				if pre.Context != "" {
 					s.session.appendUserMessage(pre.Context)
@@ -757,6 +766,9 @@ func (s *agentCore) executeTurn(ctx context.Context, input string, handler Event
 				post := s.hooks.Run(ctx, HookPostCompact, payload, s.log)
 				if post.Ran {
 					handler(infoEvent(hooksRan(1)))
+				}
+				if post.Warning != "" {
+					handler(infoEvent(post.Warning))
 				}
 				if post.Context != "" {
 					s.session.appendUserMessage(post.Context)
@@ -783,6 +795,9 @@ func (s *agentCore) executeTurn(ctx context.Context, input string, handler Event
 		"session_id": s.sessionID,
 		"cwd":        s.CWD(),
 	}, s.log)
+	if stopResult.Warning != "" {
+		handler(infoEvent(stopResult.Warning))
+	}
 
 	s.saveSession()
 
@@ -1007,6 +1022,9 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			if pre.Ran {
 				handler(infoEvent(hooksRan(1)))
 			}
+			if pre.Warning != "" {
+				handler(infoEvent(pre.Warning))
+			}
 			if pre.Blocked {
 				handler(infoEvent("compact cancelled by hook"))
 				return
@@ -1021,6 +1039,9 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			post := s.hooks.Run(ctx, HookPostCompact, payload, s.log)
 			if post.Ran {
 				handler(infoEvent(hooksRan(1)))
+			}
+			if post.Warning != "" {
+				handler(infoEvent(post.Warning))
 			}
 			if post.Context != "" {
 				s.session.appendUserMessage(post.Context)

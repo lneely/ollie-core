@@ -1893,8 +1893,7 @@ func TestHookTimeout_Branch(t *testing.T) {
 	t.Cleanup(func() { hookTimeout = old })
 
 	// A hook that sleeps longer than the timeout. The timeout branch kills the
-	// process and returns HookResult{} (Ran=false), so the turn is NOT blocked
-	// and the backend runs normally.
+	// process and returns a warning, but does not block the turn.
 	hooks := Hooks{HookPreTurn: []string{"sleep 10"}}
 	c := newCore(t, nil, hooks)
 	evs := collectEvents(context.Background(), c, "hello")
@@ -1905,6 +1904,17 @@ func TestHookTimeout_Branch(t *testing.T) {
 	}
 	if c.State() != "idle" {
 		t.Errorf("State() = %q after timeout hook; want idle", c.State())
+	}
+	// A timeout warning should have been emitted.
+	infos := byRole(evs, "info")
+	found := false
+	for _, s := range infos {
+		if strings.Contains(s, "timed out") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'timed out' warning in info events; got %v", infos)
 	}
 }
 

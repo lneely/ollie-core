@@ -39,6 +39,9 @@ type HookResult struct {
 	Blocked bool
 	// Context is stdout from the hook, injected into the conversation.
 	Context string
+	// Warning, if non-empty, is a message about hook execution problems
+	// (e.g. timeout, start failure) that should be surfaced to the user.
+	Warning string
 }
 
 // Run executes all commands for the named hook in order, sending payload as
@@ -61,20 +64,24 @@ func (h Hooks) Run(ctx context.Context, name string, payload any, log *olog.Logg
 	}
 
 	var contextParts []string
+	var warnings []string
 	for _, cmdStr := range cmds {
 		log.Debug("hook %s: cmd=%q", name, cmdStr)
 		result := runHookCmd(ctx, name, cmdStr, payloadJSON, cwd, log)
+		if result.Warning != "" {
+			warnings = append(warnings, result.Warning)
+		}
 		if !result.Ran {
 			continue
 		}
 		if result.Blocked {
-			return HookResult{Ran: true, Blocked: true, Context: result.Context}
+			return HookResult{Ran: true, Blocked: true, Context: result.Context, Warning: strings.Join(warnings, "; ")}
 		}
 		if result.Context != "" {
 			contextParts = append(contextParts, result.Context)
 		}
 	}
-	return HookResult{Ran: true, Context: strings.Join(contextParts, "\n")}
+	return HookResult{Ran: true, Context: strings.Join(contextParts, "\n"), Warning: strings.Join(warnings, "; ")}
 }
 
 func runHookCmd(ctx context.Context, name, cmdStr string, payloadJSON []byte, cwd string, log *olog.Logger) HookResult {
@@ -91,7 +98,7 @@ func runHookCmd(ctx context.Context, name, cmdStr string, payloadJSON []byte, cw
 	done := make(chan error, 1)
 	if err := cmd.Start(); err != nil {
 		log.Debug("hook %s: start error: %v", name, err)
-		return HookResult{}
+		return HookResult{Ran: true, Warning: fmt.Sprintf("hook %s: failed to start: %v", name, err)}
 	}
 	go func() { done <- cmd.Wait() }()
 
@@ -130,7 +137,7 @@ func runHookCmd(ctx context.Context, name, cmdStr string, payloadJSON []byte, cw
 		cmd.Process.Kill() //nolint:errcheck
 		<-done
 		log.Debug("hook %s: timed out after %ds", name, hookTimeout)
-		return HookResult{}
+		return HookResult{Ran: true, Warning: fmt.Sprintf("hook %s: timed out after %ds", name, hookTimeout)}
 	}
 }
 
