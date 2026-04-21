@@ -888,15 +888,15 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		if cmdStr == "" {
 			return true
 		}
-		cmd := exec.Command("sh", "-c", cmdStr)
-		cmd.Dir = s.CWD()
-		cmd.Env = append(os.Environ(), "OLLIE_SESSION_ID="+s.sessionID)
+		shellCmd := exec.Command("sh", "-c", cmdStr)
+		shellCmd.Dir = s.CWD()
+		shellCmd.Env = append(os.Environ(), "OLLIE_SESSION_ID="+s.sessionID)
 		s.envMu.RLock()
 		for k, v := range s.env {
-			cmd.Env = append(cmd.Env, k+"="+v)
+			shellCmd.Env = append(shellCmd.Env, k+"="+v)
 		}
 		s.envMu.RUnlock()
-		o, err := cmd.CombinedOutput()
+		o, err := shellCmd.CombinedOutput()
 		if err != nil {
 			handler(infoEvent("error: " + err.Error()))
 		}
@@ -914,170 +914,187 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 	if len(parts) == 0 {
 		return false
 	}
-
 	cmd := parts[0]
 	args := parts[1:]
 
-	handler(infoEvent(""))
-
-	switch cmd {
-	case "/irw":
-		prompt := strings.Join(args, " ")
-		if prompt == "" {
-			handler(infoEvent("error: /irw requires a prompt"))
-			return true
+	listMountDir := func(subdir string) {
+		mount := os.Getenv("OLLIE")
+		if mount == "" {
+			home, _ := os.UserHomeDir()
+			mount = home + "/mnt/ollie"
 		}
-		s.injectRewrite(prompt)
-		return true
-
-	case "/backend":
-		if len(args) == 0 {
-			handler(infoEvent(s.loopcfg.Backend.Name()))
-			return true
-		}
-		if s.IsRunning() {
-			handler(infoEvent("error: cannot switch backend while agent is running"))
-			return true
-		}
-		os.Setenv("OLLIE_BACKEND", args[0])
-		be, err := backend.New()
+		entries, err := os.ReadDir(mount + "/" + subdir)
 		if err != nil {
-			handler(infoEvent(fmt.Sprintf("error: failed to switch backend: %v", err)))
-			return true
+			handler(infoEvent(fmt.Sprintf("%s: %v", cmd, err)))
+			return
 		}
-		s.loopcfg.Backend = be
-		handler(infoEvent(fmt.Sprintf("switched backend to: %s (model: %s)", be.Name(), be.Model())))
-		return true
-
-	case "/models":
-		models := s.loopcfg.Backend.Models(ctx)
-		if len(models) == 0 {
-			handler(infoEvent("no models available"))
-			return true
-		}
-		current := s.loopcfg.Backend.Model()
-		for _, m := range models {
-			marker := "  "
-			if m == current {
-				marker = "* "
-			}
-			handler(infoEvent(marker + m))
-		}
-		return true
-
-	case "/model":
-		if len(args) == 0 {
-			handler(infoEvent(s.loopcfg.Backend.Model()))
-			return true
-		}
-		if s.IsRunning() {
-			handler(infoEvent("error: cannot switch model while agent is running"))
-			return true
-		}
-		s.loopcfg.Backend.SetModel(args[0])
-		handler(infoEvent("switched model to: " + args[0]))
-		return true
-
-	case "/agents":
-		entries, err := os.ReadDir(s.agentsDir)
-		if err != nil {
-			handler(infoEvent(fmt.Sprintf("agents: %v", err)))
-			return true
-		}
-		found := false
 		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-				continue
+			if !e.IsDir() {
+				handler(infoEvent("  " + e.Name()))
 			}
-			name := strings.TrimSuffix(e.Name(), ".json")
-			marker := "  "
-			if name == s.agentName {
-				marker = "* "
+		}
+	}
+
+	type cmdFn func([]string)
+	cmds := map[string]cmdFn{
+		"/irw": func(args []string) {
+			prompt := strings.Join(args, " ")
+			if prompt == "" {
+				handler(infoEvent("error: /irw requires a prompt"))
+				return
 			}
-			handler(infoEvent(marker + name))
-			found = true
-		}
-		if !found {
-			handler(infoEvent("no agents found in " + s.agentsDir))
-		}
-		return true
+			s.injectRewrite(prompt)
+		},
 
-	case "/agent":
-		if len(args) == 0 {
-			handler(infoEvent("active agent: " + s.agentName))
-			return true
-		}
-		if s.IsRunning() {
-			handler(infoEvent("error: cannot switch agent while agent is running"))
-			return true
-		}
-		name := args[0]
-		cfgPath := AgentConfigPath(s.agentsDir, name)
-		cfg, err := config.Load(cfgPath)
-		if err != nil {
-			handler(infoEvent(fmt.Sprintf("error: agent %q: %v", name, err)))
-			return true
-		}
-		if s.dispatcher != nil {
-			s.dispatcher.Close()
-		}
-		d := s.newDispatcher()
-		env := BuildAgentEnv(cfg, d, s.cwd)
-		s.dispatcher = env.dispatcher
-		s.hooks = env.Hooks
-		s.loopcfg.systemPrompt = env.systemPrompt
-		s.loopcfg.Tools = env.tools
-		s.loopcfg.Exec = env.exec
-		s.loopcfg.GenerationParams = env.genParams
-		s.agentPrompt = env.agentPrompt
-		s.agentName = name
-		s.session = nil
-		s.sessionID = NewSessionID()
-		s.agentSpawnFired = false
-		s.pushSessionEnv()
-		for _, msg := range env.Messages {
-			handler(infoEvent(msg))
-		}
-		handler(infoEvent("agent: " + name))
-		return true
+		"/backend": func(args []string) {
+			if len(args) == 0 {
+				handler(infoEvent(s.loopcfg.Backend.Name()))
+				return
+			}
+			if s.IsRunning() {
+				handler(infoEvent("error: cannot switch backend while agent is running"))
+				return
+			}
+			os.Setenv("OLLIE_BACKEND", args[0]) //nolint:errcheck
+			be, err := backend.New()
+			if err != nil {
+				handler(infoEvent(fmt.Sprintf("error: failed to switch backend: %v", err)))
+				return
+			}
+			s.loopcfg.Backend = be
+			handler(infoEvent(fmt.Sprintf("switched backend to: %s (model: %s)", be.Name(), be.Model())))
+		},
 
-	case "/compact":
-		if s.IsRunning() {
-			handler(infoEvent("error: cannot compact while agent is running"))
-			return true
-		}
-		if s.session == nil {
-			handler(infoEvent("nothing to compact"))
-			return true
-		}
-		// Snapshot history before compaction for persistence.
-		payload := map[string]string{"session_id": s.sessionID, "trigger": "manual", "cwd": s.CWD()}
-		pre := s.hooks.Run(ctx, HookPreCompact, payload)
-		if pre.Ran {
-			handler(infoEvent(hooksRan(1)))
-		}
-		if pre.Blocked {
-			handler(infoEvent("compact cancelled by hook"))
-			return true
-		}
-		if pre.Context != "" {
-			s.session.appendUserMessage(pre.Context)
-		}
-		snapshot := s.session.PreCompactionSnapshot()
-		n, _, err := s.session.compact(ctx, s.loopcfg.Backend)
-		post := s.hooks.Run(ctx, HookPostCompact, payload)
-		if post.Ran {
-			handler(infoEvent(hooksRan(1)))
-		}
-		if post.Context != "" {
-			s.session.appendUserMessage(post.Context)
-		}
-		if err != nil {
-			handler(infoEvent("compact error: " + err.Error()))
-		} else if n == 0 {
-			handler(infoEvent("nothing to compact"))
-		} else {
-			// Persist pre-compaction history as append-only JSONL.
+		"/models": func(args []string) {
+			models := s.loopcfg.Backend.Models(ctx)
+			if len(models) == 0 {
+				handler(infoEvent("no models available"))
+				return
+			}
+			current := s.loopcfg.Backend.Model()
+			for _, m := range models {
+				marker := "  "
+				if m == current {
+					marker = "* "
+				}
+				handler(infoEvent(marker + m))
+			}
+		},
+
+		"/model": func(args []string) {
+			if len(args) == 0 {
+				handler(infoEvent(s.loopcfg.Backend.Model()))
+				return
+			}
+			if s.IsRunning() {
+				handler(infoEvent("error: cannot switch model while agent is running"))
+				return
+			}
+			s.loopcfg.Backend.SetModel(args[0])
+			handler(infoEvent("switched model to: " + args[0]))
+		},
+
+		"/agents": func(args []string) {
+			entries, err := os.ReadDir(s.agentsDir)
+			if err != nil {
+				handler(infoEvent(fmt.Sprintf("agents: %v", err)))
+				return
+			}
+			found := false
+			for _, e := range entries {
+				if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+					continue
+				}
+				name := strings.TrimSuffix(e.Name(), ".json")
+				marker := "  "
+				if name == s.agentName {
+					marker = "* "
+				}
+				handler(infoEvent(marker + name))
+				found = true
+			}
+			if !found {
+				handler(infoEvent("no agents found in " + s.agentsDir))
+			}
+		},
+
+		"/agent": func(args []string) {
+			if len(args) == 0 {
+				handler(infoEvent("active agent: " + s.agentName))
+				return
+			}
+			if s.IsRunning() {
+				handler(infoEvent("error: cannot switch agent while agent is running"))
+				return
+			}
+			name := args[0]
+			cfgPath := AgentConfigPath(s.agentsDir, name)
+			cfg, err := config.Load(cfgPath)
+			if err != nil {
+				handler(infoEvent(fmt.Sprintf("error: agent %q: %v", name, err)))
+				return
+			}
+			if s.dispatcher != nil {
+				s.dispatcher.Close()
+			}
+			d := s.newDispatcher()
+			env := BuildAgentEnv(cfg, d, s.cwd)
+			s.dispatcher = env.dispatcher
+			s.hooks = env.Hooks
+			s.loopcfg.systemPrompt = env.systemPrompt
+			s.loopcfg.Tools = env.tools
+			s.loopcfg.Exec = env.exec
+			s.loopcfg.GenerationParams = env.genParams
+			s.agentPrompt = env.agentPrompt
+			s.agentName = name
+			s.session = nil
+			s.sessionID = NewSessionID()
+			s.agentSpawnFired = false
+			s.pushSessionEnv()
+			for _, msg := range env.Messages {
+				handler(infoEvent(msg))
+			}
+			handler(infoEvent("agent: " + name))
+		},
+
+		"/compact": func(args []string) {
+			if s.IsRunning() {
+				handler(infoEvent("error: cannot compact while agent is running"))
+				return
+			}
+			if s.session == nil {
+				handler(infoEvent("nothing to compact"))
+				return
+			}
+			payload := map[string]string{"session_id": s.sessionID, "trigger": "manual", "cwd": s.CWD()}
+			pre := s.hooks.Run(ctx, HookPreCompact, payload)
+			if pre.Ran {
+				handler(infoEvent(hooksRan(1)))
+			}
+			if pre.Blocked {
+				handler(infoEvent("compact cancelled by hook"))
+				return
+			}
+			if pre.Context != "" {
+				s.session.appendUserMessage(pre.Context)
+			}
+			snapshot := s.session.PreCompactionSnapshot()
+			n, _, err := s.session.compact(ctx, s.loopcfg.Backend)
+			post := s.hooks.Run(ctx, HookPostCompact, payload)
+			if post.Ran {
+				handler(infoEvent(hooksRan(1)))
+			}
+			if post.Context != "" {
+				s.session.appendUserMessage(post.Context)
+			}
+			if err != nil {
+				handler(infoEvent("compact error: " + err.Error()))
+				return
+			}
+			if n == 0 {
+				handler(infoEvent("nothing to compact"))
+				return
+			}
 			if s.sessionsDir != "" && s.sessionID != "" {
 				histPath := s.sessionsDir + "/" + s.sessionID + ".compaction.jsonl"
 				if data, err := json.Marshal(snapshot); err == nil {
@@ -1090,186 +1107,172 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			}
 			handler(infoEvent(fmt.Sprintf("compacted %d messages", n)))
 			s.saveSession()
-		}
-		return true
+		},
 
-	case "/context":
-		if s.session == nil {
-			handler(infoEvent("no active session"))
-			return true
-		}
-		ctxLen := s.loopcfg.Backend.ContextLength(ctx)
-		if ctxLen <= 0 {
-			ctxLen = defaultContextLength
-		}
-		estimated := s.session.estimateTokens()
-		pct := estimated * 100 / ctxLen
-		handler(infoEvent(fmt.Sprintf("~%d / %d tokens (%d%%)", estimated, ctxLen, pct)))
-		handler(infoEvent(strings.TrimRight(s.session.contextDebug(), "\n")))
-		return true
-
-	case "/usage":
-		if s.session == nil {
-			handler(infoEvent("no active session"))
-			return true
-		}
-		ctxLen := s.loopcfg.Backend.ContextLength(ctx)
-		if ctxLen <= 0 {
-			ctxLen = defaultContextLength
-		}
-		ctxEstimated := s.session.estimateTokens()
-		pct := ctxEstimated * 100 / ctxLen
-		usageStr := fmt.Sprintf("~%d / %d tokens (%d%%) | %d in, %d out, %d requests",
-			ctxEstimated, ctxLen, pct,
-			s.session.TotalInputTokens, s.session.TotalOutputTokens,
-			s.session.TotalRequests)
-		if s.session.Estimated {
-			usageStr += " [estimated]"
-		}
-		handler(infoEvent(usageStr))
-		return true
-
-	case "/history":
-		if s.session == nil {
-			handler(infoEvent("no active session"))
-			return true
-		}
-		for _, msg := range s.session.history() {
-			preview := msg.Content
-			if len(preview) > 200 {
-				preview = preview[:200] + "..."
+		"/context": func(args []string) {
+			if s.session == nil {
+				handler(infoEvent("no active session"))
+				return
 			}
-			handler(infoEvent(fmt.Sprintf("[%s] %s", msg.Role, preview)))
-		}
-		return true
-
-	case "/clear":
-		if s.IsRunning() {
-			handler(infoEvent("error: cannot clear while agent is running"))
-			return true
-		}
-		s.session = nil
-		s.sessionID = NewSessionID()
-		handler(infoEvent("cleared"))
-		return true
-
-	case "/sessions":
-		entries, err := os.ReadDir(s.sessionsDir)
-		if err != nil {
-			handler(infoEvent(fmt.Sprintf("sessions: %v", err)))
-			return true
-		}
-		found := false
-		for i := len(entries) - 1; i >= 0; i-- {
-			e := entries[i]
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-				continue
+			ctxLen := s.loopcfg.Backend.ContextLength(ctx)
+			if ctxLen <= 0 {
+				ctxLen = defaultContextLength
 			}
-			id := strings.TrimSuffix(e.Name(), ".json")
-			marker := "  "
-			if id == s.sessionID {
-				marker = "* "
+			estimated := s.session.estimateTokens()
+			pct := estimated * 100 / ctxLen
+			handler(infoEvent(fmt.Sprintf("~%d / %d tokens (%d%%)", estimated, ctxLen, pct)))
+			handler(infoEvent(strings.TrimRight(s.session.contextDebug(), "\n")))
+		},
+
+		"/usage": func(args []string) {
+			if s.session == nil {
+				handler(infoEvent("no active session"))
+				return
 			}
-			label := id
-			if data, readErr := os.ReadFile(s.sessionsDir + "/" + e.Name()); readErr == nil {
-				var ps PersistedSession
-				if json.Unmarshal(data, &ps) == nil {
-					goal := ""
-					for _, msg := range ps.Messages {
-						if msg.Role == "user" {
-							goal = msg.Content
-							break
-						}
-					}
-					if len(goal) > 60 {
-						goal = goal[:60] + "..."
-					}
-					label = fmt.Sprintf("%-24s  [%s] %q", id, ps.Agent, goal)
+			ctxLen := s.loopcfg.Backend.ContextLength(ctx)
+			if ctxLen <= 0 {
+				ctxLen = defaultContextLength
+			}
+			estimated := s.session.estimateTokens()
+			pct := estimated * 100 / ctxLen
+			usageStr := fmt.Sprintf("~%d / %d tokens (%d%%) | %d in, %d out, %d requests",
+				estimated, ctxLen, pct,
+				s.session.TotalInputTokens, s.session.TotalOutputTokens,
+				s.session.TotalRequests)
+			if s.session.Estimated {
+				usageStr += " [estimated]"
+			}
+			handler(infoEvent(usageStr))
+		},
+
+		"/history": func(args []string) {
+			if s.session == nil {
+				handler(infoEvent("no active session"))
+				return
+			}
+			for _, msg := range s.session.history() {
+				preview := msg.Content
+				if len(preview) > 200 {
+					preview = preview[:200] + "..."
 				}
+				handler(infoEvent(fmt.Sprintf("[%s] %s", msg.Role, preview)))
 			}
-			handler(infoEvent(marker + label))
-			found = true
-		}
-		if !found {
-			handler(infoEvent("no sessions found in " + s.sessionsDir))
-		}
-		return true
+		},
 
-	case "/cwd":
-		if len(args) == 0 {
-			handler(infoEvent("cwd: " + s.CWD()))
-			return true
-		}
-		dir := strings.Join(args, " ")
-		if err := s.SetCWD(dir); err != nil {
-			handler(infoEvent("error: " + err.Error()))
-			return true
-		}
-		handler(infoEvent("cwd: " + dir))
-		return true
-
-	case "/skills", "/tools":
-		subdir := "sk"
-		if cmd == "/tools" {
-			subdir = "t"
-		}
-		mount := os.Getenv("OLLIE")
-		if mount == "" {
-			home, _ := os.UserHomeDir()
-			mount = home + "/mnt/ollie"
-		}
-		entries, err := os.ReadDir(mount + "/" + subdir)
-		if err != nil {
-			handler(infoEvent(fmt.Sprintf("%s: %v", cmd, err)))
-			return true
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				handler(infoEvent("  " + e.Name()))
+		"/clear": func(args []string) {
+			if s.IsRunning() {
+				handler(infoEvent("error: cannot clear while agent is running"))
+				return
 			}
-		}
-		return true
+			s.session = nil
+			s.sessionID = NewSessionID()
+			handler(infoEvent("cleared"))
+		},
 
-	case "/mcp":
-		handler(infoEvent(s.ListServers()))
-		return true
+		"/sessions": func(args []string) {
+			entries, err := os.ReadDir(s.sessionsDir)
+			if err != nil {
+				handler(infoEvent(fmt.Sprintf("sessions: %v", err)))
+				return
+			}
+			found := false
+			for i := len(entries) - 1; i >= 0; i-- {
+				e := entries[i]
+				if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+					continue
+				}
+				id := strings.TrimSuffix(e.Name(), ".json")
+				marker := "  "
+				if id == s.sessionID {
+					marker = "* "
+				}
+				label := id
+				if data, readErr := os.ReadFile(s.sessionsDir + "/" + e.Name()); readErr == nil {
+					var ps PersistedSession
+					if json.Unmarshal(data, &ps) == nil {
+						goal := ""
+						for _, msg := range ps.Messages {
+							if msg.Role == "user" {
+								goal = msg.Content
+								break
+							}
+						}
+						if len(goal) > 60 {
+							goal = goal[:60] + "..."
+						}
+						label = fmt.Sprintf("%-24s  [%s] %q", id, ps.Agent, goal)
+					}
+				}
+				handler(infoEvent(marker + label))
+				found = true
+			}
+			if !found {
+				handler(infoEvent("no sessions found in " + s.sessionsDir))
+			}
+		},
 
-	case "/sp":
-		handler(infoEvent(s.loopcfg.systemPrompt))
-		return true
+		"/cwd": func(args []string) {
+			if len(args) == 0 {
+				handler(infoEvent("cwd: " + s.CWD()))
+				return
+			}
+			dir := strings.Join(args, " ")
+			if err := s.SetCWD(dir); err != nil {
+				handler(infoEvent("error: " + err.Error()))
+				return
+			}
+			handler(infoEvent("cwd: " + dir))
+		},
 
-	case "/help":
-		lines := []string{
-			"Available commands:",
-			"  /agents          - list available agent configs",
-			"  /sessions        - list saved sessions",
-			"  /agent [name]    - show or switch active agent",
-			"  /backend [type]  - show current backend, or switch to <type>",
-			"  /model [name]    - show current model, or switch to <name>",
-			"  /models          - list available models",
-			"  /skills          - list available skills",
-			"  /tools           - list available tools",
-			"  /mcp             - list registered tool servers and their tools",
-			"  /cwd [path]      - show or change working directory",
-			"  /queued [pop|clear] - manage queued prompts",
-			"  /compact         - summarize conversation and compact context",
-			"  /context         - show context size and message breakdown",
-			"  /usage           - show token usage and context percentage",
-			"  /history         - dump bounded message history",
-			"  /clear           - clear session",
-			"  /kill            - kill session",
-			"  /rn <name>       - rename session",
-			"  /sp              - show rendered system prompt",
-			"  /help            - show this help",
-			"  !<cmd>           - run shell command",
-		}
-		for _, l := range lines {
-			handler(infoEvent(l))
-		}
-		return true
+		"/skills": func(args []string) { listMountDir("sk") },
+		"/tools":  func(args []string) { listMountDir("t") },
+
+		"/mcp": func(args []string) {
+			handler(infoEvent(s.ListServers()))
+		},
+
+		"/sp": func(args []string) {
+			handler(infoEvent(s.loopcfg.systemPrompt))
+		},
+
+		"/help": func(args []string) {
+			lines := []string{
+				"Available commands:",
+				"  /agents          - list available agent configs",
+				"  /sessions        - list saved sessions",
+				"  /agent [name]    - show or switch active agent",
+				"  /backend [type]  - show current backend, or switch to <type>",
+				"  /model [name]    - show current model, or switch to <name>",
+				"  /models          - list available models",
+				"  /skills          - list available skills",
+				"  /tools           - list available tools",
+				"  /mcp             - list registered tool servers and their tools",
+				"  /cwd [path]      - show or change working directory",
+				"  /queued [pop|clear] - manage queued prompts",
+				"  /compact         - summarize conversation and compact context",
+				"  /context         - show context size and message breakdown",
+				"  /usage           - show token usage and context percentage",
+				"  /history         - dump bounded message history",
+				"  /clear           - clear session",
+				"  /kill            - kill session",
+				"  /rn <name>       - rename session",
+				"  /sp              - show rendered system prompt",
+				"  /help            - show this help",
+				"  !<cmd>           - run shell command",
+			}
+			for _, l := range lines {
+				handler(infoEvent(l))
+			}
+		},
 	}
 
-	return false
+	fn, ok := cmds[cmd]
+	if !ok {
+		return false
+	}
+	handler(infoEvent(""))
+	fn(args)
+	return true
 }
 
 func mcpToolsToBackend(mcpTools []tools.ToolInfo) []backend.Tool {
