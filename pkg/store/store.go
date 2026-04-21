@@ -15,6 +15,15 @@ type ReadableStore interface {
 	Get(name string) ([]byte, error)
 }
 
+// Runnable is a running agent that can be observed and controlled.
+type Runnable interface {
+	RunnableID() string
+	Cancel()
+	Interrupt()
+	AppendLog([]byte)
+	LogInfo() (length int, vers uint32)
+}
+
 // WritableStore supports writing blobs by name.
 type WritableStore interface {
 	Put(name string, data []byte) error
@@ -37,6 +46,51 @@ type BlobStore interface {
 type Store interface {
 	BlobStore
 	Rename(oldName, newName string) error
+}
+
+// storeConfig implements the store interfaces via function pointers.
+type storeConfig struct {
+	StatFn   func(string) (os.FileInfo, error)
+	ListFn   func() ([]os.DirEntry, error)
+	GetFn    func(string) ([]byte, error)
+	PutFn    func(string, []byte) error
+	DeleteFn func(string) error
+	CreateFn func(string) error
+	RenameFn func(string, string) error
+}
+
+func (s *storeConfig) Stat(name string) (os.FileInfo, error) { return s.StatFn(name) }
+func (s *storeConfig) List() ([]os.DirEntry, error)          { return s.ListFn() }
+func (s *storeConfig) Get(name string) ([]byte, error)       { return s.GetFn(name) }
+func (s *storeConfig) Put(name string, data []byte) error    { return s.PutFn(name, data) }
+func (s *storeConfig) Delete(name string) error              { return s.DeleteFn(name) }
+func (s *storeConfig) Create(name string) error              { return s.CreateFn(name) }
+func (s *storeConfig) Rename(old, new string) error          { return s.RenameFn(old, new) }
+
+// NewFlatDir returns a Store backed by a directory on the local filesystem.
+func NewFlatDir(dir string, perm os.FileMode) Store {
+	join := func(name string) string { return filepath.Join(dir, name) }
+	ensureDir := func() error { return os.MkdirAll(dir, 0755) }
+
+	return &storeConfig{
+		StatFn: func(name string) (os.FileInfo, error) { return os.Stat(join(name)) },
+		ListFn: func() ([]os.DirEntry, error) { return os.ReadDir(dir) },
+		GetFn:  func(name string) ([]byte, error) { return os.ReadFile(join(name)) },
+		PutFn: func(name string, data []byte) error {
+			if err := ensureDir(); err != nil {
+				return err
+			}
+			return os.WriteFile(join(name), data, perm)
+		},
+		DeleteFn: func(name string) error { return os.Remove(join(name)) },
+		CreateFn: func(name string) error {
+			if err := ensureDir(); err != nil {
+				return err
+			}
+			return os.WriteFile(join(name), nil, perm)
+		},
+		RenameFn: func(old, new string) error { return os.Rename(join(old), join(new)) },
+	}
 }
 
 // SyntheticFileInfo implements os.FileInfo for entries with no backing file.
@@ -81,50 +135,4 @@ func FileEntry(name string, mode os.FileMode) os.DirEntry {
 // DirEntry returns a synthetic directory DirEntry.
 func DirEntry(name string, mode os.FileMode) os.DirEntry {
 	return &SyntheticEntry{Name_: name, Mode_: mode, IsDir_: true}
-}
-
-// FlatDir implements Store backed by a directory on the local filesystem.
-type FlatDir struct {
-	dir  string
-	perm os.FileMode
-}
-
-// NewFlatDir returns a FlatDir rooted at dir.
-// perm is applied to newly created or written files.
-func NewFlatDir(dir string, perm os.FileMode) *FlatDir {
-	return &FlatDir{dir: dir, perm: perm}
-}
-
-func (s *FlatDir) Stat(name string) (os.FileInfo, error) {
-	return os.Stat(filepath.Join(s.dir, name))
-}
-
-func (s *FlatDir) List() ([]os.DirEntry, error) {
-	return os.ReadDir(s.dir)
-}
-
-func (s *FlatDir) Get(name string) ([]byte, error) {
-	return os.ReadFile(filepath.Join(s.dir, name))
-}
-
-func (s *FlatDir) Put(name string, data []byte) error {
-	if err := os.MkdirAll(s.dir, 0755); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(s.dir, name), data, s.perm)
-}
-
-func (s *FlatDir) Delete(name string) error {
-	return os.Remove(filepath.Join(s.dir, name))
-}
-
-func (s *FlatDir) Create(name string) error {
-	if err := os.MkdirAll(s.dir, 0755); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(s.dir, name), nil, s.perm)
-}
-
-func (s *FlatDir) Rename(oldName, newName string) error {
-	return os.Rename(filepath.Join(s.dir, oldName), filepath.Join(s.dir, newName))
 }

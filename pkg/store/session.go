@@ -18,31 +18,45 @@ import (
 // Session holds all state for one agent session.
 type Session struct {
 	mu         sync.RWMutex
-	ID         string
+	id         string
 	Core       agent.Core
 	Ctx        context.Context
-	Cancel     context.CancelFunc
-	ChatLog    []byte
-	ChatVers   uint32
+	cancel     context.CancelFunc
+	log        []byte
+	logVers    uint32
 	ChatOffset int
 }
 
-// AppendChat appends data to the session's chat log and bumps the version.
-func (sess *Session) AppendChat(data []byte) {
+func NewSession(id string, core agent.Core, ctx context.Context, cancel context.CancelFunc) *Session {
+	return &Session{id: id, Core: core, Ctx: ctx, cancel: cancel}
+}
+
+func (sess *Session) RunnableID() string { return sess.id }
+
+func (sess *Session) Cancel() {
+	sess.cancel()
+}
+
+func (sess *Session) Interrupt() {
+	sess.Core.Interrupt(agent.ErrInterrupted)
+}
+
+// AppendLog appends data to the session's log and bumps the version.
+func (sess *Session) AppendLog(data []byte) {
 	if len(data) == 0 {
 		return
 	}
 	sess.mu.Lock()
-	sess.ChatLog = append(sess.ChatLog, data...)
-	sess.ChatVers++
+	sess.log = append(sess.log, data...)
+	sess.logVers++
 	sess.mu.Unlock()
 }
 
-// ChatInfo returns the current chat log length and version atomically.
-func (sess *Session) ChatInfo() (length int, vers uint32) {
+// LogInfo returns the current log length and version atomically.
+func (sess *Session) LogInfo() (length int, vers uint32) {
 	sess.mu.RLock()
 	defer sess.mu.RUnlock()
-	return len(sess.ChatLog), sess.ChatVers
+	return len(sess.log), sess.logVers
 }
 
 // sessionStoreFiles maps fixed file entries in s/ to their permissions.
@@ -69,6 +83,8 @@ type SessionStoreConfig struct {
 	SessionsDir string
 	Log         *olog.Logger
 	Sink        *olog.Sink
+	ReadFile    func(string) ([]byte, error)
+	MkdirAll    func(string, os.FileMode) error
 	// OnRename is called after a session is renamed in the map,
 	// for protocol-level fixups (e.g. fid path rewriting).
 	OnRename func(oldID, newID string)
@@ -76,16 +92,40 @@ type SessionStoreConfig struct {
 
 // SessionStore implements Store for session management.
 type SessionStore struct {
+	*storeConfig
 	cfg      SessionStoreConfig
 	mu       sync.RWMutex
 	sessions map[string]*Session
 }
 
 func NewSessionStore(cfg SessionStoreConfig) *SessionStore {
-	return &SessionStore{cfg: cfg, sessions: make(map[string]*Session)}
+	if cfg.ReadFile == nil {
+		cfg.ReadFile = os.ReadFile
+	}
+	if cfg.MkdirAll == nil {
+		cfg.MkdirAll = os.MkdirAll
+	}
+	ss := &SessionStore{cfg: cfg, sessions: make(map[string]*Session)}
+	ss.storeConfig = &storeConfig{
+		StatFn:   ss.stat,
+		ListFn:   ss.list,
+		GetFn:    ss.get,
+		PutFn:    ss.put,
+		DeleteFn: ss.del,
+		CreateFn: func(string) error { return fmt.Errorf("create not supported for sessions") },
+		RenameFn: ss.renameSession,
+	}
+	return ss
 }
 
-func (s *SessionStore) List() ([]os.DirEntry, error) {
+// AddSession inserts a pre-built session into the store.
+func (s *SessionStore) AddSession(sess *Session) {
+	s.mu.Lock()
+	s.sessions[sess.RunnableID()] = sess
+	s.mu.Unlock()
+}
+
+func (s *SessionStore) list() ([]os.DirEntry, error) {
 	entries := make([]os.DirEntry, 0, len(sessionStoreOrder))
 	for _, name := range sessionStoreOrder {
 		entries = append(entries, FileEntry(name, sessionStoreFiles[name]))
@@ -98,7 +138,7 @@ func (s *SessionStore) List() ([]os.DirEntry, error) {
 	return entries, nil
 }
 
-func (s *SessionStore) Stat(name string) (os.FileInfo, error) {
+func (s *SessionStore) stat(name string) (os.FileInfo, error) {
 	if mode, ok := sessionStoreFiles[name]; ok {
 		return &SyntheticFileInfo{Name_: name, Mode_: mode}, nil
 	}
@@ -111,7 +151,7 @@ func (s *SessionStore) Stat(name string) (os.FileInfo, error) {
 	return nil, fmt.Errorf("%s: not found", name)
 }
 
-func (s *SessionStore) Get(name string) ([]byte, error) {
+func (s *SessionStore) get(name string) ([]byte, error) {
 	switch name {
 	case "new":
 		return []byte("name=\ncwd=\nbackend=\nmodel=\nagent=\n"), nil
@@ -119,13 +159,13 @@ func (s *SessionStore) Get(name string) ([]byte, error) {
 		return s.index(), nil
 	default:
 		if _, ok := sessionStoreFiles[name]; ok {
-			return os.ReadFile(paths.CfgDir() + "/scripts/s/" + name)
+			return s.cfg.ReadFile(paths.CfgDir() + "/scripts/s/" + name)
 		}
 	}
 	return nil, fmt.Errorf("%s: not a readable file", name)
 }
 
-func (s *SessionStore) Put(name string, data []byte) error {
+func (s *SessionStore) put(name string, data []byte) error {
 	if name != "new" {
 		return fmt.Errorf("%s: not writable", name)
 	}
@@ -133,7 +173,7 @@ func (s *SessionStore) Put(name string, data []byte) error {
 	return s.createSession(args)
 }
 
-func (s *SessionStore) Delete(name string) error {
+func (s *SessionStore) del(name string) error {
 	s.mu.RLock()
 	_, ok := s.sessions[name]
 	s.mu.RUnlock()
@@ -142,14 +182,6 @@ func (s *SessionStore) Delete(name string) error {
 	}
 	s.KillSession(name)
 	return nil
-}
-
-func (s *SessionStore) Create(name string) error {
-	return fmt.Errorf("create not supported for sessions")
-}
-
-func (s *SessionStore) Rename(oldName, newName string) error {
-	return s.renameSession(oldName, newName)
 }
 
 // Session returns the session for the given ID, or nil.
@@ -263,11 +295,11 @@ func (s *SessionStore) createSession(args []string) error {
 		be.SetModel(modelOverride)
 	}
 
-	if err := os.MkdirAll(s.cfg.SessionsDir, 0700); err != nil {
+	if err := s.cfg.MkdirAll(s.cfg.SessionsDir, 0700); err != nil {
 		return fmt.Errorf("sessions dir: %w", err)
 	}
 
-	cfg := LoadAgentConfig(s.cfg.AgentsDir, agentName)
+	cfg := LoadAgentConfig(s.cfg.AgentsDir, agentName, nil)
 
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
 		"execute": execute.Decl(cwd),
@@ -299,12 +331,7 @@ func (s *SessionStore) createSession(args []string) error {
 		NewDispatcher: newDisp,
 		Log:           s.cfg.Sink.NewLogger("core"),
 	})
-	sess := &Session{
-		ID:     sessID,
-		Core:   core,
-		Ctx:    ctx,
-		Cancel: cancel,
-	}
+	sess := NewSession(sessID, core, ctx, cancel)
 
 	s.mu.Lock()
 	s.sessions[sessID] = sess
@@ -334,7 +361,7 @@ func (s *SessionStore) renameSession(oldID, newID string) error {
 		return err
 	}
 
-	sess.ID = newID
+	sess.id = newID
 	s.sessions[newID] = sess
 	delete(s.sessions, oldID)
 
@@ -342,7 +369,7 @@ func (s *SessionStore) renameSession(oldID, newID string) error {
 		s.cfg.OnRename(oldID, newID)
 	}
 
-	sess.AppendChat([]byte(fmt.Sprintf("(session renamed: %s -> %s)\n", oldID, newID)))
+	sess.AppendLog([]byte(fmt.Sprintf("(session renamed: %s -> %s)\n", oldID, newID)))
 	s.cfg.Log.Info("renamed session %s -> %s", oldID, newID)
 	return nil
 }

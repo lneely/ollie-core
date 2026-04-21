@@ -68,7 +68,7 @@ func (s *SessionFileStore) Stat(name string) (os.FileInfo, error) {
 			switch name {
 			case "chat":
 				s.sess.mu.RLock()
-				size = int64(len(s.sess.ChatLog))
+				size = int64(len(s.sess.log))
 				s.sess.mu.RUnlock()
 			case "statewait", "usagewait", "ctxszwait", "cwdwait":
 				// Blocking reads; size is unknown until resolved.
@@ -85,8 +85,8 @@ func (s *SessionFileStore) Get(name string) ([]byte, error) {
 	switch name {
 	case "chat":
 		s.sess.mu.RLock()
-		data := make([]byte, len(s.sess.ChatLog))
-		copy(data, s.sess.ChatLog)
+		data := make([]byte, len(s.sess.log))
+		copy(data, s.sess.log)
 		s.sess.mu.RUnlock()
 		return data, nil
 	case "offset":
@@ -314,14 +314,14 @@ func (s *SessionFileStore) makePublish() func(agent.Event) {
 			assistantStarted = false
 		case "assistant":
 			if !assistantStarted {
-				s.sess.AppendChat([]byte("assistant: "))
+				s.sess.AppendLog([]byte("assistant: "))
 				assistantStarted = true
 			}
 		}
-		s.sess.AppendChat(FormatEvent(ev))
+		s.sess.AppendLog(FormatEvent(ev))
 		if ev.Role == "user" {
 			s.sess.mu.Lock()
-			s.sess.ChatOffset = len(s.sess.ChatLog)
+			s.sess.ChatOffset = len(s.sess.log)
 			s.sess.mu.Unlock()
 		}
 	}
@@ -345,8 +345,8 @@ func (s *SessionFileStore) handleCtl(input string) error {
 		}
 	case "save":
 		s.sess.mu.RLock()
-		data := make([]byte, len(s.sess.ChatLog))
-		copy(data, s.sess.ChatLog)
+		data := make([]byte, len(s.sess.log))
+		copy(data, s.sess.log)
 		s.sess.mu.RUnlock()
 		return s.saveTranscript(data)
 	case "compact", "clear", "backend", "model", "models",

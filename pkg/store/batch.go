@@ -50,6 +50,27 @@ func (job *batchJob) appendLog(data []byte) {
 	job.mu.Unlock()
 }
 
+func (job *batchJob) RunnableID() string { return job.id }
+
+func (job *batchJob) Cancel() {
+	job.mu.RLock()
+	cancel := job.cancel
+	job.mu.RUnlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (job *batchJob) Interrupt() { job.Cancel() }
+
+func (job *batchJob) AppendLog(data []byte) { job.appendLog(data) }
+
+func (job *batchJob) LogInfo() (int, uint32) {
+	job.mu.RLock()
+	defer job.mu.RUnlock()
+	return len(job.log), job.logVers
+}
+
 // batchSpec is the parsed result of a b/new write.
 type batchSpec struct {
 	name      string
@@ -70,19 +91,44 @@ type BatchStoreConfig struct {
 }
 
 // BatchStore implements Store for batch job management.
-// Entries are job IDs (directories) plus the synthetic files "new" and "idx".
-// Put("new", data) creates jobs; Delete(id) cancels and removes one.
 type BatchStore struct {
+	*storeConfig
 	cfg  BatchStoreConfig
 	mu   sync.RWMutex
 	jobs map[string]*batchJob
 }
 
 func NewBatchStore(cfg BatchStoreConfig) *BatchStore {
-	return &BatchStore{cfg: cfg, jobs: make(map[string]*batchJob)}
+	bs := &BatchStore{cfg: cfg, jobs: make(map[string]*batchJob)}
+	bs.storeConfig = &storeConfig{
+		StatFn:   bs.stat,
+		ListFn:   bs.list,
+		GetFn:    bs.get,
+		PutFn:    bs.put,
+		DeleteFn: bs.del,
+		CreateFn: func(string) error { return fmt.Errorf("create not supported for batch jobs") },
+		RenameFn: func(string, string) error { return fmt.Errorf("rename not supported for batch jobs") },
+	}
+	return bs
 }
 
-func (s *BatchStore) List() ([]os.DirEntry, error) {
+// AddJob inserts a completed job into the store. This allows callers to
+// populate the store without going through the full agent execution path.
+func (s *BatchStore) AddJob(id, state, result, spec string) {
+	done := make(chan struct{})
+	close(done)
+	s.mu.Lock()
+	s.jobs[id] = &batchJob{
+		id:     id,
+		spec:   spec,
+		state:  state,
+		result: result,
+		done:   done,
+	}
+	s.mu.Unlock()
+}
+
+func (s *BatchStore) list() ([]os.DirEntry, error) {
 	entries := []os.DirEntry{
 		FileEntry("new", 0666),
 		FileEntry("idx", 0444),
@@ -95,7 +141,7 @@ func (s *BatchStore) List() ([]os.DirEntry, error) {
 	return entries, nil
 }
 
-func (s *BatchStore) Stat(name string) (os.FileInfo, error) {
+func (s *BatchStore) stat(name string) (os.FileInfo, error) {
 	switch name {
 	case "new":
 		return &SyntheticFileInfo{Name_: "new", Mode_: 0666, Size_: int64(len(batchNewTemplate))}, nil
@@ -111,7 +157,7 @@ func (s *BatchStore) Stat(name string) (os.FileInfo, error) {
 	return nil, fmt.Errorf("%s: not found", name)
 }
 
-func (s *BatchStore) Get(name string) ([]byte, error) {
+func (s *BatchStore) get(name string) ([]byte, error) {
 	switch name {
 	case "new":
 		return []byte(batchNewTemplate), nil
@@ -121,14 +167,14 @@ func (s *BatchStore) Get(name string) ([]byte, error) {
 	return nil, fmt.Errorf("%s: not a readable file", name)
 }
 
-func (s *BatchStore) Put(name string, data []byte) error {
+func (s *BatchStore) put(name string, data []byte) error {
 	if name != "new" {
 		return fmt.Errorf("%s: not writable", name)
 	}
 	return s.handleNewBatch(strings.TrimSpace(string(data)))
 }
 
-func (s *BatchStore) Delete(name string) error {
+func (s *BatchStore) del(name string) error {
 	s.mu.Lock()
 	job, ok := s.jobs[name]
 	if ok {
@@ -138,22 +184,9 @@ func (s *BatchStore) Delete(name string) error {
 	if !ok {
 		return fmt.Errorf("batch job not found: %s", name)
 	}
-	job.mu.RLock()
-	cancel := job.cancel
-	job.mu.RUnlock()
-	if cancel != nil {
-		cancel()
-	}
+	job.Cancel()
 	s.cfg.Log.Info("removed batch job %s", name)
 	return nil
-}
-
-func (s *BatchStore) Create(name string) error {
-	return fmt.Errorf("create not supported for batch jobs")
-}
-
-func (s *BatchStore) Rename(oldName, newName string) error {
-	return fmt.Errorf("rename not supported for batch jobs")
 }
 
 // Shutdown cancels all running jobs.
@@ -166,6 +199,15 @@ func (s *BatchStore) Shutdown() {
 	s.mu.Unlock()
 	for _, id := range ids {
 		s.Delete(id) //nolint:errcheck
+	}
+}
+
+// InterruptAll cancels all running jobs without removing them.
+func (s *BatchStore) InterruptAll() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, job := range s.jobs {
+		job.Interrupt()
 	}
 }
 
@@ -290,7 +332,7 @@ func (s *BatchStore) executeJob(ctx context.Context, job *batchJob) (string, err
 		be.SetModel(modelName)
 	}
 
-	cfg := LoadAgentConfig(s.cfg.AgentsDir, agentName)
+	cfg := LoadAgentConfig(s.cfg.AgentsDir, agentName, nil)
 
 	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
 		"execute": execute.Decl(cwd),
@@ -521,9 +563,12 @@ func (js *BatchJobStore) LogInfo() (length int, vers uint32) {
 
 // LoadAgentConfig resolves and loads the config for a named agent.
 // Returns nil (not an error) if the config file does not exist;
-// BuildAgentEnv handles nil configs.
-func LoadAgentConfig(agentsDir, name string) *config.Config {
-	f, err := os.Open(agentsDir + "/" + name + ".json")
+// BuildAgentEnv handles nil configs. open defaults to os.Open if nil.
+func LoadAgentConfig(agentsDir, name string, open func(string) (*os.File, error)) *config.Config {
+	if open == nil {
+		open = os.Open
+	}
+	f, err := open(agentsDir + "/" + name + ".json")
 	if err != nil {
 		return nil
 	}
