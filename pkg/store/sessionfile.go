@@ -39,9 +39,10 @@ var SessionFileList = []struct {
 	{"params", 0666},
 }
 
-// SessionFileStore implements ReadWriteStore for the files within a single
+// SessionFileStore implements Store for the files within a single
 // session directory. The file set is fixed.
 type SessionFileStore struct {
+	*storeConfig
 	sess           *Session
 	log            *olog.Logger
 	kill           func()
@@ -50,10 +51,23 @@ type SessionFileStore struct {
 }
 
 func NewSessionFileStore(sess *Session, log *olog.Logger, kill func(), rename func(newID string) error, saveTranscript func([]byte) error) *SessionFileStore {
-	return &SessionFileStore{sess: sess, log: log, kill: kill, rename: rename, saveTranscript: saveTranscript}
+	sf := &SessionFileStore{sess: sess, log: log, kill: kill, rename: rename, saveTranscript: saveTranscript}
+	notDir := func(string) (Store, error) { return nil, fmt.Errorf("not a directory") }
+	notSupported := func(string) error { return fmt.Errorf("not supported") }
+	sf.storeConfig = &storeConfig{
+		StatFn:   sf.stat,
+		ListFn:   sf.list,
+		GetFn:    sf.get,
+		OpenFn:   notDir,
+		PutFn:    sf.put,
+		DeleteFn: notSupported,
+		CreateFn: notSupported,
+		RenameFn: func(string, string) error { return fmt.Errorf("not supported") },
+	}
+	return sf
 }
 
-func (s *SessionFileStore) List() ([]os.DirEntry, error) {
+func (s *SessionFileStore) list() ([]os.DirEntry, error) {
 	entries := make([]os.DirEntry, len(SessionFileList))
 	for i, f := range SessionFileList {
 		entries[i] = FileEntry(f.Name, f.Mode)
@@ -61,7 +75,7 @@ func (s *SessionFileStore) List() ([]os.DirEntry, error) {
 	return entries, nil
 }
 
-func (s *SessionFileStore) Stat(name string) (os.FileInfo, error) {
+func (s *SessionFileStore) stat(name string) (os.FileInfo, error) {
 	for _, f := range SessionFileList {
 		if f.Name == name {
 			var size int64
@@ -81,7 +95,7 @@ func (s *SessionFileStore) Stat(name string) (os.FileInfo, error) {
 	return nil, fmt.Errorf("%s: not found", name)
 }
 
-func (s *SessionFileStore) Get(name string) ([]byte, error) {
+func (s *SessionFileStore) get(name string) ([]byte, error) {
 	switch name {
 	case "chat":
 		s.sess.mu.RLock()
@@ -107,7 +121,7 @@ func (s *SessionFileStore) Get(name string) ([]byte, error) {
 	}
 }
 
-func (s *SessionFileStore) Put(name string, data []byte) error {
+func (s *SessionFileStore) put(name string, data []byte) error {
 	input := strings.TrimSpace(string(data))
 	if input == "" {
 		return nil

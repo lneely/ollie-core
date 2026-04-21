@@ -8,10 +8,13 @@ import (
 	"time"
 )
 
+// StoreEntry is a directory entry within a Store.
+type StoreEntry = os.DirEntry
+
 // ReadableStore is a named collection of byte blobs supporting only read operations.
 type ReadableStore interface {
 	Stat(name string) (os.FileInfo, error)
-	List() ([]os.DirEntry, error)
+	List() ([]StoreEntry, error)
 	Get(name string) ([]byte, error)
 }
 
@@ -35,40 +38,43 @@ type ReadWriteStore interface {
 	WritableStore
 }
 
-// BlobStore extends ReadWriteStore with creation and deletion.
+// BlobStore extends ReadWriteStore with creation, deletion, and renaming.
 type BlobStore interface {
 	ReadWriteStore
 	Delete(name string) error
 	Create(name string) error
+	Rename(oldName, newName string) error
 }
 
-// Store is a fully mutable store that also supports renaming entries.
+// Store is a hierarchical store that supports subdirectories.
 type Store interface {
 	BlobStore
-	Rename(oldName, newName string) error
+	Open(name string) (Store, error)
 }
 
 // storeConfig implements the store interfaces via function pointers.
 type storeConfig struct {
 	StatFn   func(string) (os.FileInfo, error)
-	ListFn   func() ([]os.DirEntry, error)
+	ListFn   func() ([]StoreEntry, error)
 	GetFn    func(string) ([]byte, error)
+	OpenFn   func(string) (Store, error)
 	PutFn    func(string, []byte) error
 	DeleteFn func(string) error
 	CreateFn func(string) error
 	RenameFn func(string, string) error
 }
 
-func (s *storeConfig) Stat(name string) (os.FileInfo, error) { return s.StatFn(name) }
-func (s *storeConfig) List() ([]os.DirEntry, error)          { return s.ListFn() }
-func (s *storeConfig) Get(name string) ([]byte, error)       { return s.GetFn(name) }
-func (s *storeConfig) Put(name string, data []byte) error    { return s.PutFn(name, data) }
-func (s *storeConfig) Delete(name string) error              { return s.DeleteFn(name) }
-func (s *storeConfig) Create(name string) error              { return s.CreateFn(name) }
-func (s *storeConfig) Rename(old, new string) error          { return s.RenameFn(old, new) }
+func (s *storeConfig) Stat(name string) (os.FileInfo, error)  { return s.StatFn(name) }
+func (s *storeConfig) List() ([]StoreEntry, error)            { return s.ListFn() }
+func (s *storeConfig) Get(name string) ([]byte, error)        { return s.GetFn(name) }
+func (s *storeConfig) Open(name string) (Store, error)        { return s.OpenFn(name) }
+func (s *storeConfig) Put(name string, data []byte) error     { return s.PutFn(name, data) }
+func (s *storeConfig) Delete(name string) error               { return s.DeleteFn(name) }
+func (s *storeConfig) Create(name string) error               { return s.CreateFn(name) }
+func (s *storeConfig) Rename(old, new string) error           { return s.RenameFn(old, new) }
 
-// NewFlatDir returns a Store backed by a directory on the local filesystem.
-func NewFlatDir(dir string, perm os.FileMode) Store {
+// NewFlatDir returns a BlobStore backed by a directory on the local filesystem.
+func NewFlatDir(dir string, perm os.FileMode) BlobStore {
 	join := func(name string) string { return filepath.Join(dir, name) }
 	ensureDir := func() error { return os.MkdirAll(dir, 0755) }
 

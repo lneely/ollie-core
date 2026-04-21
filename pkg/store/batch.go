@@ -104,6 +104,7 @@ func NewBatchStore(cfg BatchStoreConfig) *BatchStore {
 		StatFn:   bs.stat,
 		ListFn:   bs.list,
 		GetFn:    bs.get,
+		OpenFn:   bs.open,
 		PutFn:    bs.put,
 		DeleteFn: bs.del,
 		CreateFn: func(string) error { return fmt.Errorf("create not supported for batch jobs") },
@@ -468,18 +469,36 @@ var batchJobFiles = []struct {
 // BatchJobStore provides Stat/List/Get for the files within a single batch job
 // directory (/b/{id}/*). The file set is fixed.
 type BatchJobStore struct {
+	*storeConfig
 	job *batchJob
 }
 
-func (s *BatchStore) JobStore(id string) (*BatchJobStore, bool) {
-	job := s.Job(id)
-	if job == nil {
-		return nil, false
+func NewBatchJobStore(job *batchJob) *BatchJobStore {
+	js := &BatchJobStore{job: job}
+	notDir := func(string) (Store, error) { return nil, fmt.Errorf("not a directory") }
+	notSupported := func(string) error { return fmt.Errorf("not supported") }
+	js.storeConfig = &storeConfig{
+		StatFn:   js.stat,
+		ListFn:   js.list,
+		GetFn:    js.get,
+		OpenFn:   notDir,
+		PutFn:    func(string, []byte) error { return fmt.Errorf("not supported") },
+		DeleteFn: notSupported,
+		CreateFn: notSupported,
+		RenameFn: func(string, string) error { return fmt.Errorf("not supported") },
 	}
-	return &BatchJobStore{job: job}, true
+	return js
 }
 
-func (js *BatchJobStore) List() ([]os.DirEntry, error) {
+func (s *BatchStore) open(id string) (Store, error) {
+	job := s.Job(id)
+	if job == nil {
+		return nil, fmt.Errorf("batch job not found: %s", id)
+	}
+	return NewBatchJobStore(job), nil
+}
+
+func (js *BatchJobStore) list() ([]os.DirEntry, error) {
 	entries := make([]os.DirEntry, len(batchJobFiles))
 	for i, f := range batchJobFiles {
 		entries[i] = FileEntry(f.name, f.mode)
@@ -487,7 +506,7 @@ func (js *BatchJobStore) List() ([]os.DirEntry, error) {
 	return entries, nil
 }
 
-func (js *BatchJobStore) Stat(name string) (os.FileInfo, error) {
+func (js *BatchJobStore) stat(name string) (os.FileInfo, error) {
 	for _, f := range batchJobFiles {
 		if f.name == name {
 			var size int64
@@ -504,7 +523,7 @@ func (js *BatchJobStore) Stat(name string) (os.FileInfo, error) {
 	return nil, fmt.Errorf("%s: not found", name)
 }
 
-func (js *BatchJobStore) Get(name string) ([]byte, error) {
+func (js *BatchJobStore) get(name string) ([]byte, error) {
 	if name == "log" {
 		js.job.mu.RLock()
 		data := make([]byte, len(js.job.log))

@@ -111,6 +111,7 @@ func NewSessionStore(cfg SessionStoreConfig) *SessionStore {
 		StatFn:   ss.stat,
 		ListFn:   ss.list,
 		GetFn:    ss.get,
+		OpenFn:   ss.open,
 		PutFn:    ss.put,
 		DeleteFn: ss.del,
 		CreateFn: func(string) error { return fmt.Errorf("create not supported for sessions") },
@@ -193,10 +194,10 @@ func (s *SessionStore) Session(id string) *Session {
 }
 
 // SessionFileStore returns a SessionFileStore for the given session ID.
-func (s *SessionStore) SessionFileStore(id string) (*SessionFileStore, bool) {
+func (s *SessionStore) open(id string) (Store, error) {
 	sess := s.Session(id)
 	if sess == nil {
-		return nil, false
+		return nil, fmt.Errorf("session not found: %s", id)
 	}
 	return NewSessionFileStore(
 		sess,
@@ -204,7 +205,7 @@ func (s *SessionStore) SessionFileStore(id string) (*SessionFileStore, bool) {
 		func() { s.KillSession(id) },
 		func(newID string) error { return s.Rename(id, newID) },
 		s.cfg.SaveTranscript,
-	), true
+	), nil
 }
 
 // InterruptAll interrupts every active session.

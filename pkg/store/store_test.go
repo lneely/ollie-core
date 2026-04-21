@@ -165,6 +165,20 @@ func checkBlobStoreContract(t *testing.T, s store.BlobStore, name string) {
 	if _, err := s.Stat(name); err != nil {
 		t.Fatalf("Stat after Create: %v", err)
 	}
+	renamed := name + "-renamed"
+	if err := s.Rename(name, renamed); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if _, err := s.Stat(name); err == nil {
+		t.Error("Stat(old) should error after Rename")
+	}
+	if _, err := s.Stat(renamed); err != nil {
+		t.Errorf("Stat(new) after Rename: %v", err)
+	}
+	s.Delete(renamed) //nolint:errcheck
+	if err := s.Create(name); err != nil {
+		t.Fatalf("Create after rename cleanup: %v", err)
+	}
 	if err := s.Delete(name); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -179,27 +193,13 @@ func checkBlobStoreContract(t *testing.T, s store.BlobStore, name string) {
 
 func checkStoreContract(t *testing.T, s store.Store, name string) {
 	t.Helper()
-	renamed := name + "-renamed"
-	if err := s.Create(name); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if err := s.Rename(name, renamed); err != nil {
-		t.Fatalf("Rename: %v", err)
-	}
-	if _, err := s.Stat(name); err == nil {
-		t.Error("Stat(old) should error after Rename")
-	}
-	if _, err := s.Stat(renamed); err != nil {
-		t.Errorf("Stat(new) after Rename: %v", err)
-	}
-	s.Delete(renamed) //nolint:errcheck
 	checkBlobStoreContract(t, s, name)
 }
 
 // ===== FlatDir =====
 
 func TestFlatDirContract(t *testing.T) {
-	checkStoreContract(t, store.NewFlatDir(t.TempDir(), 0644), "test-file")
+	checkBlobStoreContract(t, store.NewFlatDir(t.TempDir(), 0644), "test-file")
 }
 
 func TestFlatDirCreateMkdirError(t *testing.T) {
@@ -779,8 +779,8 @@ func TestBatchStoreShutdown(t *testing.T) {
 func TestBatchJobStoreReadableContract(t *testing.T) {
 	s := newBatchStore(t)
 	s.AddJob("j1", "done", "the result", "the spec")
-	js, ok := s.JobStore("j1")
-	if !ok {
+	js, err := s.Open("j1")
+	if err != nil {
 		t.Fatal("JobStore(j1) not found")
 	}
 	checkReadableContract(t, js, "state")
@@ -789,7 +789,7 @@ func TestBatchJobStoreReadableContract(t *testing.T) {
 func TestBatchJobStoreContent(t *testing.T) {
 	s := newBatchStore(t)
 	s.AddJob("j1", "done", "the result", "the spec")
-	js, _ := s.JobStore("j1")
+	js, _ := s.Open("j1")
 
 	for _, tc := range []struct {
 		name, want string
@@ -812,10 +812,10 @@ func TestBatchJobStoreContent(t *testing.T) {
 func TestBatchJobStoreWait(t *testing.T) {
 	s := newBatchStore(t)
 	s.AddJob("j1", "done", "", "")
-	js, _ := s.JobStore("j1")
+	js, _ := s.Open("j1")
 
 	// Job is already done, so Wait returns immediately
-	data, err := js.Wait(context.Background(), "statewait", "")
+	data, err := js.(*store.BatchJobStore).Wait(context.Background(), "statewait", "")
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
@@ -824,7 +824,7 @@ func TestBatchJobStoreWait(t *testing.T) {
 	}
 
 	// Non-wait file
-	if _, err := js.Wait(context.Background(), "spec", ""); err == nil {
+	if _, err := js.(*store.BatchJobStore).Wait(context.Background(), "spec", ""); err == nil {
 		t.Error("Wait(spec) should error")
 	}
 }
@@ -832,9 +832,9 @@ func TestBatchJobStoreWait(t *testing.T) {
 func TestBatchJobStoreLogInfo(t *testing.T) {
 	s := newBatchStore(t)
 	s.AddJob("j1", "done", "", "")
-	js, _ := s.JobStore("j1")
+	js, _ := s.Open("j1")
 
-	l, v := js.LogInfo()
+	l, v := js.(*store.BatchJobStore).LogInfo()
 	if l != 0 || v != 0 {
 		t.Errorf("LogInfo = (%d, %d); want (0, 0)", l, v)
 	}
@@ -842,7 +842,7 @@ func TestBatchJobStoreLogInfo(t *testing.T) {
 
 func TestBatchJobStoreNotFound(t *testing.T) {
 	s := newBatchStore(t)
-	if _, ok := s.JobStore("nope"); ok {
+	if _, err := s.Open("nope"); err == nil {
 		t.Error("JobStore(nonexistent) should be false")
 	}
 }

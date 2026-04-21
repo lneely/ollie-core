@@ -35,11 +35,11 @@ type skillState struct {
 	rename    func(string, string) error
 }
 
-func NewSkillStore() Store {
+func NewSkillStore() BlobStore {
 	return NewSkillStoreWith(SkillStoreConfig{})
 }
 
-func NewSkillStoreWith(cfg SkillStoreConfig) Store {
+func NewSkillStoreWith(cfg SkillStoreConfig) BlobStore {
 	if cfg.Dirs == nil {
 		cfg.Dirs = skillDirs()
 	}
