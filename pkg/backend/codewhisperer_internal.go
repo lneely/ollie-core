@@ -1,6 +1,8 @@
 package backend
 
-// Low-level plumbing for the Amazon CodeWhisperer / Kiro backend:
+// Low-level plumbing for the Amazon CodeWhisperer / Kiro backend.
+// COVERAGE: Intentionally untested. See codewhisperer.go.
+//
 //   - Wire types for the GenerateAssistantResponse API
 //   - Binary AWS event stream decoder
 //   - HTTP API client

@@ -663,14 +663,8 @@ func TestOllamaContextLength_ConnectionRefused(t *testing.T) {
 }
 
 // --- CodeWhisperer ---
-
-func TestCodeWhispererContract(t *testing.T) {
-	b, err := backend.NewCodeWhisperer("fake-token")
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkContract(t, b)
-}
+// Intentionally untested. Reverse-engineered Kiro/CodeWhisperer protocol
+// requires a live session. See codewhisperer.go.
 
 // --- RateLimitError ---
 

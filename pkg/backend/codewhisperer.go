@@ -2,6 +2,10 @@ package backend
 
 // CodeWhispererBackend implements Backend for Amazon CodeWhisperer / Kiro.
 //
+// COVERAGE: Intentionally untested. Reverse-engineered Kiro streaming API
+// client requiring a live session to test.
+//
+//
 // Auth is configured via the apiKey parameter to NewCodeWhisperer:
 //   - Empty string → read from Kiro CLI SQLite database at the default path
 //     ($XDG_DATA_HOME/kiro-cli/data.sqlite3 on Linux).
