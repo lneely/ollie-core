@@ -38,7 +38,8 @@ type stubCore struct {
 	// Records
 	submitted  []string
 	queued     []string
-	interrupted bool
+	interrupted     bool
+	setSessionIDErr error
 }
 
 func (c *stubCore) Submit(_ context.Context, input string, handler agent.EventHandler) {
@@ -69,7 +70,7 @@ func (c *stubCore) Usage() string                                               
 func (c *stubCore) ListModels() string                                          { return c.models }
 func (c *stubCore) CWD() string                                                 { return c.cwd }
 func (c *stubCore) SetCWD(dir string) error                                     { c.cwd = dir; return nil }
-func (c *stubCore) SetSessionID(string) error                                   { return nil }
+func (c *stubCore) SetSessionID(string) error                                   { return c.setSessionIDErr }
 func (c *stubCore) SystemPrompt() string                                        { return c.sysprompt }
 func (c *stubCore) GenerationParams() backend.GenerationParams                  { return c.params }
 func (c *stubCore) SetGenerationParams(p backend.GenerationParams) error        { c.params = p; return nil }
@@ -601,7 +602,15 @@ func TestSessionStoreShutdown(t *testing.T) {
 }
 
 func TestSessionStoreRename(t *testing.T) {
-	s := newSessionStore(t)
+	sink := testSink()
+	var renamed [2]string
+	s := store.NewSessionStore(store.SessionStoreConfig{
+		Log:      sink.NewLogger("test"),
+		Sink:     sink,
+		ReadFile: func(string) ([]byte, error) { return nil, nil },
+		MkdirAll: func(string, os.FileMode) error { return nil },
+		OnRename: func(oldID, newID string) { renamed = [2]string{oldID, newID} },
+	})
 	sess := testSession("old")
 	defer sess.Cancel()
 	s.AddSession(sess)
@@ -614,6 +623,9 @@ func TestSessionStoreRename(t *testing.T) {
 	}
 	if s.Session("new") == nil {
 		t.Error("new session should exist")
+	}
+	if renamed != [2]string{"old", "new"} {
+		t.Errorf("OnRename called with %v; want [old new]", renamed)
 	}
 }
 
@@ -635,6 +647,13 @@ func TestSessionStoreRenameErrors(t *testing.T) {
 	s.AddSession(sess)
 	if err := s.Rename("r", "r2"); err == nil {
 		t.Error("Rename while running should error")
+	}
+	// SetSessionID error
+	sess2 := testSession("sid")
+	sess2.Core.(*stubCore).setSessionIDErr = fmt.Errorf("id error")
+	s.AddSession(sess2)
+	if err := s.Rename("sid", "sid2"); err == nil {
+		t.Error("Rename with SetSessionID error should error")
 	}
 }
 
