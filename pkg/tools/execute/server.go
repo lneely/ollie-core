@@ -388,7 +388,4 @@ func prependOlliePath(env []string) []string {
 	return result
 }
 
-// Close implements tools.Server (no-op).
-func (e *Server) Close() {}
-
 var _ tools.Server = (*Server)(nil) // compile-time interface check

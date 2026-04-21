@@ -385,3 +385,65 @@ func TestSetCWD(t *testing.T) {
 		t.Errorf("pwd output %q doesn't contain expected dir %q", out, dir)
 	}
 }
+
+// ---- Server contract (ListTools / CallTool / Close) ----
+
+func TestServerContract(t *testing.T) {
+	s := newServer(t)
+	tools, err := s.ListTools()
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools) == 0 {
+		t.Fatal("ListTools returned no tools")
+	}
+	for _, ti := range tools {
+		if ti.Name == "" {
+			t.Error("tool has empty Name")
+		}
+		if ti.Description == "" {
+			t.Errorf("tool %q has empty Description", ti.Name)
+		}
+		if len(ti.InputSchema) == 0 {
+			t.Errorf("tool %q has empty InputSchema", ti.Name)
+		}
+	}
+	// CallTool success path
+	args, _ := json.Marshal(map[string]any{"steps": []map[string]any{{"code": "echo contract"}}})
+	res, err := s.CallTool(context.Background(), "execute_code", args)
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !strings.Contains(string(res), "contract") {
+		t.Errorf("CallTool result missing expected output: %s", res)
+	}
+	// CallTool error path (unknown tool)
+	res, err = s.CallTool(context.Background(), "bogus", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("CallTool error path should marshal, not return error: %v", err)
+	}
+	if !strings.Contains(string(res), "isError") {
+		t.Errorf("CallTool error path should contain isError: %s", res)
+	}
+}
+
+// ---- Decl factory ----
+
+func TestDecl(t *testing.T) {
+	factory := Decl(t.TempDir())
+	srv := factory()
+	if srv == nil {
+		t.Fatal("Decl factory returned nil")
+	}
+}
+
+// ---- executeElevated (plugin not found) ----
+
+func TestExecuteElevatedNoPlugin(t *testing.T) {
+	s := newServer(t)
+	t.Setenv("OLLIE_PLUGINS_PATH", t.TempDir()) // empty dir, no elevate script
+	_, err := s.executeElevated(context.Background(), "echo hi", t.TempDir(), 10)
+	if err == nil || !strings.Contains(err.Error(), "elevation not available") {
+		t.Errorf("expected 'elevation not available' error, got %v", err)
+	}
+}

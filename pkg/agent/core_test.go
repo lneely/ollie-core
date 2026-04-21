@@ -2067,7 +2067,6 @@ func (m *mockEnvServer) ListTools() ([]tools.ToolInfo, error)                   
 func (m *mockEnvServer) CallTool(_ context.Context, _ string, _ json.RawMessage) (json.RawMessage, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *mockEnvServer) Close() {}
 func (m *mockEnvServer) SetEnv(k, v string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -20,7 +20,6 @@ type ToolInfo struct {
 type Server interface {
 	ListTools() ([]ToolInfo, error)
 	CallTool(ctx context.Context, tool string, args json.RawMessage) (json.RawMessage, error)
-	Close()
 }
 
 // Dispatcher routes tool calls to the server that owns them.
@@ -29,7 +28,6 @@ type Dispatcher interface {
 	GetServer(name string) (Server, bool)
 	ListTools() ([]ToolInfo, error)
 	Dispatch(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error)
-	Close()
 }
 
 // dispatcher is the default Dispatcher backed by registered Server instances.
@@ -64,13 +62,6 @@ func (d *dispatcher) AddServer(name string, s Server) {
 func (d *dispatcher) GetServer(name string) (Server, bool) {
 	s, ok := d.servers[name]
 	return s, ok
-}
-
-// Close shuts down all registered servers.
-func (d *dispatcher) Close() {
-	for _, s := range d.servers {
-		s.Close()
-	}
 }
 
 // ListTools returns all tools advertised by all registered servers.

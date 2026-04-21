@@ -971,9 +971,6 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 				handler(infoEvent(fmt.Sprintf("error: agent %q: %v", name, err)))
 				return
 			}
-			if s.dispatcher != nil {
-				s.dispatcher.Close()
-			}
 			d := s.newDispatcher()
 			env := BuildAgentEnv(cfg, d, s.cwd)
 			s.dispatcher = env.dispatcher
