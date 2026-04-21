@@ -1,2 +1,5 @@
-all:V:
-	echo 'ollie-core: no build step (library only)'
+all:V: test
+	echo 'ollie-core: ok'
+
+test:V:
+	go test ./...
