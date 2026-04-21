@@ -420,12 +420,14 @@ func TestSubmit_WhileRunning(t *testing.T) {
 
 func TestManualCompact(t *testing.T) {
 	callCount := 0
+	var stateAtCompact string
 	be := defaultBE()
+	c := newCore(t, be, nil)
 	be.respond = func(_ context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
 		callCount++
+		stateAtCompact = c.State()
 		return textStream("summary or answer"), nil
 	}
-	c := newCore(t, be, nil)
 
 	// Seed a session with more than 4 messages so compact() doesn't short-circuit.
 	c.session = newSession("goal")
@@ -448,6 +450,12 @@ func TestManualCompact(t *testing.T) {
 	if callCount == 0 {
 		t.Error("backend not called for compaction")
 	}
+	if stateAtCompact != "compacting" {
+		t.Errorf("state during compact = %q; want compacting", stateAtCompact)
+	}
+	if got := c.State(); got != "idle" {
+		t.Errorf("state after compact = %q; want idle", got)
+	}
 	found := false
 	for _, s := range byRole(evs, "info") {
 		if strings.Contains(s, "compacted") {
@@ -461,16 +469,18 @@ func TestManualCompact(t *testing.T) {
 
 func TestAutoCompact(t *testing.T) {
 	callCount := 0
+	var stateAtCompact string
 	// ctxLen=10 → autoCompactLimit = 7 tokens; our seeded session exceeds this.
 	be := &mockBackend{name: "mock", model: "test", ctxLen: 10}
+	c := newCore(t, be, nil)
 	be.respond = func(_ context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
 		callCount++
 		if callCount == 1 {
+			stateAtCompact = c.State()
 			return textStream("summary text for compaction"), nil
 		}
 		return textStream("answer"), nil
 	}
-	c := newCore(t, be, nil)
 
 	c.session = newSession("goal")
 	for range 3 {
@@ -484,6 +494,9 @@ func TestAutoCompact(t *testing.T) {
 
 	if callCount < 2 {
 		t.Errorf("backend called %d times; want ≥2 (compact + turn)", callCount)
+	}
+	if stateAtCompact != "compacting" {
+		t.Errorf("state during auto-compact = %q; want compacting", stateAtCompact)
 	}
 }
 

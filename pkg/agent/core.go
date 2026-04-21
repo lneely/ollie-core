@@ -827,9 +827,11 @@ func (s *agentCore) executeTurn(ctx context.Context, input string, handler Event
 					s.session.appendUserMessage(pre.Context)
 				}
 				emit(s.loopcfg, Event{Role: "info", Content: "auto-compacting context...\n"})
+				s.setState("compacting")
 				if _, _, err := s.session.compact(ctx, s.loopcfg.Backend); err != nil {
 					panic(fmt.Sprintf("auto-compact: %v", err))
 				}
+				s.setState("thinking")
 				post := s.hooks.Run(ctx, HookPostCompact, payload)
 				if post.Ran {
 					handler(infoEvent(hooksRan(1)))
@@ -1088,7 +1090,9 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 				s.session.appendUserMessage(pre.Context)
 			}
 			snapshot := s.session.PreCompactionSnapshot()
+			s.setState("compacting")
 			n, _, err := s.session.compact(ctx, s.loopcfg.Backend)
+			s.setState("idle")
 			post := s.hooks.Run(ctx, HookPostCompact, payload)
 			if post.Ran {
 				handler(infoEvent(hooksRan(1)))
