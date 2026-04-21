@@ -2,12 +2,14 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"crypto/rand"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -96,7 +98,15 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 		}
 	}
 
-	sp := agentPrompt
+	base := loadSystemPrompt(cwd)
+	sp := base
+	if agentPrompt != "" {
+		if sp != "" {
+			sp = sp + "\n\n" + agentPrompt
+		} else {
+			sp = agentPrompt
+		}
+	}
 
 	exec := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
 		server, ok := serverOf[name]
@@ -138,6 +148,35 @@ func DefaultAgentsDir() string {
 // DefaultPromptsDir returns the default directory for prompt templates.
 func DefaultPromptsDir() string {
 	return paths.CfgDir() + "/prompts"
+}
+
+// loadSystemPrompt reads SYSTEM_PROMPT.md from DefaultPromptsDir and expands
+// environment variables, including computed PRIME_* values.
+func loadSystemPrompt(cwd string) string {
+	data, err := os.ReadFile(DefaultPromptsDir() + "/SYSTEM_PROMPT.md")
+	if err != nil {
+		return ""
+	}
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	isGit := "false"
+	if _, err := os.Stat(filepath.Join(cwd, ".git")); err == nil {
+		isGit = "true"
+	}
+	mapper := func(key string) string {
+		switch key {
+		case "PRIME_DATE":
+			return time.Now().Format("2006-01-02")
+		case "PRIME_PLATFORM":
+			return strings.ToLower(runtime.GOOS)
+		case "PRIME_IS_GIT_REPO":
+			return isGit
+		default:
+			return os.Getenv(key)
+		}
+	}
+	return os.Expand(string(data), mapper)
 }
 
 // DefaultSessionsDir returns the default directory for saved sessions.
