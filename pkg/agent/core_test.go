@@ -587,8 +587,8 @@ func TestCommand_Clear(t *testing.T) {
 	if c.session != nil {
 		t.Error("session not nil after /clear")
 	}
-	if c.sessionID == oldID {
-		t.Error("sessionID unchanged after /clear; want a new ID")
+	if c.sessionID != oldID {
+		t.Errorf("sessionID changed after /clear: %q → %q; want unchanged", oldID, c.sessionID)
 	}
 }
 

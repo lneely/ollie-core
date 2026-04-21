@@ -1178,7 +1178,6 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 				return
 			}
 			s.session = nil
-			s.sessionID = NewSessionID()
 			handler(infoEvent("cleared"))
 		},
 
