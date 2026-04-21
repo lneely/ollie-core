@@ -744,7 +744,7 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 		return
 	}
 	if s.IsRunning() {
-		s.Inject(input)
+		s.fifo.Push(input)
 		return
 	}
 
@@ -937,6 +937,15 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 
 	type cmdFn func([]string)
 	cmds := map[string]cmdFn{
+		"/i": func(args []string) {
+			prompt := strings.Join(args, " ")
+			if prompt == "" {
+				handler(infoEvent("error: /i requires a prompt"))
+				return
+			}
+			s.Inject(prompt)
+		},
+
 		"/irw": func(args []string) {
 			prompt := strings.Join(args, " ")
 			if prompt == "" {
@@ -1248,6 +1257,8 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 				"  /tools           - list available tools",
 				"  /mcp             - list registered tool servers and their tools",
 				"  /cwd [path]      - show or change working directory",
+				"  /i <prompt>       - inject prompt into the running turn",
+				"  /irw <prompt>     - rewrite the pending inject",
 				"  /queued [pop|clear] - manage queued prompts",
 				"  /compact         - summarize conversation and compact context",
 				"  /context         - show context size and message breakdown",

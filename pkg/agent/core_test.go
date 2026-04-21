@@ -401,13 +401,15 @@ func TestSubmit_WhileRunning(t *testing.T) {
 
 	waitState(t, c, "thinking")
 
-	// Concurrent Submit must not start a new turn — goes to inject / FIFO.
+	// Concurrent Submit must not start a new turn — always goes to FIFO.
 	c.Submit(context.Background(), "concurrent", func(Event) {})
 
-	stored := c.pendingInject.Load()
-	_, inFIFO := c.PopQueue()
-	if (stored == nil || *stored != "concurrent") && !inFIFO {
-		t.Error("concurrent Submit neither set pendingInject nor pushed to FIFO")
+	if stored := c.pendingInject.Load(); stored != nil {
+		t.Errorf("concurrent Submit set pendingInject %q; want FIFO only", *stored)
+	}
+	got, inFIFO := c.PopQueue()
+	if !inFIFO || got != "concurrent" {
+		t.Errorf("concurrent Submit PopQueue = %q, %v; want %q, true", got, inFIFO, "concurrent")
 	}
 
 	close(unblock)
