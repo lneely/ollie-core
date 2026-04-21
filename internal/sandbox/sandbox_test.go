@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"bytes"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -458,6 +460,229 @@ env:
 			t.Error("expected empty RW")
 		}
 	})
+}
+
+// ---- expandPath: remaining branches ----
+
+func TestExpandPath_HOME(t *testing.T) {
+	got := expandPath("{HOME}/test", "/cwd")
+	home, _ := os.UserHomeDir()
+	if got != home+"/test" {
+		t.Errorf("expandPath({HOME}/test) = %q; want %q", got, home+"/test")
+	}
+}
+
+func TestExpandPath_XDG_Defaults(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	for _, tc := range []struct {
+		varName, pattern, want string
+	}{
+		{"XDG_CONFIG_HOME", "{XDG_CONFIG_HOME}", filepath.Join(home, ".config")},
+		{"XDG_DATA_HOME", "{XDG_DATA_HOME}", filepath.Join(home, ".local/share")},
+		{"XDG_CACHE_HOME", "{XDG_CACHE_HOME}", filepath.Join(home, ".cache")},
+		{"XDG_STATE_HOME", "{XDG_STATE_HOME}", filepath.Join(home, ".local/state")},
+		{"XDG_RUNTIME_DIR", "{XDG_RUNTIME_DIR}", fmt.Sprintf("/run/user/%d", os.Getuid())},
+	} {
+		t.Run(tc.varName+"_default", func(t *testing.T) {
+			t.Setenv(tc.varName, "")
+			got := expandPath(tc.pattern, "/cwd")
+			if got != tc.want {
+				t.Errorf("expandPath(%q) = %q; want %q", tc.pattern, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExpandPath_XDG_FromEnv(t *testing.T) {
+	for _, tc := range []struct {
+		varName, pattern string
+	}{
+		{"XDG_DATA_HOME", "{XDG_DATA_HOME}"},
+		{"XDG_CACHE_HOME", "{XDG_CACHE_HOME}"},
+		{"XDG_STATE_HOME", "{XDG_STATE_HOME}"},
+		{"XDG_RUNTIME_DIR", "{XDG_RUNTIME_DIR}"},
+	} {
+		t.Run(tc.varName+"_env", func(t *testing.T) {
+			t.Setenv(tc.varName, "/custom/"+tc.varName)
+			got := expandPath(tc.pattern, "/cwd")
+			if got != "/custom/"+tc.varName {
+				t.Errorf("expandPath(%q) = %q; want /custom/%s", tc.pattern, got, tc.varName)
+			}
+		})
+	}
+}
+
+func TestExpandPath_OlliePaths(t *testing.T) {
+	got1 := expandPath("{OLLIE_CFG_PATH}", "/cwd")
+	if got1 == "{OLLIE_CFG_PATH}" || got1 == "" {
+		t.Errorf("OLLIE_CFG_PATH not expanded: %q", got1)
+	}
+	got2 := expandPath("{OLLIE_DATA_PATH}", "/cwd")
+	if got2 == "{OLLIE_DATA_PATH}" || got2 == "" {
+		t.Errorf("OLLIE_DATA_PATH not expanded: %q", got2)
+	}
+}
+
+// ---- checkPath: remaining branches ----
+
+func TestCheckPath_SymlinkResolved(t *testing.T) {
+	tmpDir := t.TempDir()
+	realDir := filepath.Join(tmpDir, "real")
+	os.MkdirAll(realDir, 0755)
+	// Create a real file so EvalSymlinks succeeds on the full path
+	realFile := filepath.Join(realDir, "file")
+	os.WriteFile(realFile, []byte("x"), 0644)
+	link := filepath.Join(tmpDir, "link")
+	os.Symlink(realDir, link)
+
+	cfg := &Config{Filesystem: FilesystemConfig{RW: []string{realDir}}}
+	// Access via symlink — EvalSymlinks resolves link/file to real/file
+	if err := checkPath(cfg, filepath.Join(link, "file"), true, tmpDir); err != nil {
+		t.Errorf("symlink path should be allowed: %v", err)
+	}
+}
+
+func TestCheckPath_ROX_ReadAllowed(t *testing.T) {
+	tmpDir := t.TempDir()
+	roxDir := filepath.Join(tmpDir, "rox")
+	os.MkdirAll(roxDir, 0755)
+
+	cfg := &Config{Filesystem: FilesystemConfig{ROX: []string{roxDir}}}
+	if err := checkPath(cfg, filepath.Join(roxDir, "bin"), false, tmpDir); err != nil {
+		t.Errorf("ROX read should be allowed: %v", err)
+	}
+	if err := checkPath(cfg, filepath.Join(roxDir, "bin"), true, tmpDir); err == nil {
+		t.Error("ROX write should be denied")
+	}
+}
+
+// ---- LoadSandbox: reader error ----
+
+func TestLoadSandbox_ReaderError(t *testing.T) {
+	_, err := LoadSandbox(&errReader{})
+	if err == nil {
+		t.Error("expected error from bad reader")
+	}
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, fmt.Errorf("read error") }
+
+// ---- WrapCommand: remaining branches ----
+
+func TestWrapCommand_LandrunUnavailable(t *testing.T) {
+	old := isAvailableFn
+	isAvailableFn = func() bool { return false }
+	defer func() { isAvailableFn = old }()
+
+	cfg := &Config{}
+	got := WrapCommand(cfg, []string{"echo", "hi"}, "/tmp")
+	if len(got) != 2 || got[0] != "echo" {
+		t.Errorf("should return original cmd when landrun unavailable; got %v", got)
+	}
+}
+
+func TestWrapCommand_ROX_RWX(t *testing.T) {
+	tmpDir := t.TempDir()
+	roxDir := filepath.Join(tmpDir, "rox")
+	rwxDir := filepath.Join(tmpDir, "rwx")
+	os.MkdirAll(roxDir, 0755)
+	os.MkdirAll(rwxDir, 0755)
+
+	cfg := &Config{
+		Filesystem: FilesystemConfig{
+			ROX: []string{roxDir},
+			RWX: []string{rwxDir},
+		},
+	}
+	got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+	assertFlagValue(t, got, "--rox", roxDir)
+	assertFlagValue(t, got, "--rwx", rwxDir)
+}
+
+func TestWrapCommand_SortTiebreaker(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Two paths of equal length
+	dirA := filepath.Join(tmpDir, "aaa")
+	dirB := filepath.Join(tmpDir, "bbb")
+	os.MkdirAll(dirA, 0755)
+	os.MkdirAll(dirB, 0755)
+
+	cfg := &Config{
+		Filesystem: FilesystemConfig{RW: []string{dirB, dirA}},
+	}
+	got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+	idxA := indexOf(got, dirA)
+	idxB := indexOf(got, dirB)
+	if idxA == -1 || idxB == -1 {
+		t.Fatal("both dirs should be in args")
+	}
+	if idxA > idxB {
+		t.Errorf("dirA (%q) should sort before dirB (%q)", dirA, dirB)
+	}
+}
+
+func TestWrapCommand_Superpowerd(t *testing.T) {
+	// Create a fake superpowers binary
+	tmpBin := t.TempDir()
+	fakeSP := filepath.Join(tmpBin, "superpowers")
+	os.WriteFile(fakeSP, []byte("#!/bin/sh\n"), 0755)
+	t.Setenv("PATH", tmpBin+":"+os.Getenv("PATH"))
+
+	old := isSuperpowerdRunningFn
+	isSuperpowerdRunningFn = func() bool { return true }
+	defer func() { isSuperpowerdRunningFn = old }()
+
+	cfg := &Config{}
+	got := WrapCommand(cfg, []string{"echo"}, "/tmp")
+	if got[0] != fakeSP {
+		t.Errorf("expected superpowers as first arg; got %v", got)
+	}
+	assertContains(t, got, "run-session")
+	assertContains(t, got, "SUPERPOWERD_SESSION_TOKEN")
+}
+
+// ---- isSuperpowerdRunning ----
+
+func TestIsSuperpowerdRunning_NoSocket(t *testing.T) {
+	t.Setenv("SUPERPOWERD_SOCKET_DIR", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	if isSuperpowerdRunning() {
+		t.Error("should return false with no socket dirs")
+	}
+}
+
+func TestIsSuperpowerdRunning_CustomSocketDir(t *testing.T) {
+	t.Setenv("SUPERPOWERD_SOCKET_DIR", "/nonexistent/socket/dir")
+	if isSuperpowerdRunning() {
+		t.Error("should return false with nonexistent socket")
+	}
+}
+
+func TestIsSuperpowerdRunning_XDGFallback(t *testing.T) {
+	t.Setenv("SUPERPOWERD_SOCKET_DIR", "")
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	if isSuperpowerdRunning() {
+		t.Error("should return false with no actual socket")
+	}
+}
+
+func TestIsSuperpowerdRunning_SocketExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "superpowerd.sock")
+
+	// Start a unixpacket listener
+	ln, err := net.ListenPacket("unixpacket", sockPath)
+	if err != nil {
+		t.Skipf("cannot create unixpacket socket: %v", err)
+	}
+	defer ln.Close()
+
+	t.Setenv("SUPERPOWERD_SOCKET_DIR", tmpDir)
+	if !isSuperpowerdRunning() {
+		t.Error("should return true with active socket")
+	}
 }
 
 // ---- helpers ----

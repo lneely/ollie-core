@@ -14,10 +14,16 @@ type pathEntry struct {
 	flag string // --ro, --rox, --rw, --rwx
 }
 
+// isAvailableFn and isSuperpowerdRunningFn are overridable for testing.
+var (
+	isAvailableFn          = isAvailable
+	isSuperpowerdRunningFn = isSuperpowerdRunning
+)
+
 // WrapCommand wraps a command with landrun based on the configuration.
 // Returns the wrapped command args, or the original command if landrun is unavailable.
 func WrapCommand(cfg *Config, originalCmd []string, cwd string) []string {
-	if !isAvailable() {
+	if !isAvailableFn() {
 		return originalCmd
 	}
 
@@ -95,7 +101,7 @@ func WrapCommand(cfg *Config, originalCmd []string, cwd string) []string {
 	args = append(args, originalCmd...)
 
 	// Wrap with superpowers run-session if superpowerd is running
-	if isSuperpowerdRunning() {
+	if isSuperpowerdRunningFn() {
 		if superpowersPath, err := exec.LookPath("superpowers"); err == nil {
 			args = append([]string{args[0], "--env", "SUPERPOWERD_SESSION_TOKEN"}, args[1:]...)
 			args = append([]string{superpowersPath, "run-session", "--"}, args...)
