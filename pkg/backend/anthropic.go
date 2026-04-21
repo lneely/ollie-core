@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -18,13 +19,14 @@ type AnthropicBackend struct {
 	apiKey  string
 	model   string
 	client  *http.Client
-	BaseURL string // default: https://api.anthropic.com; override for testing
+	BaseURL *url.URL
 }
 
-func NewAnthropic(apiKey string) *AnthropicBackend {
-	b := &AnthropicBackend{apiKey: apiKey, client: &http.Client{}, BaseURL: "https://api.anthropic.com"}
+func NewAnthropic(apiKey string) (*AnthropicBackend, error) {
+	u, _ := url.Parse("https://api.anthropic.com")
+	b := &AnthropicBackend{apiKey: apiKey, client: &http.Client{}, BaseURL: u}
 	b.model = b.DefaultModel()
-	return b
+	return b, nil
 }
 
 func (b *AnthropicBackend) Name() string         { return "anthropic" }
@@ -106,41 +108,14 @@ func (b *AnthropicBackend) ChatStream(ctx context.Context, messages []Message, t
 		})
 	}
 
-	data, err := json.Marshal(areq)
-	if err != nil {
-		return nil, err
-	}
+	data, _ := json.Marshal(areq)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, b.BaseURL+"/v1/messages", bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
+	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, b.BaseURL.JoinPath("/v1/messages").String(), bytes.NewReader(data))
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("X-Api-Key", b.apiKey)
 	httpReq.Header.Set("Anthropic-Version", "2023-06-01")
 
-	resp, err := b.client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode == http.StatusTooManyRequests {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, &RateLimitError{RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")), Message: string(body)}
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("anthropic HTTP %d: %s", resp.StatusCode, body)
-	}
-
-	ch := make(chan StreamEvent, 8)
-	go func() {
-		defer close(ch)
-		defer resp.Body.Close()
-		streamAnthropicSSE(ctx, resp.Body, ch)
-	}()
-	return ch, nil
+	return streamRequest(b.client, httpReq, "anthropic", streamAnthropicSSE)
 }
 
 // buildAnthropicMessages converts ollie messages to Anthropic wire format.
@@ -202,7 +177,7 @@ func buildAnthropicMessages(messages []Message) (system string, out []anthropicM
 }
 
 // streamAnthropicSSE reads the Anthropic SSE stream and sends StreamEvents to ch.
-func streamAnthropicSSE(ctx context.Context, body io.Reader, ch chan<- StreamEvent) {
+func streamAnthropicSSE(body io.Reader, ch chan<- StreamEvent) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
@@ -261,11 +236,7 @@ func streamAnthropicSSE(ctx context.Context, body io.Reader, ch chan<- StreamEve
 			switch v.Delta.Type {
 			case "text_delta":
 				if v.Delta.Text != "" {
-					select {
-					case ch <- StreamEvent{Content: v.Delta.Text}:
-					case <-ctx.Done():
-						done = true
-					}
+					ch <- StreamEvent{Content: v.Delta.Text}
 				}
 			case "input_json_delta":
 				if t := tools[v.Index]; t != nil {

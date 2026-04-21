@@ -8,25 +8,30 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
 // OllamaBackend speaks the Ollama /api/chat wire format.
 type OllamaBackend struct {
-	baseURL   string
+	baseURL   *url.URL
 	model     string
 	client    *http.Client
 	ctxLength int
 	ctxModel  string
 }
 
-func NewOllama(baseURL string) *OllamaBackend {
+func NewOllama(baseURL string) (*OllamaBackend, error) {
 	if baseURL == "" {
 		baseURL = "http://localhost:11434"
 	}
-	b := &OllamaBackend{baseURL: baseURL, client: &http.Client{}}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+	b := &OllamaBackend{baseURL: u, client: &http.Client{}}
 	b.model = b.DefaultModel()
-	return b
+	return b, nil
 }
 
 func (b *OllamaBackend) Name() string         { return "ollama" }
@@ -35,7 +40,7 @@ func (b *OllamaBackend) Model() string        { return b.model }
 func (b *OllamaBackend) SetModel(m string)    { b.model = m; b.ctxLength = 0 }
 
 func (b *OllamaBackend) Models(ctx context.Context) []string {
-	req, err := http.NewRequestWithContext(ctx, "GET", b.baseURL+"/api/tags", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", b.baseURL.JoinPath("/api/tags").String(), nil)
 	if err != nil {
 		return nil
 	}
@@ -67,7 +72,7 @@ func (b *OllamaBackend) ContextLength(ctx context.Context) int {
 		return b.ctxLength
 	}
 	body, _ := json.Marshal(map[string]string{"name": b.model})
-	req, err := http.NewRequestWithContext(ctx, "POST", b.baseURL+"/api/show", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", b.baseURL.JoinPath("/api/show").String(), bytes.NewReader(body))
 	if err != nil {
 		return 0
 	}
@@ -167,94 +172,65 @@ func (b *OllamaBackend) ChatStream(ctx context.Context, messages []Message, tool
 		})
 	}
 
-	data, err := json.Marshal(ollamaChatRequest{
+	data, _ := json.Marshal(ollamaChatRequest{
 		Model:    model,
 		Messages: wireMessages,
 		Tools:    wireTools,
 		Stream:   true,
 	})
-	if err != nil {
-		return nil, err
-	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, b.baseURL+"/api/chat", bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
+	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, b.baseURL.JoinPath("/api/chat").String(), bytes.NewReader(data))
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := b.client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode == http.StatusTooManyRequests {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
-		return nil, &RateLimitError{RetryAfter: retryAfter, Message: string(body)}
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("ollama HTTP %d: %s", resp.StatusCode, body)
-	}
+	return streamRequest(b.client, httpReq, "ollama", streamOllamaNDJSON)
+}
 
-	ch := make(chan StreamEvent, 8)
+// streamOllamaNDJSON reads Ollama's newline-delimited JSON stream from r
+// and sends StreamEvents to ch.
+func streamOllamaNDJSON(r io.Reader, ch chan<- StreamEvent) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
-	go func() {
-		defer close(ch)
-		defer resp.Body.Close()
+	var accumulated []ToolCall
 
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-
-		var accumulated []ToolCall
-
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if len(line) == 0 {
-				continue
-			}
-
-			var wire ollamaChatResponse
-			if err := json.Unmarshal(line, &wire); err != nil {
-				ch <- StreamEvent{Done: true, StopReason: fmt.Sprintf("stream decode: %v", err)}
-				return
-			}
-
-			for _, tc := range wire.Message.ToolCalls {
-				accumulated = append(accumulated, ToolCall{
-					Name:      tc.Function.Name,
-					Arguments: tc.Function.Arguments,
-				})
-			}
-
-			if wire.Done {
-				stopReason := "stop"
-				if wire.DoneReason != "" {
-					stopReason = wire.DoneReason
-				}
-				ch <- StreamEvent{
-					Done:       true,
-					StopReason: stopReason,
-					Usage:      Usage{InputTokens: wire.PromptEvalCount, OutputTokens: wire.EvalCount},
-					ToolCalls:  accumulated,
-				}
-				return
-			}
-
-			ev := StreamEvent{}
-			if wire.Message.Content != "" {
-				ev.Content = wire.Message.Content
-			}
-			if ev.Content != "" {
-				ch <- ev
-			}
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
 		}
-		if err := scanner.Err(); err != nil {
-			ch <- StreamEvent{Done: true, StopReason: fmt.Sprintf("stream read: %v", err)}
-		}
-	}()
 
-	return ch, nil
+		var wire ollamaChatResponse
+		if err := json.Unmarshal(line, &wire); err != nil {
+			ch <- StreamEvent{Done: true, StopReason: fmt.Sprintf("stream decode: %v", err)}
+			return
+		}
+
+		for _, tc := range wire.Message.ToolCalls {
+			accumulated = append(accumulated, ToolCall{
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			})
+		}
+
+		if wire.Done {
+			stopReason := "stop"
+			if wire.DoneReason != "" {
+				stopReason = wire.DoneReason
+			}
+			ch <- StreamEvent{
+				Done:       true,
+				StopReason: stopReason,
+				Usage:      Usage{InputTokens: wire.PromptEvalCount, OutputTokens: wire.EvalCount},
+				ToolCalls:  accumulated,
+			}
+			return
+		}
+
+		if wire.Message.Content != "" {
+			ch <- StreamEvent{Content: wire.Message.Content}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		ch <- StreamEvent{Done: true, StopReason: fmt.Sprintf("stream read: %v", err)}
+	}
 }

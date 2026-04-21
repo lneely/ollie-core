@@ -63,23 +63,23 @@ func New() (Backend, error) {
 
 	switch which {
 	case "ollama":
-		return NewOllama(os.Getenv("OLLIE_OLLAMA_URL")), nil
+		return NewOllama(os.Getenv("OLLIE_OLLAMA_URL"))
 	case "openai", "openrouter":
 		url := os.Getenv("OLLIE_OPENAI_URL")
 		key := os.Getenv("OLLIE_OPENAI_KEY")
-		return NewOpenAI(openAIName(which, url), url, key), nil
+		return NewOpenAI(openAIName(which, url), url, key)
 	case "anthropic":
 		key := os.Getenv("OLLIE_ANTHROPIC_KEY")
 		if key == "" {
 			return nil, fmt.Errorf("OLLIE_ANTHROPIC_KEY is required for anthropic backend")
 		}
-		return NewAnthropic(key), nil
+		return NewAnthropic(key)
 	case "copilot":
 		token := os.Getenv("OLLIE_COPILOT_TOKEN")
 		if token == "" {
 			return nil, fmt.Errorf("OLLIE_COPILOT_TOKEN is required for copilot backend")
 		}
-		return NewCopilot(token), nil
+		return NewCopilot(token)
 	case "kiro", "codewhisperer":
 		return NewCodeWhisperer(os.Getenv("OLLIE_KIRO_TOKEN"))
 	default:

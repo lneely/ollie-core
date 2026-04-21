@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +18,7 @@ import (
 // Compatible with OpenRouter, OpenAI, and any other OpenAI-compatible API.
 type OpenAIBackend struct {
 	name         string
-	baseURL      string
+	baseURL      *url.URL
 	apiKey       string
 	model        string
 	client       *http.Client
@@ -32,13 +33,17 @@ type openAIModelInfo struct {
 	ContextLength int    `json:"context_length"`
 }
 
-func NewOpenAI(name, baseURL, apiKey string) *OpenAIBackend {
+func NewOpenAI(name, baseURL, apiKey string) (*OpenAIBackend, error) {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
 	}
-	b := &OpenAIBackend{name: name, baseURL: baseURL, apiKey: apiKey, client: &http.Client{}}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+	b := &OpenAIBackend{name: name, baseURL: u, apiKey: apiKey, client: &http.Client{}}
 	b.model = b.DefaultModel()
-	return b
+	return b, nil
 }
 
 func (b *OpenAIBackend) Name() string         { return b.name }
@@ -49,7 +54,7 @@ func (b *OpenAIBackend) fetchModels(ctx context.Context) []openAIModelInfo {
 	if len(b.cachedModels) > 0 {
 		return b.cachedModels
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", b.baseURL+"/v1/models", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", b.baseURL.JoinPath("/v1/models").String(), nil)
 	if err != nil {
 		return nil
 	}
@@ -177,11 +182,11 @@ type openAIStreamResponse struct {
 	Usage   openAIUsage          `json:"usage"`
 }
 
-// -- implementation --
+// -- encoding --
 
-func (b *OpenAIBackend) ChatStream(ctx context.Context, messages []Message, tools []Tool, params GenerationParams) (<-chan StreamEvent, error) {
-	model := b.model
-	wireMessages := make([]openAIMessage, len(messages))
+// encodeOpenAIMessages converts canonical Messages to the OpenAI wire format.
+func encodeOpenAIMessages(messages []Message) []openAIMessage {
+	wire := make([]openAIMessage, len(messages))
 	for i, m := range messages {
 		wm := openAIMessage{
 			Role:       m.Role,
@@ -201,12 +206,16 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, messages []Message, tool
 		if len(wm.ToolCalls) == 0 {
 			wm.Content = &m.Content
 		}
-		wireMessages[i] = wm
+		wire[i] = wm
 	}
+	return wire
+}
 
-	var wireTools []openAITool
+// encodeOpenAITools converts canonical Tools to the OpenAI wire format.
+func encodeOpenAITools(tools []Tool) []openAITool {
+	var wire []openAITool
 	for _, t := range tools {
-		wireTools = append(wireTools, openAITool{
+		wire = append(wire, openAITool{
 			Type: "function",
 			Function: openAIToolFunction{
 				Name:        t.Name,
@@ -215,11 +224,105 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, messages []Message, tool
 			},
 		})
 	}
+	return wire
+}
 
+// -- stream parsing --
+
+// streamOpenAISSE reads an OpenAI-format SSE stream from r and sends
+// StreamEvents to ch. It is the core parsing loop, separated from HTTP
+// transport so it can be tested with an io.Reader directly.
+func streamOpenAISSE(r io.Reader, ch chan<- StreamEvent) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	// Accumulate tool call fragments by index (OpenAI sends args incrementally).
+	type tcAccum struct {
+		id, name, args string
+	}
+	accum := make(map[int]*tcAccum)
+
+	// finishReason and usage arrive in separate trailing chunks.
+	var finishReason string
+	var usage Usage
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if line == "data: [DONE]" {
+			ev := StreamEvent{
+				Done:       true,
+				StopReason: finishReason,
+				Usage:      usage,
+			}
+			for _, a := range accum {
+				ev.ToolCalls = append(ev.ToolCalls, ToolCall{
+					ID:        a.id,
+					Name:      a.name,
+					Arguments: json.RawMessage(a.args),
+				})
+			}
+			ch <- ev
+			return
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		var wire openAIStreamResponse
+		if err := json.Unmarshal([]byte(line[6:]), &wire); err != nil {
+			ch <- StreamEvent{Done: true, StopReason: fmt.Sprintf("stream decode: %v", err)}
+			return
+		}
+
+		if wire.Usage.PromptTokens > 0 {
+			usage.InputTokens = wire.Usage.PromptTokens
+		}
+		if wire.Usage.CompletionTokens > 0 {
+			usage.OutputTokens = wire.Usage.CompletionTokens
+		}
+
+		if len(wire.Choices) == 0 {
+			continue
+		}
+
+		choice := wire.Choices[0]
+		if choice.FinishReason != "" {
+			finishReason = choice.FinishReason
+		}
+		if choice.Delta.Content != "" {
+			ch <- StreamEvent{Content: choice.Delta.Content}
+		}
+
+		for _, dtc := range choice.Delta.ToolCalls {
+			idx := dtc.Index
+			if _, ok := accum[idx]; !ok {
+				accum[idx] = &tcAccum{id: dtc.ID, name: dtc.Function.Name}
+			}
+			a := accum[idx]
+			if dtc.ID != "" {
+				a.id = dtc.ID
+			}
+			if dtc.Function.Name != "" {
+				a.name = dtc.Function.Name
+			}
+			a.args += dtc.Function.Arguments
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		ch <- StreamEvent{Done: true, StopReason: fmt.Sprintf("stream read: %v", err)}
+	}
+}
+
+// -- implementation --
+
+func (b *OpenAIBackend) ChatStream(ctx context.Context, messages []Message, tools []Tool, params GenerationParams) (<-chan StreamEvent, error) {
 	req := openAIChatRequest{
-		Model:            model,
-		Messages:         wireMessages,
-		Tools:            wireTools,
+		Model:            b.model,
+		Messages:         encodeOpenAIMessages(messages),
+		Tools:            encodeOpenAITools(tools),
 		Stream:           true,
 		StreamOptions:    &openAIStreamOptions{IncludeUsage: true},
 		MaxTokens:        params.MaxTokens,
@@ -228,15 +331,9 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, messages []Message, tool
 		PresencePenalty:  params.PresencePenalty,
 	}
 
-	data, err := json.Marshal(req)
-	if err != nil {
-		return nil, err
-	}
+	data, _ := json.Marshal(req)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, b.baseURL+"/v1/chat/completions", bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
+	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, b.baseURL.JoinPath("/v1/chat/completions").String(), bytes.NewReader(data))
 	httpReq.Header.Set("Content-Type", "application/json")
 	if b.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+b.apiKey)
@@ -245,112 +342,7 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, messages []Message, tool
 		httpReq.Header.Set(k, v)
 	}
 
-	resp, err := b.client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode == http.StatusTooManyRequests {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
-		return nil, &RateLimitError{RetryAfter: retryAfter, Message: string(body)}
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("openai HTTP %d: %s", resp.StatusCode, body)
-	}
-
-	ch := make(chan StreamEvent, 8)
-
-	go func() {
-		defer close(ch)
-		defer resp.Body.Close()
-
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-
-		// Accumulate tool call fragments by index (OpenAI sends args incrementally).
-		type tcAccum struct {
-			id, name, args string
-		}
-		accum := make(map[int]*tcAccum)
-
-		// finishReason and usage arrive in separate trailing chunks.
-		var finishReason string
-		var usage Usage
-
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-			if line == "data: [DONE]" {
-				ev := StreamEvent{
-					Done:       true,
-					StopReason: finishReason,
-					Usage:      usage,
-				}
-				for _, a := range accum {
-					ev.ToolCalls = append(ev.ToolCalls, ToolCall{
-						ID:        a.id,
-						Name:      a.name,
-						Arguments: json.RawMessage(a.args),
-					})
-				}
-				ch <- ev
-				return
-			}
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-
-			var wire openAIStreamResponse
-			if err := json.Unmarshal([]byte(line[6:]), &wire); err != nil {
-				ch <- StreamEvent{Done: true, StopReason: fmt.Sprintf("stream decode: %v", err)}
-				return
-			}
-
-			if wire.Usage.PromptTokens > 0 {
-				usage.InputTokens = wire.Usage.PromptTokens
-			}
-			if wire.Usage.CompletionTokens > 0 {
-				usage.OutputTokens = wire.Usage.CompletionTokens
-			}
-
-			if len(wire.Choices) == 0 {
-				continue
-			}
-
-			choice := wire.Choices[0]
-			if choice.FinishReason != "" {
-				finishReason = choice.FinishReason
-			}
-			if choice.Delta.Content != "" {
-				ch <- StreamEvent{Content: choice.Delta.Content}
-			}
-
-			for _, dtc := range choice.Delta.ToolCalls {
-				idx := dtc.Index
-				if _, ok := accum[idx]; !ok {
-					accum[idx] = &tcAccum{id: dtc.ID, name: dtc.Function.Name}
-				}
-				a := accum[idx]
-				if dtc.ID != "" {
-					a.id = dtc.ID
-				}
-				if dtc.Function.Name != "" {
-					a.name = dtc.Function.Name
-				}
-				a.args += dtc.Function.Arguments
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- StreamEvent{Done: true, StopReason: fmt.Sprintf("stream read: %v", err)}
-		}
-	}()
-
-	return ch, nil
+	return streamRequest(b.client, httpReq, "openai", streamOpenAISSE)
 }
 
 // parseRetryAfter parses the Retry-After header value, which may be an integer
