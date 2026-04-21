@@ -278,7 +278,7 @@ func (e *Server) executeWithStdin(ctx context.Context, code, language string, ti
 		}
 	}
 
-	cfg, err := loadLayeredConfig(sandboxName)
+	cfg, err := loadSandboxConfig(sandboxName)
 	if err != nil {
 		return "", err
 	}

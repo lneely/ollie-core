@@ -5,7 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+
 	"ollie/internal/sandbox"
+	"ollie/pkg/paths"
+
 	"regexp"
 	"strings"
 )
@@ -132,8 +137,17 @@ func (e *Server) ValidateCode(code, language string) error {
 	return nil
 }
 
-func loadLayeredConfig(name string) (*sandbox.Config, error) {
-	return sandbox.LoadMerged(name)
+func loadSandboxConfig(name string) (*sandbox.Config, error) {
+	if name == "" {
+		name = "default"
+	}
+	path := filepath.Join(paths.CfgDir(), "sandbox", name+".yaml")
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox %q not found: %w", name, err)
+	}
+	defer f.Close()
+	return sandbox.LoadSandbox(f)
 }
 
 type limitedWriter struct {

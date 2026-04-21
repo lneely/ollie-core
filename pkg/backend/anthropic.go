@@ -15,13 +15,14 @@ const anthropicDefaultMaxTokens = 8192
 
 // AnthropicBackend speaks the Anthropic Messages API.
 type AnthropicBackend struct {
-	apiKey string
-	model  string
-	client *http.Client
+	apiKey  string
+	model   string
+	client  *http.Client
+	BaseURL string // default: https://api.anthropic.com; override for testing
 }
 
 func NewAnthropic(apiKey string) *AnthropicBackend {
-	b := &AnthropicBackend{apiKey: apiKey, client: &http.Client{}}
+	b := &AnthropicBackend{apiKey: apiKey, client: &http.Client{}, BaseURL: "https://api.anthropic.com"}
 	b.model = b.DefaultModel()
 	return b
 }
@@ -110,7 +111,7 @@ func (b *AnthropicBackend) ChatStream(ctx context.Context, messages []Message, t
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(data))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, b.BaseURL+"/v1/messages", bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}

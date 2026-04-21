@@ -17,7 +17,7 @@ type pathEntry struct {
 // WrapCommand wraps a command with landrun based on the configuration.
 // Returns the wrapped command args, or the original command if landrun is unavailable.
 func WrapCommand(cfg *Config, originalCmd []string, cwd string) []string {
-	if !IsAvailable() {
+	if !isAvailable() {
 		return originalCmd
 	}
 
@@ -40,25 +40,25 @@ func WrapCommand(cfg *Config, originalCmd []string, cwd string) []string {
 
 	var entries []pathEntry
 	for _, path := range cfg.Filesystem.RO {
-		expanded := ExpandPath(path, cwd)
+		expanded := expandPath(path, cwd)
 		if pathExists(expanded) {
 			entries = append(entries, pathEntry{expanded, "--ro"})
 		}
 	}
 	for _, path := range cfg.Filesystem.ROX {
-		expanded := ExpandPath(path, cwd)
+		expanded := expandPath(path, cwd)
 		if pathExists(expanded) {
 			entries = append(entries, pathEntry{expanded, "--rox"})
 		}
 	}
 	for _, path := range cfg.Filesystem.RW {
-		expanded := ExpandPath(path, cwd)
+		expanded := expandPath(path, cwd)
 		if pathExists(expanded) {
 			entries = append(entries, pathEntry{expanded, "--rw"})
 		}
 	}
 	for _, path := range cfg.Filesystem.RWX {
-		expanded := ExpandPath(path, cwd)
+		expanded := expandPath(path, cwd)
 		if pathExists(expanded) {
 			entries = append(entries, pathEntry{expanded, "--rwx"})
 		}
@@ -95,7 +95,7 @@ func WrapCommand(cfg *Config, originalCmd []string, cwd string) []string {
 	args = append(args, originalCmd...)
 
 	// Wrap with superpowers run-session if superpowerd is running
-	if IsSuperpowerdRunning() {
+	if isSuperpowerdRunning() {
 		if superpowersPath, err := exec.LookPath("superpowers"); err == nil {
 			args = append([]string{args[0], "--env", "SUPERPOWERD_SESSION_TOKEN"}, args[1:]...)
 			args = append([]string{superpowersPath, "run-session", "--"}, args...)
@@ -105,8 +105,8 @@ func WrapCommand(cfg *Config, originalCmd []string, cwd string) []string {
 	return args
 }
 
-// IsSuperpowerdRunning checks if superpowerd is running by testing socket connectivity
-func IsSuperpowerdRunning() bool {
+// isSuperpowerdRunning checks if superpowerd is running by testing socket connectivity
+func isSuperpowerdRunning() bool {
 	socketDir := os.Getenv("SUPERPOWERD_SOCKET_DIR")
 	if socketDir == "" {
 		socketDir = os.Getenv("XDG_RUNTIME_DIR")
