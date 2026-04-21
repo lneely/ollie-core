@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -153,9 +154,10 @@ func DefaultPromptsDir() string {
 // loadSystemPrompt reads SYSTEM_PROMPT.md from DefaultPromptsDir and expands
 // environment variables, including computed PRIME_* values.
 func loadSystemPrompt(cwd string) string {
-	data, err := os.ReadFile(DefaultPromptsDir() + "/SYSTEM_PROMPT.md")
+	path := DefaultPromptsDir() + "/SYSTEM_PROMPT.md"
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		panic(fmt.Sprintf("loadSystemPrompt: %s: %v", path, err))
 	}
 	if cwd == "" {
 		cwd, _ = os.Getwd()
@@ -711,6 +713,16 @@ func firstSentence(s string) string {
 // Continuations (post-turn hook context, unconsumed inject, FIFO drain) are
 // handled via an explicit loop rather than recursion to avoid stack growth.
 func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandler) {
+	defer func() {
+		if r := recover(); r != nil {
+			clog.Error("panic: %v\n%s", r, debug.Stack())
+			if a := s.currentAction.Swap(nil); a != nil {
+				a.cancel(fmt.Errorf("%v", r))
+			}
+			s.setState("idle")
+			handler(Event{Role: "error", Content: fmt.Sprintf("%v", r)})
+		}
+	}()
 	clog.Debug("Submit() input_len=%d running=%v", len(input), s.IsRunning())
 	if input == "" {
 		return
@@ -802,7 +814,9 @@ func (s *agentCore) executeTurn(ctx context.Context, input string, handler Event
 					s.session.appendUserMessage(pre.Context)
 				}
 				emit(s.loopcfg, Event{Role: "info", Content: "auto-compacting context...\n"})
-				s.session.compact(ctx, s.loopcfg.Backend) //nolint:errcheck
+				if _, _, err := s.session.compact(ctx, s.loopcfg.Backend); err != nil {
+					panic(fmt.Sprintf("auto-compact: %v", err))
+				}
 				post := s.hooks.Run(ctx, HookPostCompact, payload)
 				if post.Ran {
 					handler(infoEvent(hooksRan(1)))
