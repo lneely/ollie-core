@@ -43,6 +43,7 @@ var SessionFileList = []struct {
 // session directory. The file set is fixed.
 type SessionFileStore struct {
 	*storeConfig
+	Runnable
 	sess           *Session
 	log            *olog.Logger
 	kill           func()
@@ -51,15 +52,12 @@ type SessionFileStore struct {
 }
 
 func NewSessionFileStore(sess *Session, log *olog.Logger, kill func(), rename func(newID string) error, saveTranscript func([]byte) error) *SessionFileStore {
-	sf := &SessionFileStore{sess: sess, log: log, kill: kill, rename: rename, saveTranscript: saveTranscript}
-	notDir := func(string) (Store, error) { return nil, fmt.Errorf("not a directory") }
+	sf := &SessionFileStore{Runnable: sess, sess: sess, log: log, kill: kill, rename: rename, saveTranscript: saveTranscript}
 	notSupported := func(string) error { return fmt.Errorf("not supported") }
 	sf.storeConfig = &storeConfig{
 		StatFn:   sf.stat,
 		ListFn:   sf.list,
-		GetFn:    sf.get,
-		OpenFn:   notDir,
-		PutFn:    sf.put,
+		OpenFn:   sf.open,
 		DeleteFn: notSupported,
 		CreateFn: notSupported,
 		RenameFn: func(string, string) error { return fmt.Errorf("not supported") },
@@ -85,7 +83,6 @@ func (s *SessionFileStore) stat(name string) (os.FileInfo, error) {
 				size = int64(len(s.sess.log))
 				s.sess.mu.RUnlock()
 			case "statewait", "usagewait", "ctxszwait", "cwdwait":
-				// Blocking reads; size is unknown until resolved.
 			default:
 				size = int64(len(s.content(name)))
 			}
@@ -95,7 +92,38 @@ func (s *SessionFileStore) stat(name string) (os.FileInfo, error) {
 	return nil, fmt.Errorf("%s: not found", name)
 }
 
-func (s *SessionFileStore) get(name string) ([]byte, error) {
+func (s *SessionFileStore) open(name string) (StoreEntry, error) {
+	for _, f := range SessionFileList {
+		if f.Name == name {
+			return s.entryFor(name, f.Mode), nil
+		}
+	}
+	return nil, fmt.Errorf("%s: not found", name)
+}
+
+func (s *SessionFileStore) entryFor(name string, mode os.FileMode) StoreEntry {
+	return &EntryConfig{
+		StatFn: func() (os.FileInfo, error) {
+			var size int64
+			switch name {
+			case "chat":
+				s.sess.mu.RLock()
+				size = int64(len(s.sess.log))
+				s.sess.mu.RUnlock()
+			case "statewait", "usagewait", "ctxszwait", "cwdwait":
+				// Blocking reads; size is unknown until resolved.
+			default:
+				size = int64(len(s.content(name)))
+			}
+			return &SyntheticFileInfo{Name_: name, Mode_: mode, Size_: size}, nil
+		},
+		ReadFn:         func() ([]byte, error) { return s.readFile(name) },
+		WriteFn:        func(data []byte) error { return s.writeFile(name, data) },
+		BlockingReadFn: func(ctx context.Context, base string) ([]byte, error) { return s.blockingRead(ctx, name, base) },
+	}
+}
+
+func (s *SessionFileStore) readFile(name string) ([]byte, error) {
 	switch name {
 	case "chat":
 		s.sess.mu.RLock()
@@ -121,7 +149,7 @@ func (s *SessionFileStore) get(name string) ([]byte, error) {
 	}
 }
 
-func (s *SessionFileStore) put(name string, data []byte) error {
+func (s *SessionFileStore) writeFile(name string, data []byte) error {
 	input := strings.TrimSpace(string(data))
 	if input == "" {
 		return nil
@@ -165,6 +193,36 @@ func (s *SessionFileStore) put(name string, data []byte) error {
 		return s.sess.Core.SetGenerationParams(params)
 	}
 	return nil
+}
+
+func (s *SessionFileStore) blockingRead(connCtx context.Context, name, base string) ([]byte, error) {
+	ctx, cancel := context.WithCancel(connCtx)
+	defer cancel()
+	context.AfterFunc(s.sess.Ctx, cancel)
+
+	var field string
+	switch name {
+	case "statewait":
+		field = agent.WatchState
+	case "usagewait":
+		field = agent.WatchUsage
+	case "ctxszwait":
+		field = agent.WatchCtxSz
+	case "cwdwait":
+		field = agent.WatchCWD
+	default:
+		return nil, fmt.Errorf("%s: not a wait file", name)
+	}
+
+	if base == "" {
+		base = s.currentWaitValue(name)
+	}
+
+	v, ok := s.sess.Core.WaitChange(ctx, field, base)
+	if !ok {
+		return nil, nil
+	}
+	return []byte(v + "\n"), nil
 }
 
 func FormatParams(p backend.GenerationParams) string {
@@ -273,8 +331,8 @@ func (s *SessionFileStore) content(name string) string {
 	return ""
 }
 
-// CurrentWaitValue returns the current value for the named *wait file.
-func (s *SessionFileStore) CurrentWaitValue(name string) string {
+// currentWaitValue returns the current value for the named *wait file.
+func (s *SessionFileStore) currentWaitValue(name string) string {
 	switch name {
 	case "statewait":
 		return s.sess.Core.State()
@@ -286,38 +344,6 @@ func (s *SessionFileStore) CurrentWaitValue(name string) string {
 		return s.sess.Core.CWD()
 	}
 	return ""
-}
-
-// Wait blocks until the named *wait file's underlying value changes from base,
-// then returns the new value.
-func (s *SessionFileStore) Wait(connCtx context.Context, name, base string) ([]byte, error) {
-	ctx, cancel := context.WithCancel(connCtx)
-	defer cancel()
-	context.AfterFunc(s.sess.Ctx, cancel)
-
-	var field string
-	switch name {
-	case "statewait":
-		field = agent.WatchState
-	case "usagewait":
-		field = agent.WatchUsage
-	case "ctxszwait":
-		field = agent.WatchCtxSz
-	case "cwdwait":
-		field = agent.WatchCWD
-	default:
-		return nil, fmt.Errorf("%s: not a wait file", name)
-	}
-
-	if base == "" {
-		base = s.CurrentWaitValue(name)
-	}
-
-	v, ok := s.sess.Core.WaitChange(ctx, field, base)
-	if !ok {
-		return nil, nil
-	}
-	return []byte(v + "\n"), nil
 }
 
 func (s *SessionFileStore) makePublish() func(agent.Event) {

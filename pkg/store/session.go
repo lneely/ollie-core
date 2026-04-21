@@ -110,9 +110,7 @@ func NewSessionStore(cfg SessionStoreConfig) *SessionStore {
 	ss.storeConfig = &storeConfig{
 		StatFn:   ss.stat,
 		ListFn:   ss.list,
-		GetFn:    ss.get,
-		OpenFn:   ss.open,
-		PutFn:    ss.put,
+		OpenFn:   ss.openEntry,
 		DeleteFn: ss.del,
 		CreateFn: func(string) error { return fmt.Errorf("create not supported for sessions") },
 		RenameFn: ss.renameSession,
@@ -153,26 +151,41 @@ func (s *SessionStore) stat(name string) (os.FileInfo, error) {
 	return nil, fmt.Errorf("%s: not found", name)
 }
 
-func (s *SessionStore) get(name string) ([]byte, error) {
+func (s *SessionStore) openEntry(name string) (StoreEntry, error) {
+	notBlocking := func(context.Context, string) ([]byte, error) {
+		return nil, fmt.Errorf("blocking read not supported")
+	}
 	switch name {
 	case "new":
-		return []byte("name=\ncwd=\nbackend=\nmodel=\nagent=\n"), nil
+		return &EntryConfig{
+			StatFn:  func() (os.FileInfo, error) { return &SyntheticFileInfo{Name_: "new", Mode_: 0666}, nil },
+			ReadFn:  func() ([]byte, error) { return []byte("name=\ncwd=\nbackend=\nmodel=\nagent=\n"), nil },
+			WriteFn: func(data []byte) error {
+				args := strings.Fields(strings.TrimSpace(string(data)))
+				return s.createSession(args)
+			},
+			BlockingReadFn: notBlocking,
+		}, nil
 	case "idx":
-		return s.index(), nil
+		return &EntryConfig{
+			StatFn:         func() (os.FileInfo, error) { return &SyntheticFileInfo{Name_: "idx", Mode_: 0444}, nil },
+			ReadFn:         func() ([]byte, error) { return s.index(), nil },
+			WriteFn:        func([]byte) error { return fmt.Errorf("idx: read-only") },
+			BlockingReadFn: notBlocking,
+		}, nil
 	default:
 		if _, ok := sessionStoreFiles[name]; ok {
-			return s.cfg.ReadFile(paths.CfgDir() + "/scripts/s/" + name)
+			return &EntryConfig{
+				StatFn: func() (os.FileInfo, error) { return &SyntheticFileInfo{Name_: name, Mode_: sessionStoreFiles[name]}, nil },
+				ReadFn: func() ([]byte, error) {
+					return s.cfg.ReadFile(paths.CfgDir() + "/scripts/s/" + name)
+				},
+				WriteFn:        func([]byte) error { return fmt.Errorf("%s: not writable", name) },
+				BlockingReadFn: notBlocking,
+			}, nil
 		}
 	}
-	return nil, fmt.Errorf("%s: not a readable file", name)
-}
-
-func (s *SessionStore) put(name string, data []byte) error {
-	if name != "new" {
-		return fmt.Errorf("%s: not writable", name)
-	}
-	args := strings.Fields(strings.TrimSpace(string(data)))
-	return s.createSession(args)
+	return nil, fmt.Errorf("%s: not found", name)
 }
 
 func (s *SessionStore) del(name string) error {
@@ -193,8 +206,8 @@ func (s *SessionStore) Session(id string) *Session {
 	return s.sessions[id]
 }
 
-// SessionFileStore returns a SessionFileStore for the given session ID.
-func (s *SessionStore) open(id string) (Store, error) {
+// OpenStore returns a RunnableStore for the given session ID.
+func (s *SessionStore) OpenStore(id string) (RunnableStore, error) {
 	sess := s.Session(id)
 	if sess == nil {
 		return nil, fmt.Errorf("session not found: %s", id)

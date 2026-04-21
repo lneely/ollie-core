@@ -95,9 +95,35 @@ func newBatchStore(t *testing.T) *store.BatchStore {
 	})
 }
 
+// storeRead is a test helper: Open + Read.
+func storeRead(t *testing.T, s store.Store, name string) []byte {
+	t.Helper()
+	e, err := s.Open(name)
+	if err != nil {
+		t.Fatalf("Open(%q): %v", name, err)
+	}
+	data, err := e.Read()
+	if err != nil {
+		t.Fatalf("Read(%q): %v", name, err)
+	}
+	return data
+}
+
+// storeWrite is a test helper: Open + Write.
+func storeWrite(t *testing.T, s store.Store, name string, data []byte) {
+	t.Helper()
+	e, err := s.Open(name)
+	if err != nil {
+		t.Fatalf("Open(%q): %v", name, err)
+	}
+	if err := e.Write(data); err != nil {
+		t.Fatalf("Write(%q): %v", name, err)
+	}
+}
+
 // --- contract checks ---
 
-func checkReadableContract(t *testing.T, s store.ReadableStore, name string) {
+func checkReadableContract(t *testing.T, s store.Store, name string) {
 	t.Helper()
 	fi, err := s.Stat(name)
 	if err != nil {
@@ -122,42 +148,47 @@ func checkReadableContract(t *testing.T, s store.ReadableStore, name string) {
 	if !found {
 		t.Errorf("List() missing %q", name)
 	}
-	if _, err := s.Get(name); err != nil {
-		t.Fatalf("Get(%q): %v", name, err)
+	e, err := s.Open(name)
+	if err != nil {
+		t.Fatalf("Open(%q): %v", name, err)
 	}
-	if _, err := s.Get("__nonexistent__"); err == nil {
-		t.Error("Get(nonexistent) should error")
+	if _, err := e.Read(); err != nil {
+		t.Fatalf("Read(%q): %v", name, err)
 	}
 }
 
-func checkReadWriteContract(t *testing.T, s store.ReadWriteStore, name string) {
+func checkReadWriteContract(t *testing.T, s store.Store, name string) {
 	t.Helper()
 	want := []byte("hello")
-	if err := s.Put(name, want); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	got, err := s.Get(name)
+	e, err := s.Open(name)
 	if err != nil {
-		t.Fatalf("Get after Put: %v", err)
+		t.Fatalf("Open: %v", err)
+	}
+	if err := e.Write(want); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	got, err := e.Read()
+	if err != nil {
+		t.Fatalf("Read after Write: %v", err)
 	}
 	if string(got) != string(want) {
-		t.Errorf("Get = %q; want %q", got, want)
+		t.Errorf("Read = %q; want %q", got, want)
 	}
 	want2 := []byte("world")
-	if err := s.Put(name, want2); err != nil {
-		t.Fatalf("Put overwrite: %v", err)
+	if err := e.Write(want2); err != nil {
+		t.Fatalf("Write overwrite: %v", err)
 	}
-	got2, err := s.Get(name)
+	got2, err := e.Read()
 	if err != nil {
-		t.Fatalf("Get after overwrite: %v", err)
+		t.Fatalf("Read after overwrite: %v", err)
 	}
 	if string(got2) != string(want2) {
-		t.Errorf("Get after overwrite = %q; want %q", got2, want2)
+		t.Errorf("Read after overwrite = %q; want %q", got2, want2)
 	}
 	checkReadableContract(t, s, name)
 }
 
-func checkBlobStoreContract(t *testing.T, s store.BlobStore, name string) {
+func checkStoreContract(t *testing.T, s store.Store, name string) {
 	t.Helper()
 	if err := s.Create(name); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -191,15 +222,10 @@ func checkBlobStoreContract(t *testing.T, s store.BlobStore, name string) {
 	checkReadWriteContract(t, s, name)
 }
 
-func checkStoreContract(t *testing.T, s store.Store, name string) {
-	t.Helper()
-	checkBlobStoreContract(t, s, name)
-}
-
 // ===== FlatDir =====
 
 func TestFlatDirContract(t *testing.T) {
-	checkBlobStoreContract(t, store.NewFlatDir(t.TempDir(), 0644), "test-file")
+	checkStoreContract(t, store.NewFlatDir(t.TempDir(), 0644), "test-file")
 }
 
 func TestFlatDirCreateMkdirError(t *testing.T) {
@@ -211,8 +237,12 @@ func TestFlatDirCreateMkdirError(t *testing.T) {
 
 func TestFlatDirPutMkdirError(t *testing.T) {
 	fd := store.NewFlatDir("/nonexistent/path", 0644)
-	if err := fd.Put("f", []byte("x")); err == nil {
-		t.Error("Put should fail when dir doesn't exist")
+	e, err := fd.Open("f")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := e.Write([]byte("x")); err == nil {
+		t.Error("Write should fail when dir doesn't exist")
 	}
 }
 
@@ -250,27 +280,22 @@ func TestSkillStoreContract(t *testing.T) {
 		t.Error("Delete(nonexistent) should error")
 	}
 
-	// Put/Get round-trip (needs valid front matter)
+	// Write/Read round-trip (needs valid front matter)
 	content := []byte("---\ndescription: rw test\n---\nbody\n")
-	if err := s.Put("rw-skill.md", content); err != nil {
-		t.Fatalf("Put: %v", err)
+	if err := s.Create("rw-skill.md"); err != nil {
+		t.Fatalf("Create: %v", err)
 	}
-	got, err := s.Get("rw-skill.md")
-	if err != nil {
-		t.Fatalf("Get after Put: %v", err)
-	}
+	storeWrite(t, s, "rw-skill.md", content)
+	got := storeRead(t, s, "rw-skill.md")
 	if string(got) != string(content) {
-		t.Errorf("Get = %q; want %q", got, content)
+		t.Errorf("Read = %q; want %q", got, content)
 	}
 
 	// Readable
 	checkReadableContract(t, s, "test-skill.md")
 
 	// idx
-	idx, err := s.Get("idx")
-	if err != nil {
-		t.Fatalf("Get(idx): %v", err)
-	}
+	idx := storeRead(t, s, "idx")
 	if len(idx) == 0 {
 		t.Error("idx should be non-empty with seeded skills")
 	}
@@ -347,10 +372,7 @@ func TestSessionStoreGetIdx(t *testing.T) {
 	defer sess.Cancel()
 	s.AddSession(sess)
 
-	data, err := s.Get("idx")
-	if err != nil {
-		t.Fatalf("Get(idx): %v", err)
-	}
+	data := storeRead(t, s, "idx")
 	if !strings.Contains(string(data), "abc") {
 		t.Errorf("idx = %q; want to contain abc", data)
 	}
@@ -358,12 +380,9 @@ func TestSessionStoreGetIdx(t *testing.T) {
 
 func TestSessionStoreGetScript(t *testing.T) {
 	s := newSessionStore(t)
-	data, err := s.Get("ls")
-	if err != nil {
-		t.Fatalf("Get(ls): %v", err)
-	}
+	data := storeRead(t, s, "ls")
 	if string(data) != "#!/bin/sh\n" {
-		t.Errorf("Get(ls) = %q", data)
+		t.Errorf("Read(ls) = %q", data)
 	}
 }
 
@@ -400,10 +419,14 @@ func TestSessionStoreListIncludesSessions(t *testing.T) {
 	}
 }
 
-func TestSessionStorePutNotWritable(t *testing.T) {
+func TestSessionStoreWriteNotWritable(t *testing.T) {
 	s := newSessionStore(t)
-	if err := s.Put("idx", nil); err == nil {
-		t.Error("Put(idx) should error")
+	e, err := s.Open("idx")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := e.Write(nil); err == nil {
+		t.Error("Write(idx) should error")
 	}
 }
 
@@ -558,12 +581,9 @@ func TestSessionFileStoreGetChat(t *testing.T) {
 	sf := store.NewSessionFileStore(sess, sink.NewLogger("test"),
 		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
 
-	data, err := sf.Get("chat")
-	if err != nil {
-		t.Fatalf("Get(chat): %v", err)
-	}
+	data := storeRead(t, sf, "chat")
 	if string(data) != "hello" {
-		t.Errorf("Get(chat) = %q; want hello", data)
+		t.Errorf("Read(chat) = %q; want hello", data)
 	}
 }
 
@@ -575,7 +595,7 @@ func TestSessionFileStoreGetContent(t *testing.T) {
 		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
 
 	for _, name := range []string{"backend", "agent", "model", "state", "cwd", "offset", "params"} {
-		if _, err := sf.Get(name); err != nil {
+		if _, err := sf.Open(name); err != nil {
 			t.Errorf("Get(%q): %v", name, err)
 		}
 	}
@@ -588,9 +608,7 @@ func TestSessionFileStorePutCwd(t *testing.T) {
 	sf := store.NewSessionFileStore(sess, sink.NewLogger("test"),
 		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
 
-	if err := sf.Put("cwd", []byte("/new/path")); err != nil {
-		t.Fatalf("Put(cwd): %v", err)
-	}
+	storeWrite(t, sf, "cwd", []byte("/new/path"))
 	core := sess.Core.(*stubCore)
 	if core.cwd != "/new/path" {
 		t.Errorf("cwd = %q; want /new/path", core.cwd)
@@ -605,23 +623,12 @@ func TestSessionFileStorePutEmpty(t *testing.T) {
 		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
 
 	// Empty write is a no-op
-	if err := sf.Put("cwd", []byte("")); err != nil {
-		t.Fatalf("Put(cwd, empty): %v", err)
+	e, err := sf.Open("cwd")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
 	}
-}
-
-func TestSessionFileStoreCurrentWaitValue(t *testing.T) {
-	sess := testSession("s1")
-	defer sess.Cancel()
-	sink := testSink()
-	sf := store.NewSessionFileStore(sess, sink.NewLogger("test"),
-		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
-
-	if v := sf.CurrentWaitValue("statewait"); v != "idle" {
-		t.Errorf("CurrentWaitValue(statewait) = %q; want idle", v)
-	}
-	if v := sf.CurrentWaitValue("cwdwait"); v != "/tmp" {
-		t.Errorf("CurrentWaitValue(cwdwait) = %q; want /tmp", v)
+	if err := e.Write([]byte("")); err != nil {
+		t.Fatalf("Write(cwd, empty): %v", err)
 	}
 }
 
@@ -709,19 +716,20 @@ func TestBatchStoreGetIdx(t *testing.T) {
 	s := newBatchStore(t)
 	s.AddJob("j1", "done", "result", "spec")
 
-	data, err := s.Get("idx")
-	if err != nil {
-		t.Fatalf("Get(idx): %v", err)
-	}
+	data := storeRead(t, s, "idx")
 	if !strings.Contains(string(data), "j1") {
 		t.Errorf("idx = %q; want to contain j1", data)
 	}
 }
 
-func TestBatchStorePutNotWritable(t *testing.T) {
+func TestBatchStoreWriteNotWritable(t *testing.T) {
 	s := newBatchStore(t)
-	if err := s.Put("idx", nil); err == nil {
-		t.Error("Put(idx) should error")
+	e, err := s.Open("idx")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := e.Write(nil); err == nil {
+		t.Error("Write(idx) should error")
 	}
 }
 
@@ -779,7 +787,7 @@ func TestBatchStoreShutdown(t *testing.T) {
 func TestBatchJobStoreReadableContract(t *testing.T) {
 	s := newBatchStore(t)
 	s.AddJob("j1", "done", "the result", "the spec")
-	js, err := s.Open("j1")
+	js, err := s.OpenStore("j1")
 	if err != nil {
 		t.Fatal("JobStore(j1) not found")
 	}
@@ -789,7 +797,7 @@ func TestBatchJobStoreReadableContract(t *testing.T) {
 func TestBatchJobStoreContent(t *testing.T) {
 	s := newBatchStore(t)
 	s.AddJob("j1", "done", "the result", "the spec")
-	js, _ := s.Open("j1")
+	js, _ := s.OpenStore("j1")
 
 	for _, tc := range []struct {
 		name, want string
@@ -798,13 +806,9 @@ func TestBatchJobStoreContent(t *testing.T) {
 		{"state", "done\n"},
 		{"result", "the result"},
 	} {
-		data, err := js.Get(tc.name)
-		if err != nil {
-			t.Errorf("Get(%q): %v", tc.name, err)
-			continue
-		}
+		data := storeRead(t, js, tc.name)
 		if string(data) != tc.want {
-			t.Errorf("Get(%q) = %q; want %q", tc.name, data, tc.want)
+			t.Errorf("Read(%q) = %q; want %q", tc.name, data, tc.want)
 		}
 	}
 }
@@ -812,29 +816,37 @@ func TestBatchJobStoreContent(t *testing.T) {
 func TestBatchJobStoreWait(t *testing.T) {
 	s := newBatchStore(t)
 	s.AddJob("j1", "done", "", "")
-	js, _ := s.Open("j1")
+	js, _ := s.OpenStore("j1")
 
-	// Job is already done, so Wait returns immediately
-	data, err := js.(*store.BatchJobStore).Wait(context.Background(), "statewait", "")
+	// Job is already done, so BlockingRead returns immediately
+	e, err := js.Open("statewait")
 	if err != nil {
-		t.Fatalf("Wait: %v", err)
+		t.Fatalf("Open(statewait): %v", err)
+	}
+	data, err := e.BlockingRead(context.Background(), "")
+	if err != nil {
+		t.Fatalf("BlockingRead: %v", err)
 	}
 	if !strings.Contains(string(data), "done") {
-		t.Errorf("Wait = %q; want to contain done", data)
+		t.Errorf("BlockingRead = %q; want to contain done", data)
 	}
 
 	// Non-wait file
-	if _, err := js.(*store.BatchJobStore).Wait(context.Background(), "spec", ""); err == nil {
-		t.Error("Wait(spec) should error")
+	e2, err := js.Open("spec")
+	if err != nil {
+		t.Fatalf("Open(spec): %v", err)
+	}
+	if _, err := e2.BlockingRead(context.Background(), ""); err == nil {
+		t.Error("BlockingRead(spec) should error")
 	}
 }
 
 func TestBatchJobStoreLogInfo(t *testing.T) {
 	s := newBatchStore(t)
 	s.AddJob("j1", "done", "", "")
-	js, _ := s.Open("j1")
+	js, _ := s.OpenStore("j1")
 
-	l, v := js.(*store.BatchJobStore).LogInfo()
+	l, v := js.LogInfo()
 	if l != 0 || v != 0 {
 		t.Errorf("LogInfo = (%d, %d); want (0, 0)", l, v)
 	}
@@ -842,7 +854,7 @@ func TestBatchJobStoreLogInfo(t *testing.T) {
 
 func TestBatchJobStoreNotFound(t *testing.T) {
 	s := newBatchStore(t)
-	if _, err := s.Open("nope"); err == nil {
+	if _, err := s.OpenStore("nope"); err == nil {
 		t.Error("JobStore(nonexistent) should be false")
 	}
 }

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,7 +28,7 @@ type SkillStoreConfig struct {
 type skillState struct {
 	dirs      []string
 	readDir   func(string) ([]os.DirEntry, error)
-	open      func(string) (*os.File, error)
+	openFile  func(string) (*os.File, error)
 	readFile  func(string) ([]byte, error)
 	writeFile func(string, []byte, os.FileMode) error
 	mkdirAll  func(string, os.FileMode) error
@@ -35,11 +36,11 @@ type skillState struct {
 	rename    func(string, string) error
 }
 
-func NewSkillStore() BlobStore {
+func NewSkillStore() Store {
 	return NewSkillStoreWith(SkillStoreConfig{})
 }
 
-func NewSkillStoreWith(cfg SkillStoreConfig) BlobStore {
+func NewSkillStoreWith(cfg SkillStoreConfig) Store {
 	if cfg.Dirs == nil {
 		cfg.Dirs = skillDirs()
 	}
@@ -68,7 +69,7 @@ func NewSkillStoreWith(cfg SkillStoreConfig) BlobStore {
 	ss := &skillState{
 		dirs:      cfg.Dirs,
 		readDir:   cfg.ReadDir,
-		open:      cfg.Open,
+		openFile: cfg.Open,
 		readFile:  cfg.ReadFile,
 		writeFile: cfg.WriteFile,
 		mkdirAll:  cfg.MkdirAll,
@@ -79,8 +80,7 @@ func NewSkillStoreWith(cfg SkillStoreConfig) BlobStore {
 	return &storeConfig{
 		StatFn:   ss.stat,
 		ListFn:   ss.list,
-		GetFn:    ss.get,
-		PutFn:    ss.put,
+		OpenFn:   ss.open,
 		DeleteFn: ss.del,
 		CreateFn: ss.create,
 		RenameFn: ss.ren,
@@ -107,7 +107,7 @@ func (ss *skillState) listSkills() []skills.Meta {
 				continue
 			}
 			skillDir := filepath.Join(dir, e.Name())
-			f, err := ss.open(filepath.Join(skillDir, "SKILL.md"))
+			f, err := ss.openFile(filepath.Join(skillDir, "SKILL.md"))
 			if err != nil {
 				continue
 			}
@@ -152,30 +152,45 @@ func (ss *skillState) list() ([]os.DirEntry, error) {
 	return result, nil
 }
 
-func (ss *skillState) get(name string) ([]byte, error) {
+func (ss *skillState) open(name string) (StoreEntry, error) {
+	notBlocking := func(context.Context, string) ([]byte, error) {
+		return nil, fmt.Errorf("blocking read not supported")
+	}
 	if name == "idx" {
-		return ss.index()
+		return &EntryConfig{
+			StatFn:         func() (os.FileInfo, error) { return &SyntheticFileInfo{Name_: "idx", Mode_: 0444}, nil },
+			ReadFn:         func() ([]byte, error) { return ss.index() },
+			WriteFn:        func([]byte) error { return fmt.Errorf("idx: read-only") },
+			BlockingReadFn: notBlocking,
+		}, nil
 	}
 	skillName := strings.TrimSuffix(name, ".md")
-	return ss.readSkill(skillName)
-}
-
-func (ss *skillState) put(name string, data []byte) error {
-	skillName := strings.TrimSuffix(name, ".md")
-	dir := ""
-	for _, m := range ss.listSkills() {
-		if m.Name == skillName {
-			dir = m.Dir
-			break
-		}
-	}
-	if dir == "" {
-		dir = filepath.Join(ss.dirs[0], skillName)
-	}
-	if err := ss.mkdirAll(dir, 0755); err != nil {
-		return err
-	}
-	return ss.writeFile(filepath.Join(dir, "SKILL.md"), data, 0644)
+	return &EntryConfig{
+		StatFn: func() (os.FileInfo, error) {
+			if _, err := ss.readSkill(skillName); err != nil {
+				return nil, err
+			}
+			return &SyntheticFileInfo{Name_: name, Mode_: 0666}, nil
+		},
+		ReadFn: func() ([]byte, error) { return ss.readSkill(skillName) },
+		WriteFn: func(data []byte) error {
+			dir := ""
+			for _, m := range ss.listSkills() {
+				if m.Name == skillName {
+					dir = m.Dir
+					break
+				}
+			}
+			if dir == "" {
+				dir = filepath.Join(ss.dirs[0], skillName)
+			}
+			if err := ss.mkdirAll(dir, 0755); err != nil {
+				return err
+			}
+			return ss.writeFile(filepath.Join(dir, "SKILL.md"), data, 0644)
+		},
+		BlockingReadFn: notBlocking,
+	}, nil
 }
 
 func (ss *skillState) del(name string) error {

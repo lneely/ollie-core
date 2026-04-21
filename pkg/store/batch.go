@@ -103,9 +103,7 @@ func NewBatchStore(cfg BatchStoreConfig) *BatchStore {
 	bs.storeConfig = &storeConfig{
 		StatFn:   bs.stat,
 		ListFn:   bs.list,
-		GetFn:    bs.get,
-		OpenFn:   bs.open,
-		PutFn:    bs.put,
+		OpenFn:   bs.openEntry,
 		DeleteFn: bs.del,
 		CreateFn: func(string) error { return fmt.Errorf("create not supported for batch jobs") },
 		RenameFn: func(string, string) error { return fmt.Errorf("rename not supported for batch jobs") },
@@ -158,21 +156,27 @@ func (s *BatchStore) stat(name string) (os.FileInfo, error) {
 	return nil, fmt.Errorf("%s: not found", name)
 }
 
-func (s *BatchStore) get(name string) ([]byte, error) {
+func (s *BatchStore) openEntry(name string) (StoreEntry, error) {
+	notBlocking := func(context.Context, string) ([]byte, error) {
+		return nil, fmt.Errorf("blocking read not supported")
+	}
 	switch name {
 	case "new":
-		return []byte(batchNewTemplate), nil
+		return &EntryConfig{
+			StatFn:  func() (os.FileInfo, error) { return &SyntheticFileInfo{Name_: "new", Mode_: 0666, Size_: int64(len(batchNewTemplate))}, nil },
+			ReadFn:  func() ([]byte, error) { return []byte(batchNewTemplate), nil },
+			WriteFn: func(data []byte) error { return s.handleNewBatch(strings.TrimSpace(string(data))) },
+			BlockingReadFn: notBlocking,
+		}, nil
 	case "idx":
-		return s.index(), nil
+		return &EntryConfig{
+			StatFn:         func() (os.FileInfo, error) { return &SyntheticFileInfo{Name_: "idx", Mode_: 0444, Size_: int64(len(s.index()))}, nil },
+			ReadFn:         func() ([]byte, error) { return s.index(), nil },
+			WriteFn:        func([]byte) error { return fmt.Errorf("idx: read-only") },
+			BlockingReadFn: notBlocking,
+		}, nil
 	}
 	return nil, fmt.Errorf("%s: not a readable file", name)
-}
-
-func (s *BatchStore) put(name string, data []byte) error {
-	if name != "new" {
-		return fmt.Errorf("%s: not writable", name)
-	}
-	return s.handleNewBatch(strings.TrimSpace(string(data)))
 }
 
 func (s *BatchStore) del(name string) error {
@@ -470,19 +474,17 @@ var batchJobFiles = []struct {
 // directory (/b/{id}/*). The file set is fixed.
 type BatchJobStore struct {
 	*storeConfig
+	Runnable
 	job *batchJob
 }
 
 func NewBatchJobStore(job *batchJob) *BatchJobStore {
-	js := &BatchJobStore{job: job}
-	notDir := func(string) (Store, error) { return nil, fmt.Errorf("not a directory") }
+	js := &BatchJobStore{Runnable: job, job: job}
 	notSupported := func(string) error { return fmt.Errorf("not supported") }
 	js.storeConfig = &storeConfig{
 		StatFn:   js.stat,
 		ListFn:   js.list,
-		GetFn:    js.get,
-		OpenFn:   notDir,
-		PutFn:    func(string, []byte) error { return fmt.Errorf("not supported") },
+		OpenFn:   js.open,
 		DeleteFn: notSupported,
 		CreateFn: notSupported,
 		RenameFn: func(string, string) error { return fmt.Errorf("not supported") },
@@ -490,7 +492,8 @@ func NewBatchJobStore(job *batchJob) *BatchJobStore {
 	return js
 }
 
-func (s *BatchStore) open(id string) (Store, error) {
+// OpenStore returns a RunnableStore for the given batch job ID.
+func (s *BatchStore) OpenStore(id string) (RunnableStore, error) {
 	job := s.Job(id)
 	if job == nil {
 		return nil, fmt.Errorf("batch job not found: %s", id)
@@ -523,20 +526,54 @@ func (js *BatchJobStore) stat(name string) (os.FileInfo, error) {
 	return nil, fmt.Errorf("%s: not found", name)
 }
 
-func (js *BatchJobStore) get(name string) ([]byte, error) {
-	if name == "log" {
-		js.job.mu.RLock()
-		data := make([]byte, len(js.job.log))
-		copy(data, js.job.log)
-		js.job.mu.RUnlock()
-		return data, nil
-	}
+func (js *BatchJobStore) open(name string) (StoreEntry, error) {
 	for _, f := range batchJobFiles {
 		if f.name == name {
-			return []byte(js.content(name)), nil
+			return js.entryFor(name, f.mode), nil
 		}
 	}
 	return nil, fmt.Errorf("%s: not found", name)
+}
+
+func (js *BatchJobStore) entryFor(name string, mode os.FileMode) StoreEntry {
+	return &EntryConfig{
+		StatFn: func() (os.FileInfo, error) {
+			var size int64
+			if name == "log" {
+				js.job.mu.RLock()
+				size = int64(len(js.job.log))
+				js.job.mu.RUnlock()
+			} else {
+				size = int64(len(js.content(name)))
+			}
+			return &SyntheticFileInfo{Name_: name, Mode_: mode, Size_: size}, nil
+		},
+		ReadFn: func() ([]byte, error) {
+			if name == "log" {
+				js.job.mu.RLock()
+				data := make([]byte, len(js.job.log))
+				copy(data, js.job.log)
+				js.job.mu.RUnlock()
+				return data, nil
+			}
+			return []byte(js.content(name)), nil
+		},
+		WriteFn: func([]byte) error { return fmt.Errorf("%s: read-only", name) },
+		BlockingReadFn: func(ctx context.Context, base string) ([]byte, error) {
+			if name != "statewait" {
+				return nil, fmt.Errorf("%s: not a wait file", name)
+			}
+			select {
+			case <-ctx.Done():
+				return nil, nil
+			case <-js.job.done:
+			}
+			js.job.mu.RLock()
+			state := js.job.state
+			js.job.mu.RUnlock()
+			return []byte(state + "\n"), nil
+		},
+	}
 }
 
 func (js *BatchJobStore) content(name string) string {
@@ -555,29 +592,6 @@ func (js *BatchJobStore) content(name string) string {
 		return js.job.ctxsz + "\n"
 	}
 	return ""
-}
-
-// Wait blocks until the job reaches a terminal state, then returns it.
-func (js *BatchJobStore) Wait(ctx context.Context, name, _ string) ([]byte, error) {
-	if name != "statewait" {
-		return nil, fmt.Errorf("%s: not a wait file", name)
-	}
-	select {
-	case <-ctx.Done():
-		return nil, nil
-	case <-js.job.done:
-	}
-	js.job.mu.RLock()
-	state := js.job.state
-	js.job.mu.RUnlock()
-	return []byte(state + "\n"), nil
-}
-
-// LogInfo returns the current log length and version atomically.
-func (js *BatchJobStore) LogInfo() (length int, vers uint32) {
-	js.job.mu.RLock()
-	defer js.job.mu.RUnlock()
-	return len(js.job.log), js.job.logVers
 }
 
 // LoadAgentConfig resolves and loads the config for a named agent.
