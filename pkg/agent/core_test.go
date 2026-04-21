@@ -526,6 +526,24 @@ func TestAgentSpawnFiresOnce(t *testing.T) {
 	}
 }
 
+// --- expandSystemPrompt ---
+
+func TestExpandSystemPrompt_IsGitTrue(t *testing.T) {
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".git"), 0700)
+	got := expandSystemPrompt("${PRIME_IS_GIT_REPO}", dir)
+	if got != "true" {
+		t.Errorf("got %q; want true", got)
+	}
+}
+
+func TestExpandSystemPrompt_IsGitFalse(t *testing.T) {
+	got := expandSystemPrompt("${PRIME_IS_GIT_REPO}", t.TempDir())
+	if got != "false" {
+		t.Errorf("got %q; want false", got)
+	}
+}
+
 // --- BuildAgentEnv: missing system prompt ---
 
 func TestBuildAgentEnv_MissingSystemPrompt(t *testing.T) {
