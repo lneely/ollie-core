@@ -89,6 +89,9 @@ type SessionStoreConfig struct {
 	// for protocol-level fixups (e.g. fid path rewriting).
 	OnRename       func(oldID, newID string)
 	SaveTranscript func([]byte) error
+	// NewCore, if non-nil, replaces the default backend.New + agent.NewAgentCore
+	// path. It receives the session ID, agent name, and cwd, and returns a Core.
+	NewCore func(sessionID, agentName, cwd string) (agent.Core, error)
 }
 
 // SessionStore implements Store for session management.
@@ -305,36 +308,6 @@ func (s *SessionStore) createSession(args []string) error {
 		return fmt.Errorf("cwd is required (e.g. new cwd=/path/to/project)")
 	}
 
-	var (
-		be  backend.Backend
-		err error
-	)
-	if backendOverride != "" {
-		old := os.Getenv("OLLIE_BACKEND")
-		os.Setenv("OLLIE_BACKEND", backendOverride) //nolint:errcheck
-		be, err = backend.New()
-		os.Setenv("OLLIE_BACKEND", old) //nolint:errcheck
-	} else {
-		be, err = backend.New()
-	}
-	if err != nil {
-		return fmt.Errorf("backend: %w", err)
-	}
-
-	if modelOverride != "" {
-		be.SetModel(modelOverride)
-	}
-
-	if err := s.cfg.MkdirAll(s.cfg.SessionsDir, 0700); err != nil {
-		return fmt.Errorf("sessions dir: %w", err)
-	}
-
-	cfg := LoadAgentConfig(s.cfg.AgentsDir, agentName, nil)
-
-	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
-		"execute": execute.Decl(cwd),
-	})
-
 	sessID := name
 	if sessID == "" {
 		sessID = agent.NewSessionID()
@@ -347,20 +320,60 @@ func (s *SessionStore) createSession(args []string) error {
 		return fmt.Errorf("session already exists: %s", sessID)
 	}
 
-	env := agent.BuildAgentEnv(cfg, newDisp(), cwd)
+	var core agent.Core
+	if s.cfg.NewCore != nil {
+		var err error
+		core, err = s.cfg.NewCore(sessID, agentName, cwd)
+		if err != nil {
+			return err
+		}
+	} else {
+		var (
+			be  backend.Backend
+			err error
+		)
+		if backendOverride != "" {
+			old := os.Getenv("OLLIE_BACKEND")
+			os.Setenv("OLLIE_BACKEND", backendOverride) //nolint:errcheck
+			be, err = backend.New()
+			os.Setenv("OLLIE_BACKEND", old) //nolint:errcheck
+		} else {
+			be, err = backend.New()
+		}
+		if err != nil {
+			return fmt.Errorf("backend: %w", err)
+		}
+
+		if modelOverride != "" {
+			be.SetModel(modelOverride)
+		}
+
+		if err := s.cfg.MkdirAll(s.cfg.SessionsDir, 0700); err != nil {
+			return fmt.Errorf("sessions dir: %w", err)
+		}
+
+		cfg := LoadAgentConfig(s.cfg.AgentsDir, agentName, nil)
+
+		newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
+			"execute": execute.Decl(cwd),
+		})
+
+		env := agent.BuildAgentEnv(cfg, newDisp(), cwd)
+
+		core = agent.NewAgentCore(agent.AgentCoreConfig{
+			Backend:       be,
+			AgentName:     agentName,
+			AgentsDir:     s.cfg.AgentsDir,
+			SessionsDir:   s.cfg.SessionsDir,
+			SessionID:     sessID,
+			CWD:           cwd,
+			Env:           env,
+			NewDispatcher: newDisp,
+			Log:           s.cfg.Sink.NewLogger("core"),
+		})
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	core := agent.NewAgentCore(agent.AgentCoreConfig{
-		Backend:       be,
-		AgentName:     agentName,
-		AgentsDir:     s.cfg.AgentsDir,
-		SessionsDir:   s.cfg.SessionsDir,
-		SessionID:     sessID,
-		CWD:           cwd,
-		Env:           env,
-		NewDispatcher: newDisp,
-		Log:           s.cfg.Sink.NewLogger("core"),
-	})
 	sess := NewSession(sessID, core, ctx, cancel)
 
 	s.mu.Lock()

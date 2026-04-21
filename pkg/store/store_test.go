@@ -105,6 +105,16 @@ func (c *publishCore) Submit(_ context.Context, input string, handler agent.Even
 	handler(agent.Event{Role: "assistant", Content: "done"})
 }
 
+// blockingCore wraps stubCore but blocks on Submit until ctx is cancelled.
+type blockingCore struct {
+	*stubCore
+}
+
+func (c *blockingCore) Submit(ctx context.Context, input string, handler agent.EventHandler) {
+	c.submitted = append(c.submitted, input)
+	<-ctx.Done()
+}
+
 // --- helpers ---
 
 func testSink() *olog.Sink {
@@ -134,12 +144,38 @@ func newSessionStore(t *testing.T) *store.SessionStore {
 	})
 }
 
+func newSessionStoreWithCore(t *testing.T) *store.SessionStore {
+	t.Helper()
+	sink := testSink()
+	return store.NewSessionStore(store.SessionStoreConfig{
+		Log:      sink.NewLogger("test"),
+		Sink:     sink,
+		ReadFile: func(string) ([]byte, error) { return []byte("#!/bin/sh\n"), nil },
+		MkdirAll: func(string, os.FileMode) error { return nil },
+		NewCore: func(sessionID, agentName, cwd string) (agent.Core, error) {
+			return &stubCore{state: "idle", backend: "stub", model: "m", agentName: agentName, cwd: cwd}, nil
+		},
+	})
+}
+
 func newBatchStore(t *testing.T) *store.BatchStore {
 	t.Helper()
 	sink := testSink()
 	return store.NewBatchStore(store.BatchStoreConfig{
 		Log:  sink.NewLogger("test"),
 		Sink: sink,
+	})
+}
+
+func newBatchStoreWithCore(t *testing.T) *store.BatchStore {
+	t.Helper()
+	sink := testSink()
+	return store.NewBatchStore(store.BatchStoreConfig{
+		Log:  sink.NewLogger("test"),
+		Sink: sink,
+		NewCore: func(jobID, agentName, cwd string) (agent.Core, error) {
+			return &stubCore{state: "idle", backend: "stub", model: "m", agentName: agentName, cwd: cwd, reply: "batch reply"}, nil
+		},
 	})
 }
 
@@ -1338,6 +1374,246 @@ func TestSkillStoreOpenWrite(t *testing.T) {
 	e, _ := s.Open("nope.md")
 	if _, err := e.Stat(); err == nil {
 		t.Error("Stat on non-existent skill should error")
+	}
+}
+
+// ===== Integration: createSession via NewCore =====
+
+func TestCreateSessionViaNewCore(t *testing.T) {
+	s := newSessionStoreWithCore(t)
+
+	e, _ := s.Open("new")
+	if err := e.Write([]byte("name=integ cwd=/tmp")); err != nil {
+		t.Fatalf("Write(new): %v", err)
+	}
+
+	sess := s.Session("integ")
+	if sess == nil {
+		t.Fatal("session integ not created")
+	}
+	defer sess.Cancel()
+
+	if sess.Core.CWD() != "/tmp" {
+		t.Errorf("CWD = %q; want /tmp", sess.Core.CWD())
+	}
+	if sess.Core.AgentName() != "default" {
+		t.Errorf("AgentName = %q; want default", sess.Core.AgentName())
+	}
+}
+
+func TestCreateSessionAutoID(t *testing.T) {
+	s := newSessionStoreWithCore(t)
+
+	e, _ := s.Open("new")
+	if err := e.Write([]byte("cwd=/tmp")); err != nil {
+		t.Fatalf("Write(new): %v", err)
+	}
+
+	entries, _ := s.List()
+	found := false
+	for _, ent := range entries {
+		if ent.IsDir() {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected auto-ID session in list")
+	}
+	s.Shutdown()
+}
+
+func TestCreateSessionDuplicate(t *testing.T) {
+	s := newSessionStoreWithCore(t)
+
+	e, _ := s.Open("new")
+	if err := e.Write([]byte("name=dup cwd=/tmp")); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	defer s.Shutdown()
+
+	e2, _ := s.Open("new")
+	if err := e2.Write([]byte("name=dup cwd=/tmp")); err == nil {
+		t.Error("duplicate session should error")
+	}
+}
+
+func TestCreateSessionWithAgent(t *testing.T) {
+	s := newSessionStoreWithCore(t)
+
+	e, _ := s.Open("new")
+	if err := e.Write([]byte("name=ag cwd=/tmp agent=coder")); err != nil {
+		t.Fatalf("Write(new): %v", err)
+	}
+	defer s.Shutdown()
+
+	sess := s.Session("ag")
+	if sess == nil {
+		t.Fatal("session not created")
+	}
+	if sess.Core.AgentName() != "coder" {
+		t.Errorf("AgentName = %q; want coder", sess.Core.AgentName())
+	}
+}
+
+func TestCreateSessionNewCoreError(t *testing.T) {
+	sink := testSink()
+	s := store.NewSessionStore(store.SessionStoreConfig{
+		Log:      sink.NewLogger("test"),
+		Sink:     sink,
+		ReadFile: func(string) ([]byte, error) { return nil, nil },
+		MkdirAll: func(string, os.FileMode) error { return nil },
+		NewCore: func(string, string, string) (agent.Core, error) {
+			return nil, fmt.Errorf("injected error")
+		},
+	})
+
+	e, _ := s.Open("new")
+	if err := e.Write([]byte("name=fail cwd=/tmp")); err == nil {
+		t.Error("NewCore error should propagate")
+	}
+}
+
+// ===== Integration: handleNewBatch / runJob via NewCore =====
+
+func TestHandleNewBatchViaNewCore(t *testing.T) {
+	s := newBatchStoreWithCore(t)
+
+	spec := "name=integ\ncwd=/tmp\n---\nhello"
+	e, _ := s.Open("new")
+	if err := e.Write([]byte(spec)); err != nil {
+		t.Fatalf("Write(new): %v", err)
+	}
+
+	// Wait for the job to finish (it's async)
+	js, err := s.OpenStore("integ-0")
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+
+	we, _ := js.Open("statewait")
+	data, err := we.BlockingRead(context.Background(), "")
+	if err != nil {
+		t.Fatalf("BlockingRead: %v", err)
+	}
+	if !strings.Contains(string(data), "done") {
+		t.Errorf("statewait = %q; want done", data)
+	}
+
+	result := storeRead(t, js, "result")
+	if string(result) != "batch reply" {
+		t.Errorf("result = %q; want batch reply", result)
+	}
+
+	s.Shutdown()
+}
+
+func TestHandleNewBatchParallel(t *testing.T) {
+	s := newBatchStoreWithCore(t)
+
+	spec := "name=par\ncwd=/tmp\nparallel=3\n---\ngo"
+	e, _ := s.Open("new")
+	if err := e.Write([]byte(spec)); err != nil {
+		t.Fatalf("Write(new): %v", err)
+	}
+
+	// Wait for all 3 jobs
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("par-%d", i)
+		js, err := s.OpenStore(id)
+		if err != nil {
+			t.Fatalf("OpenStore(%s): %v", id, err)
+		}
+		we, _ := js.Open("statewait")
+		we.BlockingRead(context.Background(), "")
+	}
+
+	entries, _ := s.List()
+	jobCount := 0
+	for _, ent := range entries {
+		if ent.IsDir() {
+			jobCount++
+		}
+	}
+	if jobCount != 3 {
+		t.Errorf("job count = %d; want 3", jobCount)
+	}
+
+	s.Shutdown()
+}
+
+func TestHandleNewBatchDuplicate(t *testing.T) {
+	s := newBatchStoreWithCore(t)
+
+	spec := "name=dup\ncwd=/tmp\n---\ngo"
+	e, _ := s.Open("new")
+	if err := e.Write([]byte(spec)); err != nil {
+		t.Fatalf("first batch: %v", err)
+	}
+
+	// Wait for completion
+	js, _ := s.OpenStore("dup-0")
+	we, _ := js.Open("statewait")
+	we.BlockingRead(context.Background(), "")
+
+	// Duplicate
+	e2, _ := s.Open("new")
+	if err := e2.Write([]byte(spec)); err == nil {
+		t.Error("duplicate batch should error")
+	}
+
+	s.Shutdown()
+}
+
+func TestHandleNewBatchNewCoreError(t *testing.T) {
+	sink := testSink()
+	s := store.NewBatchStore(store.BatchStoreConfig{
+		Log:  sink.NewLogger("test"),
+		Sink: sink,
+		NewCore: func(string, string, string) (agent.Core, error) {
+			return nil, fmt.Errorf("injected error")
+		},
+	})
+
+	spec := "name=fail\ncwd=/tmp\n---\ngo"
+	e, _ := s.Open("new")
+	if err := e.Write([]byte(spec)); err != nil {
+		t.Fatalf("Write(new): %v", err) // handleNewBatch itself succeeds; runJob fails async
+	}
+
+	// Wait for the job to fail
+	js, _ := s.OpenStore("fail-0")
+	we, _ := js.Open("statewait")
+	data, _ := we.BlockingRead(context.Background(), "")
+	if !strings.Contains(string(data), "failed") {
+		t.Errorf("statewait = %q; want failed", data)
+	}
+
+	s.Shutdown()
+}
+
+func TestHandleNewBatchCancel(t *testing.T) {
+	// Use a core that blocks on Submit until cancelled
+	sink := testSink()
+	s := store.NewBatchStore(store.BatchStoreConfig{
+		Log:  sink.NewLogger("test"),
+		Sink: sink,
+		NewCore: func(string, string, string) (agent.Core, error) {
+			return &blockingCore{stubCore: &stubCore{state: "idle", backend: "stub", model: "m", agentName: "default", cwd: "/tmp"}}, nil
+		},
+	})
+
+	spec := "name=canc\ncwd=/tmp\n---\ngo"
+	e, _ := s.Open("new")
+	e.Write([]byte(spec))
+
+	// Cancel the job
+	s.Delete("canc-0")
+
+	// The job should eventually reach a terminal state
+	// (it was deleted, so OpenStore will fail)
+	if s.Job("canc-0") != nil {
+		t.Error("job should be gone after Delete")
 	}
 }
 

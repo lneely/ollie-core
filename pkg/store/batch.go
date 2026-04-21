@@ -88,6 +88,9 @@ type BatchStoreConfig struct {
 	AgentsDir string
 	Log       *olog.Logger
 	Sink      *olog.Sink
+	// NewCore, if non-nil, replaces the default backend.New + agent.NewAgentCore
+	// path. It receives the job ID, agent name, and cwd, and returns a Core.
+	NewCore func(jobID, agentName, cwd string) (agent.Core, error)
 }
 
 // BatchStore implements Store for batch job management.
@@ -318,43 +321,52 @@ func (s *BatchStore) executeJob(ctx context.Context, job *batchJob) (string, err
 	jobID := job.id
 	job.mu.RUnlock()
 
-	var (
-		be  backend.Backend
-		err error
-	)
-	if backendName != "" {
-		old := os.Getenv("OLLIE_BACKEND")
-		os.Setenv("OLLIE_BACKEND", backendName) //nolint:errcheck
-		be, err = backend.New()
-		os.Setenv("OLLIE_BACKEND", old) //nolint:errcheck
+	var core agent.Core
+	if s.cfg.NewCore != nil {
+		var err error
+		core, err = s.cfg.NewCore(jobID, agentName, cwd)
+		if err != nil {
+			return "", err
+		}
 	} else {
-		be, err = backend.New()
-	}
-	if err != nil {
-		return "", fmt.Errorf("backend: %w", err)
-	}
-	if modelName != "" {
-		be.SetModel(modelName)
-	}
+		var (
+			be  backend.Backend
+			err error
+		)
+		if backendName != "" {
+			old := os.Getenv("OLLIE_BACKEND")
+			os.Setenv("OLLIE_BACKEND", backendName) //nolint:errcheck
+			be, err = backend.New()
+			os.Setenv("OLLIE_BACKEND", old) //nolint:errcheck
+		} else {
+			be, err = backend.New()
+		}
+		if err != nil {
+			return "", fmt.Errorf("backend: %w", err)
+		}
+		if modelName != "" {
+			be.SetModel(modelName)
+		}
 
-	cfg := LoadAgentConfig(s.cfg.AgentsDir, agentName, nil)
+		cfg := LoadAgentConfig(s.cfg.AgentsDir, agentName, nil)
 
-	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
-		"execute": execute.Decl(cwd),
-	})
-	env := agent.BuildAgentEnv(cfg, newDisp(), cwd)
+		newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
+			"execute": execute.Decl(cwd),
+		})
+		env := agent.BuildAgentEnv(cfg, newDisp(), cwd)
 
-	core := agent.NewAgentCore(agent.AgentCoreConfig{
-		Backend:       be,
-		AgentName:     agentName,
-		AgentsDir:     s.cfg.AgentsDir,
-		SessionsDir:   "", // ephemeral: no persistence
-		SessionID:     jobID,
-		CWD:           cwd,
-		Env:           env,
-		NewDispatcher: newDisp,
-		Log:           s.cfg.Sink.NewLogger("core"),
-	})
+		core = agent.NewAgentCore(agent.AgentCoreConfig{
+			Backend:       be,
+			AgentName:     agentName,
+			AgentsDir:     s.cfg.AgentsDir,
+			SessionsDir:   "", // ephemeral: no persistence
+			SessionID:     jobID,
+			CWD:           cwd,
+			Env:           env,
+			NewDispatcher: newDisp,
+			Log:           s.cfg.Sink.NewLogger("core"),
+		})
+	}
 	defer core.Close()
 
 	if output == "json" {
