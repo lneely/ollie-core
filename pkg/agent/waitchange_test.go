@@ -2,14 +2,20 @@ package agent
 
 import (
 	"context"
+	"io"
 	"sync"
 	"testing"
 	"time"
+
+	olog "ollie/pkg/log"
 )
 
 // newTestCore returns a minimal agentCore with changeCond wired up.
 func newTestCore(initialState string) *agentCore {
-	a := &agentCore{state: initialState}
+	a := &agentCore{
+		state: initialState,
+		log:   olog.NewWriter("test", olog.LevelError+1, io.Discard, io.Discard),
+	}
 	a.changeCond = sync.NewCond(&a.changeMu)
 	return a
 }
