@@ -57,6 +57,20 @@ func New() (Backend, error) {
 	return newFromEnv(paths.CfgDir() + "/env")
 }
 
+// NewWithName constructs a Backend for the given backend name, loading
+// env-file defaults for API keys/URLs but ignoring OLLIE_BACKEND.
+// If name is empty, falls back to OLLIE_BACKEND / "ollama".
+func NewWithName(name string) (Backend, error) {
+	loadEnvFile(paths.CfgDir() + "/env")
+	if name == "" {
+		name = os.Getenv("OLLIE_BACKEND")
+		if name == "" {
+			name = "ollama"
+		}
+	}
+	return newBackend(name)
+}
+
 func newFromEnv(envFile string) (Backend, error) {
 	loadEnvFile(envFile)
 
@@ -65,6 +79,10 @@ func newFromEnv(envFile string) (Backend, error) {
 		which = "ollama"
 	}
 
+	return newBackend(which)
+}
+
+func newBackend(which string) (Backend, error) {
 	switch which {
 	case "ollama":
 		return NewOllama(os.Getenv("OLLIE_OLLAMA_URL"))

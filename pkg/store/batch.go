@@ -329,18 +329,7 @@ func (s *BatchStore) executeJob(ctx context.Context, job *batchJob) (string, err
 			return "", err
 		}
 	} else {
-		var (
-			be  backend.Backend
-			err error
-		)
-		if backendName != "" {
-			old := os.Getenv("OLLIE_BACKEND")
-			os.Setenv("OLLIE_BACKEND", backendName) //nolint:errcheck
-			be, err = backend.New()
-			os.Setenv("OLLIE_BACKEND", old) //nolint:errcheck
-		} else {
-			be, err = backend.New()
-		}
+		be, err := backend.NewWithName(backendName)
 		if err != nil {
 			return "", fmt.Errorf("backend: %w", err)
 		}

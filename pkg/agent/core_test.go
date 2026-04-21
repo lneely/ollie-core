@@ -1923,7 +1923,7 @@ func TestHookTimeout_Branch(t *testing.T) {
 func TestCommand_Backend_Switch(t *testing.T) {
 	c := newCore(t, nil, nil)
 	newBE := &mockBackend{name: "injected", model: "new-model"}
-	c.newBackend = func() (backend.Backend, error) { return newBE, nil }
+	c.newBackend = func(string) (backend.Backend, error) { return newBE, nil }
 
 	evs := collectEvents(context.Background(), c, "/backend other")
 	infos := byRole(evs, "info")
@@ -1943,7 +1943,7 @@ func TestCommand_Backend_Switch(t *testing.T) {
 
 func TestCommand_Backend_Error(t *testing.T) {
 	c := newCore(t, nil, nil)
-	c.newBackend = func() (backend.Backend, error) { return nil, fmt.Errorf("no such backend") }
+	c.newBackend = func(string) (backend.Backend, error) { return nil, fmt.Errorf("no such backend") }
 
 	evs := collectEvents(context.Background(), c, "/backend bad")
 	infos := byRole(evs, "info")
