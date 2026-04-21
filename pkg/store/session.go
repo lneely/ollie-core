@@ -1,0 +1,348 @@
+package store
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"sync"
+
+	"ollie/pkg/agent"
+	"ollie/pkg/backend"
+	olog "ollie/pkg/log"
+	"ollie/pkg/paths"
+	"ollie/pkg/tools"
+	"ollie/pkg/tools/execute"
+)
+
+// Session holds all state for one agent session.
+type Session struct {
+	mu         sync.RWMutex
+	ID         string
+	Core       agent.Core
+	Ctx        context.Context
+	Cancel     context.CancelFunc
+	ChatLog    []byte
+	ChatVers   uint32
+	ChatOffset int
+}
+
+// AppendChat appends data to the session's chat log and bumps the version.
+func (sess *Session) AppendChat(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	sess.mu.Lock()
+	sess.ChatLog = append(sess.ChatLog, data...)
+	sess.ChatVers++
+	sess.mu.Unlock()
+}
+
+// ChatInfo returns the current chat log length and version atomically.
+func (sess *Session) ChatInfo() (length int, vers uint32) {
+	sess.mu.RLock()
+	defer sess.mu.RUnlock()
+	return len(sess.ChatLog), sess.ChatVers
+}
+
+// sessionStoreFiles maps fixed file entries in s/ to their permissions.
+var sessionStoreFiles = map[string]os.FileMode{
+	"new":  0666,
+	"idx":  0444,
+	"ls":   0555,
+	"kill": 0555,
+	"sh":   0555,
+}
+
+var sessionStoreOrder = []string{"new", "idx", "ls", "kill", "sh"}
+
+// SessionStoreFileMode returns the mode for a fixed session store file,
+// or 0 and false if the name is not a fixed file.
+func SessionStoreFileMode(name string) (os.FileMode, bool) {
+	m, ok := sessionStoreFiles[name]
+	return m, ok
+}
+
+// SessionStoreConfig holds the dependencies for a SessionStore.
+type SessionStoreConfig struct {
+	AgentsDir   string
+	SessionsDir string
+	Log         *olog.Logger
+	Sink        *olog.Sink
+	// OnRename is called after a session is renamed in the map,
+	// for protocol-level fixups (e.g. fid path rewriting).
+	OnRename func(oldID, newID string)
+}
+
+// SessionStore implements Store for session management.
+type SessionStore struct {
+	cfg      SessionStoreConfig
+	mu       sync.RWMutex
+	sessions map[string]*Session
+}
+
+func NewSessionStore(cfg SessionStoreConfig) *SessionStore {
+	return &SessionStore{cfg: cfg, sessions: make(map[string]*Session)}
+}
+
+func (s *SessionStore) List() ([]os.DirEntry, error) {
+	entries := make([]os.DirEntry, 0, len(sessionStoreOrder))
+	for _, name := range sessionStoreOrder {
+		entries = append(entries, FileEntry(name, sessionStoreFiles[name]))
+	}
+	s.mu.RLock()
+	for id := range s.sessions {
+		entries = append(entries, DirEntry(id, 0555))
+	}
+	s.mu.RUnlock()
+	return entries, nil
+}
+
+func (s *SessionStore) Stat(name string) (os.FileInfo, error) {
+	if mode, ok := sessionStoreFiles[name]; ok {
+		return &SyntheticFileInfo{Name_: name, Mode_: mode}, nil
+	}
+	s.mu.RLock()
+	_, ok := s.sessions[name]
+	s.mu.RUnlock()
+	if ok {
+		return &SyntheticFileInfo{Name_: name, Mode_: 0555, IsDir_: true}, nil
+	}
+	return nil, fmt.Errorf("%s: not found", name)
+}
+
+func (s *SessionStore) Get(name string) ([]byte, error) {
+	switch name {
+	case "new":
+		return []byte("name=\ncwd=\nbackend=\nmodel=\nagent=\n"), nil
+	case "idx":
+		return s.index(), nil
+	default:
+		if _, ok := sessionStoreFiles[name]; ok {
+			return os.ReadFile(paths.CfgDir() + "/scripts/s/" + name)
+		}
+	}
+	return nil, fmt.Errorf("%s: not a readable file", name)
+}
+
+func (s *SessionStore) Put(name string, data []byte) error {
+	if name != "new" {
+		return fmt.Errorf("%s: not writable", name)
+	}
+	args := strings.Fields(strings.TrimSpace(string(data)))
+	return s.createSession(args)
+}
+
+func (s *SessionStore) Delete(name string) error {
+	s.mu.RLock()
+	_, ok := s.sessions[name]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("session not found: %s", name)
+	}
+	s.KillSession(name)
+	return nil
+}
+
+func (s *SessionStore) Create(name string) error {
+	return fmt.Errorf("create not supported for sessions")
+}
+
+func (s *SessionStore) Rename(oldName, newName string) error {
+	return s.renameSession(oldName, newName)
+}
+
+// Session returns the session for the given ID, or nil.
+func (s *SessionStore) Session(id string) *Session {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sessions[id]
+}
+
+// InterruptAll interrupts every active session.
+func (s *SessionStore) InterruptAll() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, sess := range s.sessions {
+		sess.Core.Interrupt(agent.ErrInterrupted)
+	}
+}
+
+// Shutdown kills all active sessions.
+func (s *SessionStore) Shutdown() {
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.sessions))
+	for id := range s.sessions {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+	for _, id := range ids {
+		s.KillSession(id)
+	}
+}
+
+func (s *SessionStore) KillSession(id string) {
+	s.mu.Lock()
+	sess := s.sessions[id]
+	delete(s.sessions, id)
+	s.mu.Unlock()
+	if sess != nil {
+		sess.Cancel()
+		sess.Core.Close()
+		s.cfg.Log.Info("killed session %s", id)
+	}
+}
+
+func (s *SessionStore) index() []byte {
+	var sb strings.Builder
+	s.mu.RLock()
+	for id, sess := range s.sessions {
+		sess.mu.RLock()
+		state := sess.Core.State()
+		cwd := sess.Core.CWD()
+		be := sess.Core.BackendName()
+		model := sess.Core.ModelName()
+		sess.mu.RUnlock()
+		fmt.Fprintf(&sb, "%s\t%s\t%s\t%s\t%s\n", id, state, cwd, be, model)
+	}
+	s.mu.RUnlock()
+	return []byte(sb.String())
+}
+
+func (s *SessionStore) createSession(args []string) error {
+	name := ""
+	backendOverride := ""
+	modelOverride := ""
+	agentName := "default"
+	cwd := ""
+	for _, arg := range args {
+		k, v, ok := strings.Cut(arg, "=")
+		if !ok {
+			return fmt.Errorf("invalid option %q (expected key=value)", arg)
+		}
+		if v == "" {
+			continue
+		}
+		switch k {
+		case "name":
+			name = v
+		case "backend":
+			backendOverride = v
+		case "model":
+			modelOverride = v
+		case "agent":
+			agentName = v
+		case "cwd":
+			cwd = v
+		default:
+			return fmt.Errorf("unknown option %q (valid: name, backend, model, agent, cwd)", k)
+		}
+	}
+
+	if cwd == "" {
+		return fmt.Errorf("cwd is required (e.g. new cwd=/path/to/project)")
+	}
+
+	var (
+		be  backend.Backend
+		err error
+	)
+	if backendOverride != "" {
+		old := os.Getenv("OLLIE_BACKEND")
+		os.Setenv("OLLIE_BACKEND", backendOverride) //nolint:errcheck
+		be, err = backend.New()
+		os.Setenv("OLLIE_BACKEND", old) //nolint:errcheck
+	} else {
+		be, err = backend.New()
+	}
+	if err != nil {
+		return fmt.Errorf("backend: %w", err)
+	}
+
+	if modelOverride != "" {
+		be.SetModel(modelOverride)
+	}
+
+	if err := os.MkdirAll(s.cfg.SessionsDir, 0700); err != nil {
+		return fmt.Errorf("sessions dir: %w", err)
+	}
+
+	cfg := LoadAgentConfig(s.cfg.AgentsDir, agentName)
+
+	newDisp := tools.NewDispatcherFunc(map[string]func() tools.Server{
+		"execute": execute.Decl(cwd),
+	})
+
+	sessID := name
+	if sessID == "" {
+		sessID = agent.NewSessionID()
+	}
+
+	s.mu.RLock()
+	_, exists := s.sessions[sessID]
+	s.mu.RUnlock()
+	if exists {
+		return fmt.Errorf("session already exists: %s", sessID)
+	}
+
+	env := agent.BuildAgentEnv(cfg, newDisp(), cwd)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	core := agent.NewAgentCore(agent.AgentCoreConfig{
+		Backend:       be,
+		AgentName:     agentName,
+		AgentsDir:     s.cfg.AgentsDir,
+		SessionsDir:   s.cfg.SessionsDir,
+		SessionID:     sessID,
+		CWD:           cwd,
+		Env:           env,
+		NewDispatcher: newDisp,
+		Log:           s.cfg.Sink.NewLogger("core"),
+	})
+	sess := &Session{
+		ID:     sessID,
+		Core:   core,
+		Ctx:    ctx,
+		Cancel: cancel,
+	}
+
+	s.mu.Lock()
+	s.sessions[sessID] = sess
+	s.mu.Unlock()
+
+	s.cfg.Log.Info("new session %s (backend=%s model=%s agent=%s)",
+		sessID, core.BackendName(), core.ModelName(), core.AgentName())
+	return nil
+}
+
+func (s *SessionStore) renameSession(oldID, newID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sess, ok := s.sessions[oldID]
+	if !ok {
+		return fmt.Errorf("session not found: %s", oldID)
+	}
+	if _, exists := s.sessions[newID]; exists {
+		return fmt.Errorf("session already exists: %s", newID)
+	}
+	if sess.Core.IsRunning() {
+		return fmt.Errorf("cannot rename while agent is running")
+	}
+
+	if err := sess.Core.SetSessionID(newID); err != nil {
+		return err
+	}
+
+	sess.ID = newID
+	s.sessions[newID] = sess
+	delete(s.sessions, oldID)
+
+	if s.cfg.OnRename != nil {
+		s.cfg.OnRename(oldID, newID)
+	}
+
+	sess.AppendChat([]byte(fmt.Sprintf("(session renamed: %s -> %s)\n", oldID, newID)))
+	s.cfg.Log.Info("renamed session %s -> %s", oldID, newID)
+	return nil
+}
