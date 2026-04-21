@@ -218,9 +218,6 @@ func run(ctx context.Context, cfg loopConfig, state state) error {
 		}
 
 		if len(toolCalls) == 0 {
-			if err := state.markComplete(); err != nil {
-				return fmt.Errorf("mark complete: %w", err)
-			}
 			break
 		}
 

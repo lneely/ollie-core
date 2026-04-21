@@ -21,9 +21,4 @@ type state interface {
 	// Called once per loop iteration after Act completes.
 	update(assistant backend.Message, results []toolResult) error
 
-	// MarkComplete records that the goal has been achieved.
-	markComplete() error
-
-	// IsComplete returns true once MarkComplete has been called.
-	isComplete() bool
 }

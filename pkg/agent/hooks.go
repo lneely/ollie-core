@@ -22,6 +22,9 @@ const (
 
 const defaultHookTimeout = 60
 
+// hookTimeout is the hook execution timeout in seconds. Overridable in tests.
+var hookTimeout = defaultHookTimeout
+
 // Hooks maps hook names to one or more shell commands.
 type Hooks map[string][]string
 
@@ -90,7 +93,7 @@ func runHookCmd(ctx context.Context, name, cmdStr string, payloadJSON []byte, cw
 	}
 	go func() { done <- cmd.Wait() }()
 
-	timeout := time.After(time.Duration(defaultHookTimeout) * time.Second)
+	timeout := time.After(time.Duration(hookTimeout) * time.Second)
 	select {
 	case err := <-done:
 		exitCode := 0
@@ -124,7 +127,7 @@ func runHookCmd(ctx context.Context, name, cmdStr string, payloadJSON []byte, cw
 	case <-timeout:
 		cmd.Process.Kill() //nolint:errcheck
 		<-done
-		clog.Debug("hook %s: timed out after %ds", name, defaultHookTimeout)
+		clog.Debug("hook %s: timed out after %ds", name, hookTimeout)
 		return HookResult{}
 	}
 }

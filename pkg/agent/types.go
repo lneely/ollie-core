@@ -39,9 +39,6 @@ type Core interface {
 	// After the turn, any queued prompts are drained sequentially.
 	Submit(ctx context.Context, input string, handler EventHandler)
 
-	// Prompt returns the display prompt string for the current session state.
-	Prompt() string
-
 	// Interrupt cancels the current in-progress agent turn.
 	// Returns true if an action was running and was cancelled.
 	Interrupt(cause error) bool

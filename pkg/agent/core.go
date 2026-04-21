@@ -137,14 +137,6 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 	}
 }
 
-// Dispatcher returns the underlying tool dispatcher.
-func (e *AgentEnv) Dispatcher() tools.Dispatcher { return e.dispatcher }
-
-
-// DefaultAgentsDir returns the default directory for agent config files.
-func DefaultAgentsDir() string {
-	return paths.CfgDir() + "/agents"
-}
 
 // DefaultPromptsDir returns the default directory for prompt templates.
 func DefaultPromptsDir() string {
@@ -181,10 +173,6 @@ func loadSystemPrompt(cwd string) string {
 	return os.Expand(string(data), mapper)
 }
 
-// DefaultSessionsDir returns the default directory for saved sessions.
-func DefaultSessionsDir() string {
-	return paths.CfgDir() + "/sessions"
-}
 
 // AgentConfigPath resolves the config file path for a named agent.
 func AgentConfigPath(agentsDir, name string) string {
@@ -230,6 +218,7 @@ type AgentCoreConfig struct {
 	Session       *Session
 	Env           AgentEnv
 	NewDispatcher func() tools.Dispatcher
+	NewBackend    func() (backend.Backend, error) // if nil, defaults to backend.New
 }
 
 // agentCore is the Core implementation. It owns all agent and session state
@@ -244,6 +233,7 @@ type agentCore struct {
 	sessionID       string
 	dispatcher      tools.Dispatcher
 	newDispatcher   func() tools.Dispatcher
+	newBackend      func() (backend.Backend, error)
 	cwd             string
 	agentPrompt      string // agent-specific prompt suffix; kept for system prompt rebuilds
 	startupMessages  []string
@@ -310,6 +300,9 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 	if cfg.ModelName != "" {
 		cfg.Backend.SetModel(cfg.ModelName)
 	}
+	if cfg.NewBackend == nil {
+		cfg.NewBackend = backend.New
+	}
 	loopcfg := loopConfig{
 		Backend:          cfg.Backend,
 		systemPrompt:     cfg.Env.systemPrompt,
@@ -337,6 +330,7 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		startupMessages: cfg.Env.Messages,
 		dispatcher:      cfg.Env.dispatcher,
 		newDispatcher:   cfg.NewDispatcher,
+		newBackend:      cfg.NewBackend,
 		state:           "idle",
 	}
 	a.changeCond = sync.NewCond(&a.changeMu)
@@ -351,13 +345,6 @@ func (s *agentCore) Close() {
 		os.RemoveAll("/tmp/ollie/" + s.sessionID) //nolint:errcheck
 	}
 }
-
-func (s *agentCore) prompt() string {
-	return fmt.Sprintf("[%s :: %s] ", s.loopcfg.Backend.Name(), s.agentName)
-}
-
-// Prompt returns the display prompt string for the current session state.
-func (s *agentCore) Prompt() string { return s.prompt() }
 
 func (s *agentCore) AgentName() string {
 	v := s.agentName
@@ -967,7 +954,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 				return
 			}
 			os.Setenv("OLLIE_BACKEND", args[0]) //nolint:errcheck
-			be, err := backend.New()
+			be, err := s.newBackend()
 			if err != nil {
 				handler(infoEvent(fmt.Sprintf("error: failed to switch backend: %v", err)))
 				return
@@ -1299,11 +1286,6 @@ func mcpToolsToBackend(mcpTools []tools.ToolInfo) []backend.Tool {
 		}
 	}
 	return out
-}
-
-func extractMCPText(raw json.RawMessage) string {
-	text, _ := extractMCPResult(raw)
-	return text
 }
 
 func extractMCPResult(raw json.RawMessage) (text string, isError bool) {

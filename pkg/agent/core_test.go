@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ollie/pkg/backend"
+	"ollie/pkg/config"
 	"ollie/pkg/tools"
 )
 
@@ -1873,5 +1874,409 @@ func TestManualCompact_WithToolMessages(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("/compact with tool messages: no 'compacted' event; got: %v", byRole(evs, "info"))
+	}
+}
+
+// --- hook timeout ---
+
+func TestHookTimeout_Branch(t *testing.T) {
+	old := hookTimeout
+	hookTimeout = 0 // 0s timeout fires immediately
+	t.Cleanup(func() { hookTimeout = old })
+
+	// A hook that sleeps longer than the timeout. The timeout branch kills the
+	// process and returns HookResult{} (Ran=false), so the turn is NOT blocked
+	// and the backend runs normally.
+	hooks := Hooks{HookPreTurn: []string{"sleep 10"}}
+	c := newCore(t, nil, hooks)
+	evs := collectEvents(context.Background(), c, "hello")
+
+	// Turn must have run: an assistant event proves the hook didn't block it.
+	if got := byRole(evs, "assistant"); len(got) == 0 {
+		t.Errorf("expected assistant event after hook timeout; hook must not have blocked the turn")
+	}
+	if c.State() != "idle" {
+		t.Errorf("State() = %q after timeout hook; want idle", c.State())
+	}
+}
+
+// --- /backend with injected newBackend ---
+
+func TestCommand_Backend_Switch(t *testing.T) {
+	c := newCore(t, nil, nil)
+	newBE := &mockBackend{name: "injected", model: "new-model"}
+	c.newBackend = func() (backend.Backend, error) { return newBE, nil }
+
+	evs := collectEvents(context.Background(), c, "/backend other")
+	infos := byRole(evs, "info")
+	found := false
+	for _, s := range infos {
+		if strings.Contains(s, "injected") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/backend switch: expected 'injected' in info events; got %v", infos)
+	}
+	if c.loopcfg.Backend != newBE {
+		t.Errorf("/backend switch: backend not updated")
+	}
+}
+
+func TestCommand_Backend_Error(t *testing.T) {
+	c := newCore(t, nil, nil)
+	c.newBackend = func() (backend.Backend, error) { return nil, fmt.Errorf("no such backend") }
+
+	evs := collectEvents(context.Background(), c, "/backend bad")
+	infos := byRole(evs, "info")
+	found := false
+	for _, s := range infos {
+		if strings.Contains(s, "no such backend") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/backend error: expected error message; got %v", infos)
+	}
+}
+
+// --- extractMCPResult ---
+
+func TestExtractMCPResult_Success(t *testing.T) {
+	raw := json.RawMessage(`{"isError":false,"content":[{"type":"text","text":"hello"}]}`)
+	text, isErr := extractMCPResult(raw)
+	if text != "hello" {
+		t.Errorf("text = %q; want %q", text, "hello")
+	}
+	if isErr {
+		t.Error("isError should be false")
+	}
+}
+
+func TestExtractMCPResult_IsError(t *testing.T) {
+	raw := json.RawMessage(`{"isError":true,"content":[{"type":"text","text":"something failed"}]}`)
+	text, isErr := extractMCPResult(raw)
+	if text != "something failed" {
+		t.Errorf("text = %q; want %q", text, "something failed")
+	}
+	if !isErr {
+		t.Error("isError should be true")
+	}
+}
+
+func TestExtractMCPResult_MultipleContentItems(t *testing.T) {
+	raw := json.RawMessage(`{"isError":false,"content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}`)
+	text, _ := extractMCPResult(raw)
+	if text != "a\nb" {
+		t.Errorf("text = %q; want %q", text, "a\nb")
+	}
+}
+
+func TestExtractMCPResult_NonTextItemsSkipped(t *testing.T) {
+	raw := json.RawMessage(`{"isError":false,"content":[{"type":"image","text":"ignored"},{"type":"text","text":"kept"}]}`)
+	text, _ := extractMCPResult(raw)
+	if text != "kept" {
+		t.Errorf("text = %q; want %q", text, "kept")
+	}
+}
+
+func TestExtractMCPResult_InvalidJSON(t *testing.T) {
+	raw := json.RawMessage(`not json`)
+	text, isErr := extractMCPResult(raw)
+	if text != "not json" {
+		t.Errorf("text = %q; want raw input on parse failure", text)
+	}
+	if isErr {
+		t.Error("isError should be false on parse failure")
+	}
+}
+
+// --- mcpToolsToBackend ---
+
+func TestMcpToolsToBackend(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object"}`)
+	infos := []tools.ToolInfo{
+		{Name: "tool_a", Description: "does A.", InputSchema: schema},
+		{Name: "tool_b", Description: "does B.", InputSchema: schema},
+	}
+	got := mcpToolsToBackend(infos)
+	if len(got) != 2 {
+		t.Fatalf("len = %d; want 2", len(got))
+	}
+	if got[0].Name != "tool_a" || got[0].Description != "does A." {
+		t.Errorf("got[0] = %+v", got[0])
+	}
+	if string(got[1].Parameters) != string(schema) {
+		t.Errorf("got[1].Parameters = %s; want %s", got[1].Parameters, schema)
+	}
+}
+
+func TestMcpToolsToBackend_Empty(t *testing.T) {
+	got := mcpToolsToBackend(nil)
+	if len(got) != 0 {
+		t.Errorf("expected empty slice, got %v", got)
+	}
+}
+
+// --- RestoreSession round-trip ---
+
+func TestRestoreSession_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sess.json")
+
+	s := newSession("first user message")
+	s.appendUserMessage("second message")
+	s.messages = append(s.messages, backend.Message{Role: "assistant", Content: "reply"})
+
+	if err := s.saveTo(path, "test-id", "test-agent"); err != nil {
+		t.Fatalf("saveTo: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var ps PersistedSession
+	if err := json.Unmarshal(data, &ps); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if ps.ID != "test-id" || ps.Agent != "test-agent" {
+		t.Errorf("ps.ID=%q ps.Agent=%q", ps.ID, ps.Agent)
+	}
+
+	restored := RestoreSession(ps.Messages)
+	if restored.goal != "first user message" {
+		t.Errorf("goal = %q; want %q", restored.goal, "first user message")
+	}
+	if len(restored.messages) != len(s.messages) {
+		t.Errorf("messages len = %d; want %d", len(restored.messages), len(s.messages))
+	}
+}
+
+func TestRestoreSession_GoalFromFirstUserMessage(t *testing.T) {
+	msgs := []backend.Message{
+		{Role: "assistant", Content: "preamble"},
+		{Role: "user", Content: "the real goal"},
+		{Role: "user", Content: "second user msg"},
+	}
+	s := RestoreSession(msgs)
+	if s.goal != "the real goal" {
+		t.Errorf("goal = %q; want %q", s.goal, "the real goal")
+	}
+}
+
+// --- SetEnv propagation ---
+
+// mockEnvServer is a tools.Server that also implements tools.EnvSetter.
+type mockEnvServer struct {
+	mu  sync.Mutex
+	env map[string]string
+}
+
+func (m *mockEnvServer) ListTools() ([]tools.ToolInfo, error)                              { return nil, nil }
+func (m *mockEnvServer) CallTool(_ context.Context, _ string, _ json.RawMessage) (json.RawMessage, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (m *mockEnvServer) Close() {}
+func (m *mockEnvServer) SetEnv(k, v string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.env == nil {
+		m.env = make(map[string]string)
+	}
+	m.env[k] = v
+}
+func (m *mockEnvServer) get(k string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.env[k]
+}
+
+func newCoreWithExecServer(t *testing.T, srv *mockEnvServer) *agentCore {
+	t.Helper()
+	d := tools.NewDispatcher()
+	d.AddServer("execute", srv)
+	env := AgentEnv{
+		Hooks:        Hooks{},
+		systemPrompt: "test system prompt",
+		dispatcher:   d,
+	}
+	c := NewAgentCore(AgentCoreConfig{
+		Backend:       defaultBE(),
+		AgentName:     "test",
+		AgentsDir:     t.TempDir(),
+		SessionsDir:   t.TempDir(),
+		SessionID:     NewSessionID(),
+		CWD:           t.TempDir(),
+		Env:           env,
+		NewDispatcher: tools.NewDispatcher,
+	})
+	t.Cleanup(c.Close)
+	return c.(*agentCore)
+}
+
+func TestSetEnv_PropagatestoExecuteServer(t *testing.T) {
+	srv := &mockEnvServer{}
+	c := newCoreWithExecServer(t, srv)
+
+	c.SetEnv("MY_KEY", "my_value")
+
+	if got := srv.get("MY_KEY"); got != "my_value" {
+		t.Errorf("execute server env MY_KEY = %q; want %q", got, "my_value")
+	}
+}
+
+func TestSetEnv_StoredInCore(t *testing.T) {
+	srv := &mockEnvServer{}
+	c := newCoreWithExecServer(t, srv)
+
+	c.SetEnv("FOO", "bar")
+	c.SetEnv("BAZ", "qux")
+
+	c.envMu.RLock()
+	defer c.envMu.RUnlock()
+	if c.env["FOO"] != "bar" {
+		t.Errorf("env[FOO] = %q; want bar", c.env["FOO"])
+	}
+	if c.env["BAZ"] != "qux" {
+		t.Errorf("env[BAZ] = %q; want qux", c.env["BAZ"])
+	}
+}
+
+func TestSetEnv_ShellCommandSeesEnv(t *testing.T) {
+	srv := &mockEnvServer{}
+	c := newCoreWithExecServer(t, srv)
+
+	c.SetEnv("OLLIE_TEST_VAR", "sentinel_value")
+
+	evs := collectEvents(context.Background(), c, "!echo $OLLIE_TEST_VAR")
+	infos := byRole(evs, "info")
+	found := false
+	for _, s := range infos {
+		if strings.Contains(s, "sentinel_value") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("shell command did not see OLLIE_TEST_VAR; info events: %v", infos)
+	}
+}
+
+func TestSetEnv_NilDispatcher_NoPanic(t *testing.T) {
+	c := newCore(t, nil, nil)
+	c.dispatcher = nil
+	// Must not panic.
+	c.SetEnv("K", "V")
+	if c.env["K"] != "V" {
+		t.Errorf("env[K] = %q; want V", c.env["K"])
+	}
+}
+
+// --- firstSentence ---
+
+func TestFirstSentence_Period(t *testing.T) {
+	if got := firstSentence("Does a thing. More detail."); got != "Does a thing." {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestFirstSentence_Newline(t *testing.T) {
+	if got := firstSentence("Does a thing\nMore detail"); got != "Does a thing" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestFirstSentence_TruncatesLong(t *testing.T) {
+	long := strings.Repeat("x", 100)
+	got := firstSentence(long)
+	if len(got) != 80 || !strings.HasSuffix(got, "...") {
+		t.Errorf("got %q (len %d)", got, len(got))
+	}
+}
+
+func TestFirstSentence_ShortNoSentenceEnd(t *testing.T) {
+	if got := firstSentence("short"); got != "short" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// --- BuildAgentEnv (nil config path) ---
+
+func setupCfgDir(t *testing.T, systemPrompt string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(dir+"/prompts", 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/prompts/SYSTEM_PROMPT.md", []byte(systemPrompt), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OLLIE_CFG_PATH", dir)
+	return dir
+}
+
+func TestBuildAgentEnv_NilConfig(t *testing.T) {
+	setupCfgDir(t, "base prompt")
+	d := tools.NewDispatcher()
+	env := BuildAgentEnv(nil, d, t.TempDir())
+
+	if env.systemPrompt != "base prompt" {
+		t.Errorf("systemPrompt = %q; want %q", env.systemPrompt, "base prompt")
+	}
+	if len(env.Hooks) != 0 {
+		t.Errorf("expected no hooks; got %v", env.Hooks)
+	}
+	if len(env.tools) != 0 {
+		t.Errorf("expected no tools; got %v", env.tools)
+	}
+	if len(env.Messages) != 0 {
+		t.Errorf("expected no startup messages; got %v", env.Messages)
+	}
+}
+
+func TestBuildAgentEnv_AgentPromptAppended(t *testing.T) {
+	setupCfgDir(t, "base prompt")
+	d := tools.NewDispatcher()
+	cfg := &config.Config{Prompt: "agent suffix"}
+	env := BuildAgentEnv(cfg, d, t.TempDir())
+
+	if !strings.Contains(env.systemPrompt, "base prompt") {
+		t.Errorf("systemPrompt missing base: %q", env.systemPrompt)
+	}
+	if !strings.Contains(env.systemPrompt, "agent suffix") {
+		t.Errorf("systemPrompt missing agent suffix: %q", env.systemPrompt)
+	}
+}
+
+func TestBuildAgentEnv_HooksAndParams(t *testing.T) {
+	setupCfgDir(t, "base")
+	d := tools.NewDispatcher()
+	temp := 0.7
+	cfg := &config.Config{
+		Hooks:       map[string]config.HookCmds{"preTurn": {"echo hi"}},
+		MaxTokens:   512,
+		Temperature: &temp,
+	}
+	env := BuildAgentEnv(cfg, d, t.TempDir())
+
+	if cmds := env.Hooks[HookPreTurn]; len(cmds) != 1 || cmds[0] != "echo hi" {
+		t.Errorf("Hooks[preTurn] = %v", cmds)
+	}
+	if env.genParams.MaxTokens != 512 {
+		t.Errorf("MaxTokens = %d; want 512", env.genParams.MaxTokens)
+	}
+	if env.genParams.Temperature == nil || *env.genParams.Temperature != 0.7 {
+		t.Errorf("Temperature = %v; want 0.7", env.genParams.Temperature)
+	}
+}
+
+func TestBuildAgentEnv_ExecUnknownTool(t *testing.T) {
+	setupCfgDir(t, "base")
+	d := tools.NewDispatcher()
+	env := BuildAgentEnv(nil, d, t.TempDir())
+
+	_, err := env.exec(context.Background(), "no_such_tool", json.RawMessage(`{}`))
+	if err == nil || !strings.Contains(err.Error(), "unknown tool") {
+		t.Errorf("expected unknown tool error; got %v", err)
 	}
 }

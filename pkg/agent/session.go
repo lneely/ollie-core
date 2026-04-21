@@ -68,7 +68,6 @@ func RestoreSession(messages []backend.Message) *Session {
 type Session struct {
 	goal     string
 	messages []backend.Message
-	complete bool
 	// Cumulative usage tracking.
 	TotalInputTokens  int
 	TotalOutputTokens int
@@ -83,13 +82,9 @@ func newSession(goal string) *Session {
 	return s
 }
 
-func (s *Session) Goal() string { return s.goal }
-
 func (s *Session) history() []backend.Message {
 	return s.messages
 }
-
-func (s *Session) isComplete() bool { return s.complete }
 
 func (s *Session) addUsage(u backend.Usage, estimated bool) {
 	s.TotalInputTokens += u.InputTokens
@@ -109,11 +104,6 @@ func (s *Session) update(assistant backend.Message, results []toolResult) error 
 			ToolCallID: r.ToolCallID,
 		})
 	}
-	return nil
-}
-
-func (s *Session) markComplete() error {
-	s.complete = true
 	return nil
 }
 
@@ -240,13 +230,7 @@ func flattenToolMessages(messages []backend.Message) []backend.Message {
 }
 
 func (s *Session) appendUserMessage(content string) {
-	s.complete = false
 	s.messages = append(s.messages, backend.Message{Role: "user", Content: content})
-}
-
-// contextStatsString returns a one-line human-readable context summary.
-func (s *Session) contextStatsString() string {
-	return fmt.Sprintf("context: ~%d tokens (%d msgs)", s.estimateTokens(), len(s.messages))
 }
 
 // estimateTokens returns a rough token count (~4 chars per token).
