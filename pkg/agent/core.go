@@ -137,6 +137,8 @@ func expandSystemPrompt(content, cwd string) string {
 	}
 	mapper := func(key string) string {
 		switch key {
+		case "PWD":
+			return cwd
 		case "PRIME_DATE":
 			return time.Now().Format("2006-01-02")
 		case "PRIME_PLATFORM":

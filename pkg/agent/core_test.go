@@ -544,6 +544,14 @@ func TestExpandSystemPrompt_IsGitFalse(t *testing.T) {
 	}
 }
 
+func TestExpandSystemPrompt_PWDUsesCWD(t *testing.T) {
+	dir := t.TempDir()
+	got := expandSystemPrompt("${PWD}", dir)
+	if got != dir {
+		t.Errorf("got %q; want %q", got, dir)
+	}
+}
+
 // --- BuildAgentEnv: missing system prompt ---
 
 func TestBuildAgentEnv_MissingSystemPrompt(t *testing.T) {
