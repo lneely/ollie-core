@@ -37,6 +37,7 @@ var SessionFileList = []struct {
 	{"models", 0444},
 	{"systemprompt", 0444},
 	{"params", 0666},
+	{"tail", 0555},
 }
 
 // SessionFileStore implements Store for the files within a single
@@ -327,6 +328,8 @@ func (s *SessionFileStore) content(name string) string {
 		return fmt.Sprintf("%d\n", s.sess.ChatOffset)
 	case "params":
 		return FormatParams(s.sess.Core.GenerationParams())
+	case "tail":
+		return "#!/bin/sh\nexec tail -f \"$(dirname \"$0\")/chat\"\n"
 	}
 	return ""
 }
