@@ -28,6 +28,11 @@ The reference frontend is [ollie-tui](https://github.com/lneely/ollie-tui), a te
 pkg/agent/           — Core interface, agent loop, session management
 pkg/backend/         — Backend interface + implementations (Ollama, OpenAI, Anthropic, Copilot, Kiro)
 pkg/config/          — Config struct and loader
+pkg/env/             — Environment variable loading (env file + shell)
+pkg/log/             — Structured logging
+pkg/paths/           — Config and data directory resolution
+pkg/skills/          — Skill file discovery and loading
+pkg/store/           — Store interfaces and implementations (FlatDir, Session, Batch, Skill)
 pkg/tools/           — Server and Dispatcher interfaces; tool definitions
 pkg/tools/execute/   — execute.Server: execute_code
 ```
@@ -48,12 +53,15 @@ No build step — ollie-core is a library.
 {
   "hooks": {
     "agentSpawn": [
-      "$OLLIE/x/prime sys-base",
-      "$OLLIE/x/prime sys-ollie",
-      "notify-send ollie started"
+      "bd prime 2>/dev/null || true"
     ],
-    "preTurn": [],
-    "postTurn": []
+    "preTurn": [
+      "$OLLIE/x/prime tools-file",
+      "$OLLIE/x/prime tools-reasoning",
+      "$OLLIE/x/prime tools-memory",
+      "$OLLIE/x/prime tools-subagent"
+    ],
+    "postTurn": ["true"]
   }
 }
 ```
@@ -62,9 +70,9 @@ Hook values accept a string or an array of strings. Commands run in order; each 
 
 ### System prompt
 
-There is no built-in system prompt. The system prompt is assembled entirely from `agentSpawn` hook output. The `prime` script (`$OLLIE/x/prime <name>`) reads a file from `p/` and writes it to stdout with environment variable substitution — use it in `agentSpawn` to compose the system prompt from prompt template files. The fully assembled result is readable at `s/<id>/systemprompt`.
+The base system prompt is loaded from `SYSTEM_PROMPT.md` (in `~/.config/ollie/prompts/`) by Go at session creation via `BuildAgentEnv`. Tool-specific prompts are injected via `preTurn` hooks using the `prime` script (`$OLLIE/x/prime <name>`), which reads a file from `p/` and writes it to stdout with environment variable substitution. The fully assembled result is readable at `s/<id>/systemprompt`.
 
-### Sandbox config: `~/.config/ollie/sandbox.yaml`
+### Sandbox config: `~/.config/ollie/sandbox/<name>.yaml`
 
 Controls landrun sandboxing for `execute_code`. Created automatically with defaults on first run. See the file header for documentation.
 
