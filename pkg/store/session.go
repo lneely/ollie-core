@@ -52,6 +52,16 @@ func (sess *Session) AppendLog(data []byte) {
 	sess.mu.Unlock()
 }
 
+// EnsureTrailingNewline appends a newline if the log doesn't already end with one.
+func (sess *Session) EnsureTrailingNewline() {
+	sess.mu.Lock()
+	if len(sess.log) > 0 && sess.log[len(sess.log)-1] != '\n' {
+		sess.log = append(sess.log, '\n')
+		sess.logVers++
+	}
+	sess.mu.Unlock()
+}
+
 // LogInfo returns the current log length and version atomically.
 func (sess *Session) LogInfo() (length int, vers uint32) {
 	sess.mu.RLock()

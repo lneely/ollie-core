@@ -159,7 +159,9 @@ func (s *SessionFileStore) writeFile(name string, data []byte) error {
 	case "chat":
 		return s.saveTranscript([]byte(input))
 	case "prompt":
-		s.sess.Core.Submit(s.sess.Ctx, input, s.makePublish())
+		pub := s.makePublish()
+		s.sess.Core.Submit(s.sess.Ctx, input, pub)
+		s.sess.EnsureTrailingNewline()
 	case "fifo.in":
 		s.sess.Core.Queue(input)
 	case "ctl":
@@ -352,21 +354,29 @@ func (s *SessionFileStore) currentWaitValue(name string) string {
 func (s *SessionFileStore) makePublish() func(agent.Event) {
 	assistantStarted := false
 	return func(ev agent.Event) {
-		switch ev.Role {
-		case "user", "call", "tool":
-			assistantStarted = false
-		case "assistant":
-			if !assistantStarted {
-				s.sess.AppendLog([]byte("assistant: "))
-				assistantStarted = true
-			}
-		}
-		s.sess.AppendLog(FormatEvent(ev))
 		if ev.Role == "user" {
+			if assistantStarted {
+				s.sess.AppendLog([]byte("\n"))
+				assistantStarted = false
+			}
 			s.sess.mu.Lock()
 			s.sess.ChatOffset = len(s.sess.log)
 			s.sess.mu.Unlock()
+		} else {
+			switch ev.Role {
+			case "call", "tool":
+				if assistantStarted {
+					s.sess.AppendLog([]byte("\n"))
+					assistantStarted = false
+				}
+			case "assistant":
+				if !assistantStarted {
+					s.sess.AppendLog([]byte("assistant: "))
+					assistantStarted = true
+				}
+			}
 		}
+		s.sess.AppendLog(FormatEvent(ev))
 	}
 }
 

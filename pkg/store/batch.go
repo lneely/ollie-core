@@ -373,12 +373,23 @@ func (s *BatchStore) executeJob(ctx context.Context, job *batchJob) (string, err
 				assistantStarted = true
 			}
 		case "user", "call", "tool":
-			assistantStarted = false
+			if assistantStarted {
+				job.appendLog([]byte("\n"))
+				assistantStarted = false
+			}
 		case "error":
 			errBuf.WriteString(ev.Content)
 		}
 		job.appendLog(FormatEvent(ev))
 	})
+
+	// Ensure log ends with newline (assistant content has no trailing \n).
+	job.mu.Lock()
+	if len(job.log) > 0 && job.log[len(job.log)-1] != '\n' {
+		job.log = append(job.log, '\n')
+		job.logVers++
+	}
+	job.mu.Unlock()
 
 	usage := core.Usage()
 	ctxsz := core.CtxSz()
@@ -620,9 +631,6 @@ func FormatEvent(ev agent.Event) []byte {
 		return []byte(ev.Content)
 	case "call":
 		args := squashWhitespace(ev.Content)
-		if len(args) > 500 {
-			args = args[:500] + "..."
-		}
 		return []byte("-> " + ev.Name + "(" + args + ")\n")
 	case "tool":
 		return []byte(strings.TrimRight(ev.Content, "\n") + "\n")
