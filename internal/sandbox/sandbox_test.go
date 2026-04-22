@@ -99,6 +99,10 @@ func TestExpandPath(t *testing.T) {
 // ---- WrapCommand ----
 
 func TestWrapCommand(t *testing.T) {
+	old := isSuperpowerdRunningFn
+	isSuperpowerdRunningFn = func() bool { return false }
+	defer func() { isSuperpowerdRunningFn = old }()
+
 	tmpDir := t.TempDir()
 	rwDir := filepath.Join(tmpDir, "rw")
 	roDir := filepath.Join(tmpDir, "ro")
