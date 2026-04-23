@@ -469,40 +469,8 @@ func ParseBatchSpec(input string) (batchSpec, error) {
 
 // --- BatchJobStore ---
 
-var batchJobFiles = []struct {
-	name string
-	mode os.FileMode
-}{
-	{"spec", 0444},
-	{"state", 0444},
-	{"statewait", 0444},
-	{"result", 0444},
-	{"usage", 0444},
-	{"ctxsz", 0444},
-	{"log", 0444},
-}
-
-// BatchJobStore provides Stat/List/Get for the files within a single batch job
-// directory (/b/{id}/*). The file set is fixed.
-type BatchJobStore struct {
-	*storeConfig
-	Runnable
-	job *batchJob
-}
-
-func NewBatchJobStore(job *batchJob) *BatchJobStore {
-	js := &BatchJobStore{Runnable: job, job: job}
-	notSupported := func(string) error { return fmt.Errorf("not supported") }
-	js.storeConfig = &storeConfig{
-		StatFn:   js.stat,
-		ListFn:   js.list,
-		OpenFn:   js.open,
-		DeleteFn: notSupported,
-		CreateFn: notSupported,
-		RenameFn: func(string, string) error { return fmt.Errorf("not supported") },
-	}
-	return js
-}
+// BatchJobStore is a RunFileStore for a batch job directory.
+type BatchJobStore = RunFileStore
 
 // OpenStore returns a RunnableStore for the given batch job ID.
 func (s *BatchStore) OpenStore(id string) (RunnableStore, error) {
@@ -510,100 +478,66 @@ func (s *BatchStore) OpenStore(id string) (RunnableStore, error) {
 	if job == nil {
 		return nil, fmt.Errorf("batch job not found: %s", id)
 	}
-	return NewBatchJobStore(job), nil
+	return newBatchJobFileStore(job), nil
 }
 
-func (js *BatchJobStore) list() ([]os.DirEntry, error) {
-	entries := make([]os.DirEntry, len(batchJobFiles))
-	for i, f := range batchJobFiles {
-		entries[i] = FileEntry(f.name, f.mode)
-	}
-	return entries, nil
-}
-
-func (js *BatchJobStore) stat(name string) (os.FileInfo, error) {
-	for _, f := range batchJobFiles {
-		if f.name == name {
-			var size int64
-			if name == "log" {
-				js.job.mu.RLock()
-				size = int64(len(js.job.log))
-				js.job.mu.RUnlock()
-			} else {
-				size = int64(len(js.content(name)))
-			}
-			return &SyntheticFileInfo{Name_: name, Mode_: f.mode, Size_: size}, nil
+func newBatchJobFileStore(job *batchJob) *RunFileStore {
+	content := func(name string) string {
+		job.mu.RLock()
+		defer job.mu.RUnlock()
+		switch name {
+		case "spec":
+			return job.spec
+		case "state":
+			return job.state + "\n"
+		case "result":
+			return job.result
+		case "usage":
+			return job.usage + "\n"
+		case "ctxsz":
+			return job.ctxsz + "\n"
 		}
+		return ""
 	}
-	return nil, fmt.Errorf("%s: not found", name)
-}
+	readContent := func(name string) func() ([]byte, error) {
+		return func() ([]byte, error) { return []byte(content(name)), nil }
+	}
+	logRead := func() ([]byte, error) {
+		job.mu.RLock()
+		data := make([]byte, len(job.log))
+		copy(data, job.log)
+		job.mu.RUnlock()
+		return data, nil
+	}
+	logSize := func() int64 {
+		job.mu.RLock()
+		n := len(job.log)
+		job.mu.RUnlock()
+		return int64(n)
+	}
 
-func (js *BatchJobStore) open(name string) (StoreEntry, error) {
-	for _, f := range batchJobFiles {
-		if f.name == name {
-			return js.entryFor(name, f.mode), nil
-		}
-	}
-	return nil, fmt.Errorf("%s: not found", name)
-}
-
-func (js *BatchJobStore) entryFor(name string, mode os.FileMode) StoreEntry {
-	return &EntryConfig{
-		StatFn: func() (os.FileInfo, error) {
-			var size int64
-			if name == "log" {
-				js.job.mu.RLock()
-				size = int64(len(js.job.log))
-				js.job.mu.RUnlock()
-			} else {
-				size = int64(len(js.content(name)))
-			}
-			return &SyntheticFileInfo{Name_: name, Mode_: mode, Size_: size}, nil
+	specs := []FileSpec{
+		{Name: "spec", Mode: 0444, Read: readContent("spec")},
+		{Name: "state", Mode: 0444, Read: readContent("state")},
+		{Name: "statewait", Mode: 0444, Read: readContent("state"),
+			Wait: func(ctx context.Context, base string) ([]byte, error) {
+				select {
+				case <-ctx.Done():
+					return nil, nil
+				case <-job.done:
+				}
+				job.mu.RLock()
+				state := job.state
+				job.mu.RUnlock()
+				return []byte(state + "\n"), nil
+			},
 		},
-		ReadFn: func() ([]byte, error) {
-			if name == "log" {
-				js.job.mu.RLock()
-				data := make([]byte, len(js.job.log))
-				copy(data, js.job.log)
-				js.job.mu.RUnlock()
-				return data, nil
-			}
-			return []byte(js.content(name)), nil
-		},
-		WriteFn: func([]byte) error { return fmt.Errorf("%s: read-only", name) },
-		BlockingReadFn: func(ctx context.Context, base string) ([]byte, error) {
-			if name != "statewait" {
-				return nil, fmt.Errorf("%s: not a wait file", name)
-			}
-			select {
-			case <-ctx.Done():
-				return nil, nil
-			case <-js.job.done:
-			}
-			js.job.mu.RLock()
-			state := js.job.state
-			js.job.mu.RUnlock()
-			return []byte(state + "\n"), nil
-		},
+		{Name: "result", Mode: 0444, Read: readContent("result")},
+		{Name: "usage", Mode: 0444, Read: readContent("usage")},
+		{Name: "ctxsz", Mode: 0444, Read: readContent("ctxsz")},
+		{Name: "log", Mode: 0444, Read: logRead, Size: logSize},
 	}
-}
-
-func (js *BatchJobStore) content(name string) string {
-	js.job.mu.RLock()
-	defer js.job.mu.RUnlock()
-	switch name {
-	case "spec":
-		return js.job.spec
-	case "state":
-		return js.job.state + "\n"
-	case "result":
-		return js.job.result
-	case "usage":
-		return js.job.usage + "\n"
-	case "ctxsz":
-		return js.job.ctxsz + "\n"
-	}
-	return ""
+	return NewRunFileStore(job, specs)
 }
 
 // LoadAgentConfig resolves and loads the config for a named agent.
