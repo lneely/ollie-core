@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
@@ -277,7 +278,13 @@ func (s *SessionStore) KillSession(id string) {
 func (s *SessionStore) index() []byte {
 	var sb strings.Builder
 	s.mu.RLock()
-	for id, sess := range s.sessions {
+	ids := make([]string, 0, len(s.sessions))
+	for id := range s.sessions {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		sess := s.sessions[id]
 		sess.mu.RLock()
 		state := sess.Core.State()
 		cwd := sess.Core.CWD()
