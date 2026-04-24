@@ -23,20 +23,12 @@ var SessionFileList = []struct {
 	{"fifo.out", 0444},
 	{"chat", 0666},
 	{"offset", 0444},
-	{"state", 0444},
+	{"spec", 0666},
 	{"statewait", 0444},
-	{"backend", 0666},
-	{"agent", 0666},
-	{"model", 0666},
-	{"cwd", 0666},
-	{"cwdwait", 0444},
 	{"usage", 0444},
-	{"usagewait", 0444},
 	{"ctxsz", 0444},
-	{"ctxszwait", 0444},
 	{"models", 0444},
 	{"systemprompt", 0444},
-	{"params", 0666},
 	{"tail", 0555},
 }
 
@@ -88,6 +80,8 @@ func (h *sessionHelper) fileSpec(name string, mode os.FileMode) FileSpec {
 			}
 			return []byte(item), nil
 		}
+	case "spec":
+		fs.Read = func() ([]byte, error) { return []byte(h.specContent()), nil }
 	default:
 		fs.Read = func() ([]byte, error) { return []byte(h.content(name)), nil }
 	}
@@ -130,65 +124,26 @@ func (h *sessionHelper) fileSpec(name string, mode os.FileMode) FileSpec {
 			}
 			return h.handleCtl(input)
 		}
-	case "backend", "model", "agent":
+	case "spec":
 		fs.Write = func(data []byte) error {
 			input := strings.TrimSpace(string(data))
 			if input == "" {
 				return nil
 			}
-			if h.sess.Core.IsRunning() {
-				return fmt.Errorf("cannot switch %s while agent is running", name)
-			}
-			h.sess.Core.Submit(h.sess.Ctx, "/"+name+" "+input, h.makePublish())
-			return nil
-		}
-	case "cwd":
-		fs.Write = func(data []byte) error {
-			input := strings.TrimSpace(string(data))
-			if input == "" {
-				return nil
-			}
-			return h.sess.Core.SetCWD(input)
-		}
-	case "params":
-		fs.Write = func(data []byte) error {
-			input := strings.TrimSpace(string(data))
-			if input == "" {
-				return nil
-			}
-			if h.sess.Core.IsRunning() {
-				return fmt.Errorf("cannot change params while agent is running")
-			}
-			params, err := ParseParams(input, h.sess.Core.GenerationParams())
-			if err != nil {
-				return err
-			}
-			return h.sess.Core.SetGenerationParams(params)
+			return h.handleSpec(input)
 		}
 	}
 
 	// Wait
-	switch name {
-	case "statewait", "usagewait", "ctxszwait", "cwdwait":
-		var field string
-		switch name {
-		case "statewait":
-			field = agent.WatchState
-		case "usagewait":
-			field = agent.WatchUsage
-		case "ctxszwait":
-			field = agent.WatchCtxSz
-		case "cwdwait":
-			field = agent.WatchCWD
-		}
+	if name == "statewait" {
 		fs.Wait = func(connCtx context.Context, base string) ([]byte, error) {
 			ctx, cancel := context.WithCancel(connCtx)
 			defer cancel()
 			context.AfterFunc(h.sess.Ctx, cancel)
 			if base == "" {
-				base = h.currentWaitValue(name)
+				base = h.sess.Core.State()
 			}
-			v, ok := h.sess.Core.WaitChange(ctx, field, base)
+			v, ok := h.sess.Core.WaitChange(ctx, agent.WatchState, base)
 			if !ok {
 				return nil, nil
 			}
@@ -203,16 +158,6 @@ func (h *sessionHelper) content(name string) string {
 	h.sess.mu.RLock()
 	defer h.sess.mu.RUnlock()
 	switch name {
-	case "backend":
-		return h.sess.Core.BackendName() + "\n"
-	case "agent":
-		return h.sess.Core.AgentName() + "\n"
-	case "model":
-		return h.sess.Core.ModelName() + "\n"
-	case "state":
-		return h.sess.Core.State() + "\n"
-	case "cwd":
-		return h.sess.Core.CWD() + "\n"
 	case "usage":
 		return h.sess.Core.Usage() + "\n"
 	case "ctxsz":
@@ -223,27 +168,113 @@ func (h *sessionHelper) content(name string) string {
 		return h.sess.Core.SystemPrompt()
 	case "offset":
 		return fmt.Sprintf("%d\n", h.sess.ChatOffset)
-	case "params":
-		return FormatParams(h.sess.Core.GenerationParams())
 	case "tail":
 		return "#!/bin/sh\nexec tail -f \"$(dirname \"$0\")/chat\"\n"
 	}
 	return ""
 }
 
-func (h *sessionHelper) currentWaitValue(name string) string {
-	switch name {
-	case "statewait":
-		return h.sess.Core.State()
-	case "usagewait":
-		return h.sess.Core.Usage()
-	case "ctxszwait":
-		return h.sess.Core.CtxSz()
-	case "cwdwait":
-		return h.sess.Core.CWD()
+func (h *sessionHelper) specContent() string {
+	h.sess.mu.RLock()
+	defer h.sess.mu.RUnlock()
+	p := h.sess.Core.GenerationParams()
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "state=%s\n", h.sess.Core.State())
+	fmt.Fprintf(&sb, "backend=%s\n", h.sess.Core.BackendName())
+	fmt.Fprintf(&sb, "model=%s\n", h.sess.Core.ModelName())
+	fmt.Fprintf(&sb, "agent=%s\n", h.sess.Core.AgentName())
+	fmt.Fprintf(&sb, "cwd=%s\n", h.sess.Core.CWD())
+	fmt.Fprintf(&sb, "usage=%s\n", h.sess.Core.Usage())
+	fmt.Fprintf(&sb, "ctxsz=%s\n", h.sess.Core.CtxSz())
+	fmt.Fprintf(&sb, "offset=%d\n", h.sess.ChatOffset)
+	fmt.Fprintf(&sb, "maxTokens=%d\n", p.MaxTokens)
+	if p.Temperature != nil {
+		fmt.Fprintf(&sb, "temperature=%g\n", *p.Temperature)
+	} else {
+		sb.WriteString("temperature=\n")
 	}
-	return ""
+	if p.FrequencyPenalty != nil {
+		fmt.Fprintf(&sb, "frequencyPenalty=%g\n", *p.FrequencyPenalty)
+	} else {
+		sb.WriteString("frequencyPenalty=\n")
+	}
+	if p.PresencePenalty != nil {
+		fmt.Fprintf(&sb, "presencePenalty=%g\n", *p.PresencePenalty)
+	} else {
+		sb.WriteString("presencePenalty=\n")
+	}
+	return sb.String()
 }
+
+func (h *sessionHelper) handleSpec(input string) error {
+	p := h.sess.Core.GenerationParams()
+	hasParams := false
+	for _, line := range strings.Split(input, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		switch k {
+		case "backend", "model", "agent":
+			if v == "" {
+				continue
+			}
+			if h.sess.Core.IsRunning() {
+				return fmt.Errorf("cannot switch %s while agent is running", k)
+			}
+			h.sess.Core.Submit(h.sess.Ctx, "/"+k+" "+v, h.makePublish())
+		case "cwd":
+			if v == "" {
+				continue
+			}
+			if err := h.sess.Core.SetCWD(v); err != nil {
+				return err
+			}
+		case "maxTokens":
+			hasParams = true
+			if v == "" {
+				p.MaxTokens = 0
+			} else if n, err := strconv.Atoi(v); err == nil {
+				p.MaxTokens = n
+			}
+		case "temperature":
+			hasParams = true
+			if v == "" {
+				p.Temperature = nil
+			} else if f, err := strconv.ParseFloat(v, 64); err == nil {
+				p.Temperature = &f
+			}
+		case "frequencyPenalty":
+			hasParams = true
+			if v == "" {
+				p.FrequencyPenalty = nil
+			} else if f, err := strconv.ParseFloat(v, 64); err == nil {
+				p.FrequencyPenalty = &f
+			}
+		case "presencePenalty":
+			hasParams = true
+			if v == "" {
+				p.PresencePenalty = nil
+			} else if f, err := strconv.ParseFloat(v, 64); err == nil {
+				p.PresencePenalty = &f
+			}
+		// state, usage, ctxsz, offset → read-only, silently ignored
+		}
+	}
+	if hasParams {
+		if h.sess.Core.IsRunning() {
+			return fmt.Errorf("cannot change params while agent is running")
+		}
+		return h.sess.Core.SetGenerationParams(p)
+	}
+	return nil
+}
+
 
 func (h *sessionHelper) makePublish() func(agent.Event) {
 	assistantStarted := false

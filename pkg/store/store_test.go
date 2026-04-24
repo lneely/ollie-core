@@ -665,7 +665,7 @@ func TestSessionFileStoreReadableContract(t *testing.T) {
 	sink := testSink()
 	sf := store.NewSessionFileStore(sess, sink.NewLogger("test"),
 		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
-	checkReadableContract(t, sf, "state")
+	checkReadableContract(t, sf, "spec")
 }
 
 func TestSessionFileStoreList(t *testing.T) {
@@ -722,7 +722,7 @@ func TestSessionFileStoreGetContent(t *testing.T) {
 	sf := store.NewSessionFileStore(sess, sink.NewLogger("test"),
 		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
 
-	for _, name := range []string{"backend", "agent", "model", "state", "cwd", "offset", "params"} {
+	for _, name := range []string{"spec", "offset", "usage", "ctxsz", "models", "systemprompt"} {
 		if _, err := sf.Open(name); err != nil {
 			t.Errorf("Get(%q): %v", name, err)
 		}
@@ -736,7 +736,7 @@ func TestSessionFileStorePutCwd(t *testing.T) {
 	sf := store.NewSessionFileStore(sess, sink.NewLogger("test"),
 		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
 
-	storeWrite(t, sf, "cwd", []byte("/new/path"))
+	storeWrite(t, sf, "spec", []byte("cwd=/new/path"))
 	core := sess.Core.(*stubCore)
 	if core.cwd != "/new/path" {
 		t.Errorf("cwd = %q; want /new/path", core.cwd)
@@ -751,12 +751,12 @@ func TestSessionFileStorePutEmpty(t *testing.T) {
 		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
 
 	// Empty write is a no-op
-	e, err := sf.Open("cwd")
+	e, err := sf.Open("spec")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	if err := e.Write([]byte("")); err != nil {
-		t.Fatalf("Write(cwd, empty): %v", err)
+		t.Fatalf("Write(spec, empty): %v", err)
 	}
 }
 
@@ -773,14 +773,10 @@ func TestSessionFileStoreContentAllFields(t *testing.T) {
 	sess.ChatOffset = 5
 	sf, _ := newSessionFileStore(t, sess)
 
+	// individual metric files
 	for _, tc := range []struct {
 		name, want string
 	}{
-		{"backend", "stub\n"},
-		{"agent", "default\n"},
-		{"model", "m\n"},
-		{"state", "idle\n"},
-		{"cwd", "/tmp\n"},
 		{"usage", "100\n"},
 		{"ctxsz", "4096\n"},
 		{"models", "m1\nm2\n"},
@@ -790,6 +786,18 @@ func TestSessionFileStoreContentAllFields(t *testing.T) {
 		data := storeRead(t, sf, tc.name)
 		if string(data) != tc.want {
 			t.Errorf("Read(%q) = %q; want %q", tc.name, data, tc.want)
+		}
+	}
+
+	// spec contains all config and current state in KV form
+	spec := string(storeRead(t, sf, "spec"))
+	for _, want := range []string{
+		"state=idle\n", "backend=stub\n", "model=m\n",
+		"agent=default\n", "cwd=/tmp\n",
+		"usage=100\n", "ctxsz=4096\n", "offset=5\n",
+	} {
+		if !strings.Contains(spec, want) {
+			t.Errorf("spec missing %q; got:\n%s", want, spec)
 		}
 	}
 }
@@ -863,15 +871,15 @@ func TestSessionFileStoreWriteBackendModelAgent(t *testing.T) {
 	defer sess.Cancel()
 	sf, core := newSessionFileStore(t, sess)
 
-	storeWrite(t, sf, "backend", []byte("openai"))
+	storeWrite(t, sf, "spec", []byte("backend=openai"))
 	if len(core.submitted) != 1 || core.submitted[0] != "/backend openai" {
 		t.Errorf("submitted = %v; want [/backend openai]", core.submitted)
 	}
-	storeWrite(t, sf, "model", []byte("gpt-4"))
+	storeWrite(t, sf, "spec", []byte("model=gpt-4"))
 	if core.submitted[1] != "/model gpt-4" {
 		t.Errorf("submitted[1] = %q; want /model gpt-4", core.submitted[1])
 	}
-	storeWrite(t, sf, "agent", []byte("coder"))
+	storeWrite(t, sf, "spec", []byte("agent=coder"))
 	if core.submitted[2] != "/agent coder" {
 		t.Errorf("submitted[2] = %q; want /agent coder", core.submitted[2])
 	}
@@ -884,17 +892,17 @@ func TestSessionFileStoreWriteBackendWhileRunning(t *testing.T) {
 	core.running = true
 	sf, _ := newSessionFileStore(t, sess)
 
-	e, _ := sf.Open("backend")
-	if err := e.Write([]byte("openai")); err == nil {
-		t.Error("Write(backend) while running should error")
+	e, _ := sf.Open("spec")
+	if err := e.Write([]byte("backend=openai")); err == nil {
+		t.Error("Write spec backend= while running should error")
 	}
-	e2, _ := sf.Open("model")
-	if err := e2.Write([]byte("gpt-4")); err == nil {
-		t.Error("Write(model) while running should error")
+	e2, _ := sf.Open("spec")
+	if err := e2.Write([]byte("model=gpt-4")); err == nil {
+		t.Error("Write spec model= while running should error")
 	}
-	e3, _ := sf.Open("agent")
-	if err := e3.Write([]byte("coder")); err == nil {
-		t.Error("Write(agent) while running should error")
+	e3, _ := sf.Open("spec")
+	if err := e3.Write([]byte("agent=coder")); err == nil {
+		t.Error("Write spec agent= while running should error")
 	}
 }
 
@@ -903,7 +911,7 @@ func TestSessionFileStoreWriteParams(t *testing.T) {
 	defer sess.Cancel()
 	sf, core := newSessionFileStore(t, sess)
 
-	storeWrite(t, sf, "params", []byte("maxTokens=2048"))
+	storeWrite(t, sf, "spec", []byte("maxTokens=2048"))
 	if core.params.MaxTokens != 2048 {
 		t.Errorf("MaxTokens = %d; want 2048", core.params.MaxTokens)
 	}
@@ -916,9 +924,9 @@ func TestSessionFileStoreWriteParamsWhileRunning(t *testing.T) {
 	core.running = true
 	sf, _ := newSessionFileStore(t, sess)
 
-	e, _ := sf.Open("params")
+	e, _ := sf.Open("spec")
 	if err := e.Write([]byte("maxTokens=2048")); err == nil {
-		t.Error("Write(params) while running should error")
+		t.Error("Write spec maxTokens= while running should error")
 	}
 }
 
@@ -1056,7 +1064,7 @@ func TestSessionFileStoreBlockingReadAllWaitFiles(t *testing.T) {
 	defer cancel()
 	sf, _ := newSessionFileStore(t, sess)
 
-	for _, name := range []string{"statewait", "usagewait", "ctxszwait", "cwdwait"} {
+	for _, name := range []string{"statewait"} {
 		core.waitCh <- "newval"
 		e, err := sf.Open(name)
 		if err != nil {
@@ -1144,13 +1152,13 @@ func TestSessionFileStoreEntryStat(t *testing.T) {
 		t.Errorf("entry Stat(statewait).Size() = %d; want 0", fi2.Size())
 	}
 
-	e3, _ := sf.Open("state")
+	e3, _ := sf.Open("spec")
 	fi3, err := e3.Stat()
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if fi3.Size() != int64(len("idle\n")) {
-		t.Errorf("entry Stat(state).Size() = %d; want %d", fi3.Size(), len("idle\n"))
+	if fi3.Size() == 0 {
+		t.Error("entry Stat(spec).Size() = 0; want non-zero")
 	}
 }
 
@@ -1164,8 +1172,8 @@ func TestSessionStoreOpenStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	data := storeRead(t, rs, "state")
-	if string(data) != "idle\n" {
+	data := storeRead(t, rs, "spec")
+	if !strings.Contains(string(data), "state=idle\n") {
 		t.Errorf("Read(state) = %q; want idle\\n", data)
 	}
 	if _, err := s.OpenStore("nope"); err == nil {
