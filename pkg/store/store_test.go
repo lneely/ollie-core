@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"ollie/pkg/agent"
 	"ollie/pkg/backend"
@@ -815,6 +816,7 @@ func TestSessionFileStoreWritePrompt(t *testing.T) {
 	sf, core := newSessionFileStore(t, sess)
 
 	storeWrite(t, sf, "prompt", []byte("hello agent"))
+	time.Sleep(10 * time.Millisecond)
 	if len(core.submitted) != 1 || core.submitted[0] != "hello agent" {
 		t.Errorf("submitted = %v; want [hello agent]", core.submitted)
 	}
@@ -1037,7 +1039,10 @@ func TestSessionFileStoreBlockingReadNotWaitFile(t *testing.T) {
 }
 
 func TestSessionFileStoreBlockingReadAllWaitFiles(t *testing.T) {
-	core := &stubCore{state: "idle", backend: "stub", model: "m", agentName: "default", cwd: "/tmp", usage: "0", ctxsz: "0", waitCh: make(chan string, 1)}
+	// Start with state="thinking" so statewait blocks until state changes.
+	// When base="" and state is already "idle", statewait returns immediately
+	// to avoid blocking forever in wait loops.
+	core := &stubCore{state: "thinking", backend: "stub", model: "m", agentName: "default", cwd: "/tmp", usage: "0", ctxsz: "0", waitCh: make(chan string, 1)}
 	ctx, cancel := context.WithCancel(context.Background())
 	sess := store.NewSession("s1", core, ctx, cancel)
 	defer cancel()
@@ -1059,6 +1064,28 @@ func TestSessionFileStoreBlockingReadAllWaitFiles(t *testing.T) {
 	}
 }
 
+func TestSessionFileStoreBlockingReadIdleImmediate(t *testing.T) {
+	// When state is already "idle" and base="", statewait returns immediately
+	// to prevent wait loops from blocking forever.
+	core := &stubCore{state: "idle", backend: "stub", model: "m", agentName: "default", cwd: "/tmp"}
+	ctx, cancel := context.WithCancel(context.Background())
+	sess := store.NewSession("s1", core, ctx, cancel)
+	defer cancel()
+	sf, _ := newSessionFileStore(t, sess)
+
+	e, err := sf.Open("statewait")
+	if err != nil {
+		t.Fatalf("Open(statewait): %v", err)
+	}
+	data, err := e.BlockingRead(context.Background(), "")
+	if err != nil {
+		t.Fatalf("BlockingRead: %v", err)
+	}
+	if string(data) != "idle\n" {
+		t.Errorf("BlockingRead = %q; want idle\\n", data)
+	}
+}
+
 func TestSessionFileStoreMakePublish(t *testing.T) {
 	sess := testSession("s1")
 	defer sess.Cancel()
@@ -1067,6 +1094,7 @@ func TestSessionFileStoreMakePublish(t *testing.T) {
 	sf, _ := newSessionFileStore(t, sess)
 
 	storeWrite(t, sf, "prompt", []byte("hi"))
+	time.Sleep(10 * time.Millisecond)
 
 	l, _ := sess.LogInfo()
 	if l == 0 {
@@ -1092,6 +1120,7 @@ func TestSessionFileStoreMakePublishMultipleEvents(t *testing.T) {
 		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
 
 	storeWrite(t, sf, "prompt", []byte("test"))
+	time.Sleep(10 * time.Millisecond)
 
 	data := storeRead(t, sf, "chat")
 	s := string(data)

@@ -209,9 +209,10 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			}
 			payload := map[string]string{"session_id": s.sessionID, "trigger": "manual", "cwd": s.CWD()}
 			pre := s.hooks.Run(ctx, HookPreCompact, payload, s.log)
-			if pre.Ran {
-				handler(infoEvent(hooksRan(1)))
-			}
+			// TODO: route hook info to debug/err file instead of chat
+			// if pre.Ran {
+			// 	handler(infoEvent(hooksRan(1)))
+			// }
 			if pre.Warning != "" {
 				handler(infoEvent(pre.Warning))
 			}
@@ -227,9 +228,10 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			n, _, err := s.session.compact(ctx, s.loopcfg.Backend)
 			s.setState("idle")
 			post := s.hooks.Run(ctx, HookPostCompact, payload, s.log)
-			if post.Ran {
-				handler(infoEvent(hooksRan(1)))
-			}
+			// TODO: route hook info to debug/err file instead of chat
+			// if post.Ran {
+			// 	handler(infoEvent(hooksRan(1)))
+			// }
 			if post.Warning != "" {
 				handler(infoEvent(post.Warning))
 			}

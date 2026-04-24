@@ -504,9 +504,10 @@ func (s *agentCore) fireAgentSpawn(ctx context.Context, handler EventHandler) {
 		"agent":      s.agentName,
 		"cwd":        s.CWD(),
 	}, s.log)
-	if result.Ran {
-		handler(infoEvent(hooksRan(1)))
-	}
+	// TODO: route hook info to debug/err file instead of chat
+	// if result.Ran {
+	// 	handler(infoEvent(hooksRan(1)))
+	// }
 	if result.Warning != "" {
 		handler(infoEvent(result.Warning))
 	}
@@ -754,9 +755,10 @@ func (s *agentCore) executeTurn(ctx context.Context, input string, handler Event
 		if limit := s.autoCompactLimit(ctx); limit > 0 && s.session.estimateTokens() >= limit {
 			payload := map[string]string{"session_id": s.sessionID, "trigger": "auto", "cwd": s.CWD()}
 			pre := s.hooks.Run(ctx, HookPreCompact, payload, s.log)
-			if pre.Ran {
-				handler(infoEvent(hooksRan(1)))
-			}
+			// TODO: route hook info to debug/err file instead of chat
+			// if pre.Ran {
+			// 	handler(infoEvent(hooksRan(1)))
+			// }
 			if pre.Warning != "" {
 				handler(infoEvent(pre.Warning))
 			}
@@ -771,9 +773,10 @@ func (s *agentCore) executeTurn(ctx context.Context, input string, handler Event
 				}
 				s.setState("thinking")
 				post := s.hooks.Run(ctx, HookPostCompact, payload, s.log)
-				if post.Ran {
-					handler(infoEvent(hooksRan(1)))
-				}
+				// TODO: route hook info to debug/err file instead of chat
+				// if post.Ran {
+				// 	handler(infoEvent(hooksRan(1)))
+				// }
 				if post.Warning != "" {
 					handler(infoEvent(post.Warning))
 				}

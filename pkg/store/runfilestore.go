@@ -62,7 +62,10 @@ func (rs *RunFileStore) stat(name string) (os.FileInfo, error) {
 	var size int64
 	if spec.Size != nil {
 		size = spec.Size()
-	} else if spec.Wait == nil {
+	} else if spec.Wait != nil {
+		// Wait files block on read; report large size so clients read fully.
+		size = 4096
+	} else {
 		if data, err := spec.Read(); err == nil {
 			size = int64(len(data))
 		}

@@ -103,8 +103,10 @@ func (h *sessionHelper) fileSpec(name string, mode os.FileMode) FileSpec {
 				return nil
 			}
 			pub := h.makePublish()
-			h.sess.Core.Submit(h.sess.Ctx, input, pub)
-			h.sess.EnsureTrailingNewline()
+			go func() {
+				h.sess.Core.Submit(h.sess.Ctx, input, pub)
+				h.sess.EnsureTrailingNewline()
+			}()
 			return nil
 		}
 	case "fifo.in":
@@ -145,7 +147,8 @@ func (h *sessionHelper) fileSpec(name string, mode os.FileMode) FileSpec {
 			}
 			v, ok := h.sess.Core.WaitChange(ctx, agent.WatchState, base)
 			if !ok {
-				return nil, nil
+				// Timeout or cancel: return current state so caller can check.
+				return []byte(h.sess.Core.State() + "\n"), nil
 			}
 			return []byte(v + "\n"), nil
 		}
@@ -281,9 +284,11 @@ func (h *sessionHelper) makePublish() func(agent.Event) {
 				h.sess.AppendLog([]byte("\n"))
 				assistantStarted = false
 			}
+			h.sess.AppendLog(FormatEvent(ev))
 			h.sess.mu.Lock()
 			h.sess.ChatOffset = len(h.sess.log)
 			h.sess.mu.Unlock()
+			return
 		} else {
 			switch ev.Role {
 			case "call", "tool":
