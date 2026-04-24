@@ -9,6 +9,7 @@ import (
 
 	"ollie/pkg/agent"
 	"ollie/pkg/backend"
+	"ollie/pkg/config"
 	olog "ollie/pkg/log"
 	"ollie/pkg/paths"
 	"ollie/pkg/tools"
@@ -76,13 +77,13 @@ var sessionStoreFiles = map[string]os.FileMode{
 	"ls":      0555,
 	"kill":    0555,
 	"sh":      0555,
-	"job":     0555,
-	"q":       0555,
-	"sched":   0555,
+	"b":       0555,
+	"bfg":     0555,
+	"bbg":     0555,
 	"cleanup": 0555,
 }
 
-var sessionStoreOrder = []string{"new", "idx", "ls", "kill", "sh", "job", "q", "sched", "cleanup"}
+var sessionStoreOrder = []string{"new", "idx", "ls", "kill", "sh", "b", "bfg", "bbg", "cleanup"}
 
 // SessionStoreFileMode returns the mode for a fixed session store file,
 // or 0 and false if the name is not a fixed file.
@@ -108,13 +109,12 @@ type SessionStoreConfig struct {
 	NewCore func(sessionID, agentName, cwd string) (agent.Core, error)
 }
 
-// SessionStore implements Store for session and batch job management.
+// SessionStore implements Store for session management.
 type SessionStore struct {
 	*storeConfig
 	cfg      SessionStoreConfig
 	mu       sync.RWMutex
 	sessions map[string]*Session
-	batch    *BatchStore
 }
 
 func NewSessionStore(cfg SessionStoreConfig) *SessionStore {
@@ -127,12 +127,6 @@ func NewSessionStore(cfg SessionStoreConfig) *SessionStore {
 	ss := &SessionStore{
 		cfg:      cfg,
 		sessions: make(map[string]*Session),
-		batch: NewBatchStore(BatchStoreConfig{
-			AgentsDir: cfg.AgentsDir,
-			Log:       cfg.Log,
-			Sink:      cfg.Sink,
-			NewCore:   cfg.NewCore,
-		}),
 	}
 	ss.storeConfig = &storeConfig{
 		StatFn:   ss.stat,
@@ -162,12 +156,6 @@ func (s *SessionStore) list() ([]os.DirEntry, error) {
 		entries = append(entries, DirEntry(id, 0555))
 	}
 	s.mu.RUnlock()
-	batchEntries, _ := s.batch.List()
-	for _, e := range batchEntries {
-		if e.IsDir() {
-			entries = append(entries, e)
-		}
-	}
 	return entries, nil
 }
 
@@ -180,9 +168,6 @@ func (s *SessionStore) stat(name string) (os.FileInfo, error) {
 	s.mu.RUnlock()
 	if ok {
 		return &SyntheticFileInfo{Name_: name, Mode_: 0555, IsDir_: true}, nil
-	}
-	if info, err := s.batch.Stat(name); err == nil {
-		return info, nil
 	}
 	return nil, fmt.Errorf("%s: not found", name)
 }
@@ -197,11 +182,7 @@ func (s *SessionStore) openEntry(name string) (StoreEntry, error) {
 			StatFn: func() (os.FileInfo, error) { return &SyntheticFileInfo{Name_: "new", Mode_: 0666}, nil },
 			ReadFn: func() ([]byte, error) { return []byte("name=\ncwd=\nbackend=\nmodel=\nagent=\n"), nil },
 			WriteFn: func(data []byte) error {
-				input := strings.TrimSpace(string(data))
-				if strings.Contains(input, "\n---\n") {
-					return s.batch.handleNewBatch(input)
-				}
-				return s.createSession(strings.Fields(input))
+				return s.createSession(strings.Fields(strings.TrimSpace(string(data))))
 			},
 			BlockingReadFn: notBlocking,
 		}, nil
@@ -235,7 +216,7 @@ func (s *SessionStore) del(name string) error {
 		s.KillSession(name)
 		return nil
 	}
-	return s.batch.Delete(name)
+	return fmt.Errorf("session not found: %s", name)
 }
 
 // Session returns the session for the given ID, or nil.
@@ -245,7 +226,7 @@ func (s *SessionStore) Session(id string) *Session {
 	return s.sessions[id]
 }
 
-// OpenStore returns a RunnableStore for the given session or batch job ID.
+// OpenStore returns a RunnableStore for the given session ID.
 func (s *SessionStore) OpenStore(id string) (RunnableStore, error) {
 	if sess := s.Session(id); sess != nil {
 		return NewSessionFileStore(
@@ -256,20 +237,19 @@ func (s *SessionStore) OpenStore(id string) (RunnableStore, error) {
 			s.cfg.SaveTranscript,
 		), nil
 	}
-	return s.batch.OpenStore(id)
+	return nil, fmt.Errorf("session not found: %s", id)
 }
 
-// InterruptAll interrupts every active session and batch job.
+// InterruptAll interrupts every active session.
 func (s *SessionStore) InterruptAll() {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, sess := range s.sessions {
 		sess.Core.Interrupt(agent.ErrInterrupted)
 	}
-	s.batch.InterruptAll()
 }
 
-// Shutdown kills all active sessions and batch jobs.
+// Shutdown kills all active sessions.
 func (s *SessionStore) Shutdown() {
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.sessions))
@@ -280,7 +260,6 @@ func (s *SessionStore) Shutdown() {
 	for _, id := range ids {
 		s.KillSession(id)
 	}
-	s.batch.Shutdown()
 }
 
 func (s *SessionStore) KillSession(id string) {
@@ -308,7 +287,6 @@ func (s *SessionStore) index() []byte {
 		fmt.Fprintf(&sb, "%s\t%s\t%s\t%s\t%s\n", id, state, cwd, be, model)
 	}
 	s.mu.RUnlock()
-	sb.Write(s.batch.index())
 	return []byte(sb.String())
 }
 
@@ -442,4 +420,48 @@ func (s *SessionStore) renameSession(oldID, newID string) error {
 	sess.AppendLog([]byte(fmt.Sprintf("(session renamed: %s -> %s)\n", oldID, newID)))
 	s.cfg.Log.Info("renamed session %s -> %s", oldID, newID)
 	return nil
+}
+
+// LoadAgentConfig resolves and loads the config for a named agent.
+// Returns nil if the config file does not exist; BuildAgentEnv handles nil configs.
+func LoadAgentConfig(agentsDir, name string, open func(string) (*os.File, error)) *config.Config {
+	if open == nil {
+		open = os.Open
+	}
+	f, err := open(agentsDir + "/" + name + ".json")
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	cfg, _ := config.Load(f)
+	return cfg
+}
+
+// FormatEvent converts an agent Event to bytes for appending to a chat log.
+func FormatEvent(ev agent.Event) []byte {
+	switch ev.Role {
+	case "user":
+		return []byte("user: " + ev.Content + "\n")
+	case "assistant":
+		return []byte(ev.Content)
+	case "call":
+		args := squashWhitespace(ev.Content)
+		return []byte("-> " + ev.Name + "(" + args + ")\n")
+	case "tool":
+		return []byte(strings.TrimRight(ev.Content, "\n") + "\n")
+	case "retry":
+		return []byte("retrying in " + ev.Content + "s...\n")
+	case "error":
+		return []byte("error: " + ev.Content + "\n")
+	case "stalled":
+		return []byte("agent stalled\n")
+	case "info":
+		return []byte(ev.Content)
+	default:
+		return nil
+	}
+}
+
+func squashWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }

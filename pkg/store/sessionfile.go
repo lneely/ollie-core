@@ -23,7 +23,7 @@ var SessionFileList = []struct {
 	{"fifo.out", 0444},
 	{"chat", 0666},
 	{"offset", 0444},
-	{"spec", 0666},
+	{"cfg", 0666},
 	{"statewait", 0444},
 	{"usage", 0444},
 	{"ctxsz", 0444},
@@ -80,8 +80,8 @@ func (h *sessionHelper) fileSpec(name string, mode os.FileMode) FileSpec {
 			}
 			return []byte(item), nil
 		}
-	case "spec":
-		fs.Read = func() ([]byte, error) { return []byte(h.specContent()), nil }
+	case "cfg":
+		fs.Read = func() ([]byte, error) { return []byte(h.cfgContent()), nil }
 	default:
 		fs.Read = func() ([]byte, error) { return []byte(h.content(name)), nil }
 	}
@@ -124,13 +124,13 @@ func (h *sessionHelper) fileSpec(name string, mode os.FileMode) FileSpec {
 			}
 			return h.handleCtl(input)
 		}
-	case "spec":
+	case "cfg":
 		fs.Write = func(data []byte) error {
 			input := strings.TrimSpace(string(data))
 			if input == "" {
 				return nil
 			}
-			return h.handleSpec(input)
+			return h.handleCfg(input)
 		}
 	}
 
@@ -174,7 +174,7 @@ func (h *sessionHelper) content(name string) string {
 	return ""
 }
 
-func (h *sessionHelper) specContent() string {
+func (h *sessionHelper) cfgContent() string {
 	h.sess.mu.RLock()
 	defer h.sess.mu.RUnlock()
 	p := h.sess.Core.GenerationParams()
@@ -184,9 +184,6 @@ func (h *sessionHelper) specContent() string {
 	fmt.Fprintf(&sb, "model=%s\n", h.sess.Core.ModelName())
 	fmt.Fprintf(&sb, "agent=%s\n", h.sess.Core.AgentName())
 	fmt.Fprintf(&sb, "cwd=%s\n", h.sess.Core.CWD())
-	fmt.Fprintf(&sb, "usage=%s\n", h.sess.Core.Usage())
-	fmt.Fprintf(&sb, "ctxsz=%s\n", h.sess.Core.CtxSz())
-	fmt.Fprintf(&sb, "offset=%d\n", h.sess.ChatOffset)
 	fmt.Fprintf(&sb, "maxTokens=%d\n", p.MaxTokens)
 	if p.Temperature != nil {
 		fmt.Fprintf(&sb, "temperature=%g\n", *p.Temperature)
@@ -206,7 +203,7 @@ func (h *sessionHelper) specContent() string {
 	return sb.String()
 }
 
-func (h *sessionHelper) handleSpec(input string) error {
+func (h *sessionHelper) handleCfg(input string) error {
 	p := h.sess.Core.GenerationParams()
 	hasParams := false
 	for _, line := range strings.Split(input, "\n") {
@@ -263,7 +260,7 @@ func (h *sessionHelper) handleSpec(input string) error {
 			} else if f, err := strconv.ParseFloat(v, 64); err == nil {
 				p.PresencePenalty = &f
 			}
-		// state, usage, ctxsz, offset → read-only, silently ignored
+		// state → read-only, silently ignored
 		}
 	}
 	if hasParams {

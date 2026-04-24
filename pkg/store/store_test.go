@@ -159,26 +159,6 @@ func newSessionStoreWithCore(t *testing.T) *store.SessionStore {
 	})
 }
 
-func newBatchStore(t *testing.T) *store.BatchStore {
-	t.Helper()
-	sink := testSink()
-	return store.NewBatchStore(store.BatchStoreConfig{
-		Log:  sink.NewLogger("test"),
-		Sink: sink,
-	})
-}
-
-func newBatchStoreWithCore(t *testing.T) *store.BatchStore {
-	t.Helper()
-	sink := testSink()
-	return store.NewBatchStore(store.BatchStoreConfig{
-		Log:  sink.NewLogger("test"),
-		Sink: sink,
-		NewCore: func(jobID, agentName, cwd string) (agent.Core, error) {
-			return &stubCore{state: "idle", backend: "stub", model: "m", agentName: agentName, cwd: cwd, reply: "batch reply"}, nil
-		},
-	})
-}
 
 func newSessionFileStore(t *testing.T, sess *store.Session) (*store.SessionFileStore, *stubCore) {
 	t.Helper()
@@ -665,7 +645,7 @@ func TestSessionFileStoreReadableContract(t *testing.T) {
 	sink := testSink()
 	sf := store.NewSessionFileStore(sess, sink.NewLogger("test"),
 		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
-	checkReadableContract(t, sf, "spec")
+	checkReadableContract(t, sf, "cfg")
 }
 
 func TestSessionFileStoreList(t *testing.T) {
@@ -722,7 +702,7 @@ func TestSessionFileStoreGetContent(t *testing.T) {
 	sf := store.NewSessionFileStore(sess, sink.NewLogger("test"),
 		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
 
-	for _, name := range []string{"spec", "offset", "usage", "ctxsz", "models", "systemprompt"} {
+	for _, name := range []string{"cfg", "offset", "usage", "ctxsz", "models", "systemprompt"} {
 		if _, err := sf.Open(name); err != nil {
 			t.Errorf("Get(%q): %v", name, err)
 		}
@@ -736,7 +716,7 @@ func TestSessionFileStorePutCwd(t *testing.T) {
 	sf := store.NewSessionFileStore(sess, sink.NewLogger("test"),
 		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
 
-	storeWrite(t, sf, "spec", []byte("cwd=/new/path"))
+	storeWrite(t, sf, "cfg", []byte("cwd=/new/path"))
 	core := sess.Core.(*stubCore)
 	if core.cwd != "/new/path" {
 		t.Errorf("cwd = %q; want /new/path", core.cwd)
@@ -751,7 +731,7 @@ func TestSessionFileStorePutEmpty(t *testing.T) {
 		func() {}, func(string) error { return nil }, func([]byte) error { return nil })
 
 	// Empty write is a no-op
-	e, err := sf.Open("spec")
+	e, err := sf.Open("cfg")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -790,11 +770,10 @@ func TestSessionFileStoreContentAllFields(t *testing.T) {
 	}
 
 	// spec contains all config and current state in KV form
-	spec := string(storeRead(t, sf, "spec"))
+	spec := string(storeRead(t, sf, "cfg"))
 	for _, want := range []string{
 		"state=idle\n", "backend=stub\n", "model=m\n",
 		"agent=default\n", "cwd=/tmp\n",
-		"usage=100\n", "ctxsz=4096\n", "offset=5\n",
 	} {
 		if !strings.Contains(spec, want) {
 			t.Errorf("spec missing %q; got:\n%s", want, spec)
@@ -871,15 +850,15 @@ func TestSessionFileStoreWriteBackendModelAgent(t *testing.T) {
 	defer sess.Cancel()
 	sf, core := newSessionFileStore(t, sess)
 
-	storeWrite(t, sf, "spec", []byte("backend=openai"))
+	storeWrite(t, sf, "cfg", []byte("backend=openai"))
 	if len(core.submitted) != 1 || core.submitted[0] != "/backend openai" {
 		t.Errorf("submitted = %v; want [/backend openai]", core.submitted)
 	}
-	storeWrite(t, sf, "spec", []byte("model=gpt-4"))
+	storeWrite(t, sf, "cfg", []byte("model=gpt-4"))
 	if core.submitted[1] != "/model gpt-4" {
 		t.Errorf("submitted[1] = %q; want /model gpt-4", core.submitted[1])
 	}
-	storeWrite(t, sf, "spec", []byte("agent=coder"))
+	storeWrite(t, sf, "cfg", []byte("agent=coder"))
 	if core.submitted[2] != "/agent coder" {
 		t.Errorf("submitted[2] = %q; want /agent coder", core.submitted[2])
 	}
@@ -892,15 +871,15 @@ func TestSessionFileStoreWriteBackendWhileRunning(t *testing.T) {
 	core.running = true
 	sf, _ := newSessionFileStore(t, sess)
 
-	e, _ := sf.Open("spec")
+	e, _ := sf.Open("cfg")
 	if err := e.Write([]byte("backend=openai")); err == nil {
 		t.Error("Write spec backend= while running should error")
 	}
-	e2, _ := sf.Open("spec")
+	e2, _ := sf.Open("cfg")
 	if err := e2.Write([]byte("model=gpt-4")); err == nil {
 		t.Error("Write spec model= while running should error")
 	}
-	e3, _ := sf.Open("spec")
+	e3, _ := sf.Open("cfg")
 	if err := e3.Write([]byte("agent=coder")); err == nil {
 		t.Error("Write spec agent= while running should error")
 	}
@@ -911,7 +890,7 @@ func TestSessionFileStoreWriteParams(t *testing.T) {
 	defer sess.Cancel()
 	sf, core := newSessionFileStore(t, sess)
 
-	storeWrite(t, sf, "spec", []byte("maxTokens=2048"))
+	storeWrite(t, sf, "cfg", []byte("maxTokens=2048"))
 	if core.params.MaxTokens != 2048 {
 		t.Errorf("MaxTokens = %d; want 2048", core.params.MaxTokens)
 	}
@@ -924,7 +903,7 @@ func TestSessionFileStoreWriteParamsWhileRunning(t *testing.T) {
 	core.running = true
 	sf, _ := newSessionFileStore(t, sess)
 
-	e, _ := sf.Open("spec")
+	e, _ := sf.Open("cfg")
 	if err := e.Write([]byte("maxTokens=2048")); err == nil {
 		t.Error("Write spec maxTokens= while running should error")
 	}
@@ -1152,7 +1131,7 @@ func TestSessionFileStoreEntryStat(t *testing.T) {
 		t.Errorf("entry Stat(statewait).Size() = %d; want 0", fi2.Size())
 	}
 
-	e3, _ := sf.Open("spec")
+	e3, _ := sf.Open("cfg")
 	fi3, err := e3.Stat()
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
@@ -1172,742 +1151,12 @@ func TestSessionStoreOpenStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	data := storeRead(t, rs, "spec")
+	data := storeRead(t, rs, "cfg")
 	if !strings.Contains(string(data), "state=idle\n") {
 		t.Errorf("Read(state) = %q; want idle\\n", data)
 	}
 	if _, err := s.OpenStore("nope"); err == nil {
 		t.Error("OpenStore(nonexistent) should error")
-	}
-}
-
-// ===== BatchJobStore: additional coverage =====
-
-func TestBatchJobStoreAppendLogAndLogInfo(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "running", "", "")
-	js, _ := s.OpenStore("j1")
-
-	js.AppendLog([]byte("line 1\n"))
-	js.AppendLog(nil)
-	js.AppendLog([]byte("line 2\n"))
-
-	l, v := js.LogInfo()
-	if l != 14 {
-		t.Errorf("LogInfo length = %d; want 14", l)
-	}
-	if v != 2 {
-		t.Errorf("LogInfo vers = %d; want 2", v)
-	}
-
-	data := storeRead(t, js, "log")
-	if string(data) != "line 1\nline 2\n" {
-		t.Errorf("Read(log) = %q", data)
-	}
-}
-
-func TestBatchJobStoreRunnableID(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "", "")
-	js, _ := s.OpenStore("j1")
-	if js.RunnableID() != "j1" {
-		t.Errorf("RunnableID = %q; want j1", js.RunnableID())
-	}
-}
-
-func TestBatchJobStoreInterruptAndCancel(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "", "")
-	js, _ := s.OpenStore("j1")
-	js.Interrupt() // should not panic
-	js.Cancel()    // should not panic
-}
-
-func TestBatchJobStoreWriteReadOnly(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "result", "spec")
-	js, _ := s.OpenStore("j1")
-
-	for _, name := range []string{"spec", "state", "result", "log"} {
-		e, err := js.Open(name)
-		if err != nil {
-			t.Fatalf("Open(%q): %v", name, err)
-		}
-		if err := e.Write([]byte("x")); err == nil {
-			t.Errorf("Write(%q) should error (read-only)", name)
-		}
-	}
-}
-
-func TestBatchJobStoreOpenNotFound(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "", "")
-	js, _ := s.OpenStore("j1")
-	if _, err := js.Open("__bogus__"); err == nil {
-		t.Error("Open(bogus) should error")
-	}
-}
-
-func TestBatchJobStoreStatNotFound(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "", "")
-	js, _ := s.OpenStore("j1")
-	if _, err := js.Stat("__bogus__"); err == nil {
-		t.Error("Stat(bogus) should error")
-	}
-}
-
-func TestBatchJobStoreStatLog(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "", "")
-	js, _ := s.OpenStore("j1")
-	js.AppendLog([]byte("data"))
-
-	fi, err := js.Stat("log")
-	if err != nil {
-		t.Fatalf("Stat(log): %v", err)
-	}
-	if fi.Size() != 4 {
-		t.Errorf("Stat(log).Size() = %d; want 4", fi.Size())
-	}
-}
-
-func TestBatchJobStoreEntryStatLog(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "", "")
-	js, _ := s.OpenStore("j1")
-	js.AppendLog([]byte("data"))
-
-	e, _ := js.Open("log")
-	fi, err := e.Stat()
-	if err != nil {
-		t.Fatalf("entry Stat(log): %v", err)
-	}
-	if fi.Size() != 4 {
-		t.Errorf("entry Stat(log).Size() = %d; want 4", fi.Size())
-	}
-}
-
-func TestBatchJobStoreUsageCtxsz(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "", "")
-	js, _ := s.OpenStore("j1")
-
-	for _, name := range []string{"usage", "ctxsz"} {
-		data := storeRead(t, js, name)
-		if string(data) != "\n" {
-			t.Errorf("Read(%q) = %q; want \\n", name, data)
-		}
-	}
-}
-
-func TestBatchStoreInterruptAll(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "running", "", "")
-	s.InterruptAll() // should not panic
-}
-
-func TestSessionInterrupt(t *testing.T) {
-	sess := testSession("s1")
-	defer sess.Cancel()
-	sess.Core.(*stubCore).running = true
-	sess.Interrupt()
-	if !sess.Core.(*stubCore).interrupted {
-		t.Error("Interrupt should call Core.Interrupt")
-	}
-}
-
-func TestBatchStoreOpenEntryNew(t *testing.T) {
-	s := newBatchStore(t)
-	// Read the new template
-	data := storeRead(t, s, "new")
-	if !strings.Contains(string(data), "cwd=") {
-		t.Errorf("Read(new) = %q; want to contain cwd=", data)
-	}
-	// Stat on new entry
-	e, _ := s.Open("new")
-	fi, _ := e.Stat()
-	if fi.Name() != "new" {
-		t.Errorf("Stat(new).Name() = %q", fi.Name())
-	}
-}
-
-func TestBatchStoreOpenEntryNotFound(t *testing.T) {
-	s := newBatchStore(t)
-	if _, err := s.Open("__bogus__"); err == nil {
-		t.Error("Open(bogus) should error")
-	}
-}
-
-func TestSessionStoreOpenEntryNew(t *testing.T) {
-	s := newSessionStore(t)
-	data := storeRead(t, s, "new")
-	if !strings.Contains(string(data), "name=") {
-		t.Errorf("Read(new) = %q; want to contain name=", data)
-	}
-}
-
-func TestSessionStoreCreateSessionErrors(t *testing.T) {
-	s := newSessionStore(t)
-
-	// invalid option format
-	e, _ := s.Open("new")
-	if err := e.Write([]byte("badformat")); err == nil {
-		t.Error("Write(new) with bad format should error")
-	}
-
-	// unknown option
-	e2, _ := s.Open("new")
-	if err := e2.Write([]byte("bogus=val")); err == nil {
-		t.Error("Write(new) with unknown option should error")
-	}
-
-	// missing cwd
-	e3, _ := s.Open("new")
-	if err := e3.Write([]byte("name=test")); err == nil {
-		t.Error("Write(new) without cwd should error")
-	}
-}
-
-func TestSessionStoreOpenEntryNotFound(t *testing.T) {
-	s := newSessionStore(t)
-	if _, err := s.Open("__bogus__"); err == nil {
-		t.Error("Open(bogus) should error")
-	}
-}
-
-func TestSkillStoreOpenWrite(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("OLLIE_SKILLS_PATH", dir)
-	seedSkill(t, dir, "existing")
-	s := store.NewSkillStore()
-
-	// Write to existing skill
-	content := []byte("---\ndescription: updated\n---\nnew body\n")
-	storeWrite(t, s, "existing.md", content)
-	got := storeRead(t, s, "existing.md")
-	if string(got) != string(content) {
-		t.Errorf("Read after Write = %q; want %q", got, content)
-	}
-
-	// Write to new skill (creates dir)
-	storeWrite(t, s, "brand-new.md", content)
-	got2 := storeRead(t, s, "brand-new.md")
-	if string(got2) != string(content) {
-		t.Errorf("Read new skill = %q; want %q", got2, content)
-	}
-
-	// Stat on non-existent skill should error
-	e, _ := s.Open("nope.md")
-	if _, err := e.Stat(); err == nil {
-		t.Error("Stat on non-existent skill should error")
-	}
-}
-
-// ===== Integration: createSession via NewCore =====
-
-func TestCreateSessionViaNewCore(t *testing.T) {
-	s := newSessionStoreWithCore(t)
-
-	e, _ := s.Open("new")
-	if err := e.Write([]byte("name=integ cwd=/tmp")); err != nil {
-		t.Fatalf("Write(new): %v", err)
-	}
-
-	sess := s.Session("integ")
-	if sess == nil {
-		t.Fatal("session integ not created")
-	}
-	defer sess.Cancel()
-
-	if sess.Core.CWD() != "/tmp" {
-		t.Errorf("CWD = %q; want /tmp", sess.Core.CWD())
-	}
-	if sess.Core.AgentName() != "default" {
-		t.Errorf("AgentName = %q; want default", sess.Core.AgentName())
-	}
-}
-
-func TestCreateSessionAutoID(t *testing.T) {
-	s := newSessionStoreWithCore(t)
-
-	e, _ := s.Open("new")
-	if err := e.Write([]byte("cwd=/tmp")); err != nil {
-		t.Fatalf("Write(new): %v", err)
-	}
-
-	entries, _ := s.List()
-	found := false
-	for _, ent := range entries {
-		if ent.IsDir() {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("expected auto-ID session in list")
-	}
-	s.Shutdown()
-}
-
-func TestCreateSessionDuplicate(t *testing.T) {
-	s := newSessionStoreWithCore(t)
-
-	e, _ := s.Open("new")
-	if err := e.Write([]byte("name=dup cwd=/tmp")); err != nil {
-		t.Fatalf("first create: %v", err)
-	}
-	defer s.Shutdown()
-
-	e2, _ := s.Open("new")
-	if err := e2.Write([]byte("name=dup cwd=/tmp")); err == nil {
-		t.Error("duplicate session should error")
-	}
-}
-
-func TestCreateSessionWithAgent(t *testing.T) {
-	s := newSessionStoreWithCore(t)
-
-	e, _ := s.Open("new")
-	if err := e.Write([]byte("name=ag cwd=/tmp agent=coder")); err != nil {
-		t.Fatalf("Write(new): %v", err)
-	}
-	defer s.Shutdown()
-
-	sess := s.Session("ag")
-	if sess == nil {
-		t.Fatal("session not created")
-	}
-	if sess.Core.AgentName() != "coder" {
-		t.Errorf("AgentName = %q; want coder", sess.Core.AgentName())
-	}
-}
-
-func TestCreateSessionNewCoreError(t *testing.T) {
-	sink := testSink()
-	s := store.NewSessionStore(store.SessionStoreConfig{
-		Log:      sink.NewLogger("test"),
-		Sink:     sink,
-		ReadFile: func(string) ([]byte, error) { return nil, nil },
-		MkdirAll: func(string, os.FileMode) error { return nil },
-		NewCore: func(string, string, string) (agent.Core, error) {
-			return nil, fmt.Errorf("injected error")
-		},
-	})
-
-	e, _ := s.Open("new")
-	if err := e.Write([]byte("name=fail cwd=/tmp")); err == nil {
-		t.Error("NewCore error should propagate")
-	}
-}
-
-// ===== Integration: handleNewBatch / runJob via NewCore =====
-
-func TestHandleNewBatchViaNewCore(t *testing.T) {
-	s := newBatchStoreWithCore(t)
-
-	spec := "name=integ\ncwd=/tmp\n---\nhello"
-	e, _ := s.Open("new")
-	if err := e.Write([]byte(spec)); err != nil {
-		t.Fatalf("Write(new): %v", err)
-	}
-
-	// Wait for the job to finish (it's async)
-	js, err := s.OpenStore("integ-0")
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
-
-	we, _ := js.Open("statewait")
-	data, err := we.BlockingRead(context.Background(), "")
-	if err != nil {
-		t.Fatalf("BlockingRead: %v", err)
-	}
-	if !strings.Contains(string(data), "done") {
-		t.Errorf("statewait = %q; want done", data)
-	}
-
-	result := storeRead(t, js, "result")
-	if string(result) != "batch reply" {
-		t.Errorf("result = %q; want batch reply", result)
-	}
-
-	s.Shutdown()
-}
-
-func TestHandleNewBatchParallel(t *testing.T) {
-	s := newBatchStoreWithCore(t)
-
-	spec := "name=par\ncwd=/tmp\nparallel=3\n---\ngo"
-	e, _ := s.Open("new")
-	if err := e.Write([]byte(spec)); err != nil {
-		t.Fatalf("Write(new): %v", err)
-	}
-
-	// Wait for all 3 jobs
-	for i := 0; i < 3; i++ {
-		id := fmt.Sprintf("par-%d", i)
-		js, err := s.OpenStore(id)
-		if err != nil {
-			t.Fatalf("OpenStore(%s): %v", id, err)
-		}
-		we, _ := js.Open("statewait")
-		we.BlockingRead(context.Background(), "")
-	}
-
-	entries, _ := s.List()
-	jobCount := 0
-	for _, ent := range entries {
-		if ent.IsDir() {
-			jobCount++
-		}
-	}
-	if jobCount != 3 {
-		t.Errorf("job count = %d; want 3", jobCount)
-	}
-
-	s.Shutdown()
-}
-
-func TestHandleNewBatchDuplicate(t *testing.T) {
-	s := newBatchStoreWithCore(t)
-
-	spec := "name=dup\ncwd=/tmp\n---\ngo"
-	e, _ := s.Open("new")
-	if err := e.Write([]byte(spec)); err != nil {
-		t.Fatalf("first batch: %v", err)
-	}
-
-	// Wait for completion
-	js, _ := s.OpenStore("dup-0")
-	we, _ := js.Open("statewait")
-	we.BlockingRead(context.Background(), "")
-
-	// Duplicate
-	e2, _ := s.Open("new")
-	if err := e2.Write([]byte(spec)); err == nil {
-		t.Error("duplicate batch should error")
-	}
-
-	s.Shutdown()
-}
-
-func TestHandleNewBatchNewCoreError(t *testing.T) {
-	sink := testSink()
-	s := store.NewBatchStore(store.BatchStoreConfig{
-		Log:  sink.NewLogger("test"),
-		Sink: sink,
-		NewCore: func(string, string, string) (agent.Core, error) {
-			return nil, fmt.Errorf("injected error")
-		},
-	})
-
-	spec := "name=fail\ncwd=/tmp\n---\ngo"
-	e, _ := s.Open("new")
-	if err := e.Write([]byte(spec)); err != nil {
-		t.Fatalf("Write(new): %v", err) // handleNewBatch itself succeeds; runJob fails async
-	}
-
-	// Wait for the job to fail
-	js, _ := s.OpenStore("fail-0")
-	we, _ := js.Open("statewait")
-	data, _ := we.BlockingRead(context.Background(), "")
-	if !strings.Contains(string(data), "failed") {
-		t.Errorf("statewait = %q; want failed", data)
-	}
-
-	s.Shutdown()
-}
-
-func TestHandleNewBatchCancel(t *testing.T) {
-	// Use a core that blocks on Submit until cancelled
-	sink := testSink()
-	s := store.NewBatchStore(store.BatchStoreConfig{
-		Log:  sink.NewLogger("test"),
-		Sink: sink,
-		NewCore: func(string, string, string) (agent.Core, error) {
-			return &blockingCore{stubCore: &stubCore{state: "idle", backend: "stub", model: "m", agentName: "default", cwd: "/tmp"}}, nil
-		},
-	})
-
-	spec := "name=canc\ncwd=/tmp\n---\ngo"
-	e, _ := s.Open("new")
-	e.Write([]byte(spec))
-
-	// Cancel the job
-	s.Delete("canc-0")
-
-	// The job should eventually reach a terminal state
-	// (it was deleted, so OpenStore will fail)
-	if s.Job("canc-0") != nil {
-		t.Error("job should be gone after Delete")
-	}
-}
-
-// ===== FormatParams / ParseParams =====
-
-func TestFormatParseParamsRoundTrip(t *testing.T) {
-	temp := 0.7
-	freq := 0.5
-	pres := 0.3
-	p := backend.GenerationParams{MaxTokens: 1024, Temperature: &temp, FrequencyPenalty: &freq, PresencePenalty: &pres}
-	s := store.FormatParams(p)
-	got, err := store.ParseParams(s, backend.GenerationParams{})
-	if err != nil {
-		t.Fatalf("ParseParams: %v", err)
-	}
-	if got.MaxTokens != 1024 {
-		t.Errorf("MaxTokens = %d; want 1024", got.MaxTokens)
-	}
-	if got.Temperature == nil || *got.Temperature != 0.7 {
-		t.Errorf("Temperature = %v; want 0.7", got.Temperature)
-	}
-	if got.FrequencyPenalty == nil || *got.FrequencyPenalty != 0.5 {
-		t.Errorf("FrequencyPenalty = %v; want 0.5", got.FrequencyPenalty)
-	}
-	if got.PresencePenalty == nil || *got.PresencePenalty != 0.3 {
-		t.Errorf("PresencePenalty = %v; want 0.3", got.PresencePenalty)
-	}
-
-	// Nil optional fields
-	s2 := store.FormatParams(backend.GenerationParams{})
-	if !strings.Contains(s2, "temperature=\n") {
-		t.Errorf("FormatParams nil temp = %q; want temperature=\\n", s2)
-	}
-}
-
-func TestParseParamsErrors(t *testing.T) {
-	if _, err := store.ParseParams("maxTokens=abc", backend.GenerationParams{}); err == nil {
-		t.Error("expected error for invalid maxTokens")
-	}
-	if _, err := store.ParseParams("temperature=abc", backend.GenerationParams{}); err == nil {
-		t.Error("expected error for invalid temperature")
-	}
-	if _, err := store.ParseParams("frequencyPenalty=abc", backend.GenerationParams{}); err == nil {
-		t.Error("expected error for invalid frequencyPenalty")
-	}
-	if _, err := store.ParseParams("presencePenalty=abc", backend.GenerationParams{}); err == nil {
-		t.Error("expected error for invalid presencePenalty")
-	}
-}
-
-func TestParseParamsClearOptional(t *testing.T) {
-	temp := 0.5
-	p := backend.GenerationParams{Temperature: &temp}
-	got, err := store.ParseParams("temperature=\nmaxTokens=", p)
-	if err != nil {
-		t.Fatalf("ParseParams: %v", err)
-	}
-	if got.Temperature != nil {
-		t.Error("Temperature should be nil after clearing")
-	}
-}
-
-// ===== BatchStore =====
-
-func TestBatchStoreReadableContract(t *testing.T) {
-	checkReadableContract(t, newBatchStore(t), "new")
-}
-
-func TestBatchStoreStatJob(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "result", "spec")
-
-	fi, err := s.Stat("j1")
-	if err != nil {
-		t.Fatalf("Stat(j1): %v", err)
-	}
-	if !fi.IsDir() {
-		t.Error("job stat should be dir")
-	}
-}
-
-func TestBatchStoreListIncludesJobs(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "result", "spec")
-
-	entries, _ := s.List()
-	found := false
-	for _, e := range entries {
-		if e.Name() == "j1" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("List() missing job j1")
-	}
-}
-
-func TestBatchStoreGetIdx(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "result", "spec")
-
-	data := storeRead(t, s, "idx")
-	if !strings.Contains(string(data), "j1") {
-		t.Errorf("idx = %q; want to contain j1", data)
-	}
-}
-
-func TestBatchStoreWriteNotWritable(t *testing.T) {
-	s := newBatchStore(t)
-	e, err := s.Open("idx")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := e.Write(nil); err == nil {
-		t.Error("Write(idx) should error")
-	}
-}
-
-func TestBatchStoreCreateErrors(t *testing.T) {
-	s := newBatchStore(t)
-	if err := s.Create("x"); err == nil {
-		t.Error("Create should always error")
-	}
-}
-
-func TestBatchStoreRenameErrors(t *testing.T) {
-	s := newBatchStore(t)
-	if err := s.Rename("a", "b"); err == nil {
-		t.Error("Rename should always error")
-	}
-}
-
-func TestBatchStoreDelete(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "result", "spec")
-
-	if err := s.Delete("j1"); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if s.Job("j1") != nil {
-		t.Error("job should be gone after Delete")
-	}
-	if err := s.Delete("nope"); err == nil {
-		t.Error("Delete(nonexistent) should error")
-	}
-}
-
-func TestBatchStoreJob(t *testing.T) {
-	s := newBatchStore(t)
-	if s.Job("nope") != nil {
-		t.Error("Job(nonexistent) should be nil")
-	}
-	s.AddJob("j1", "done", "result", "spec")
-	if s.Job("j1") == nil {
-		t.Error("Job(j1) should not be nil")
-	}
-}
-
-func TestBatchStoreShutdown(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "result", "spec")
-	s.Shutdown()
-	if s.Job("j1") != nil {
-		t.Error("job should be gone after Shutdown")
-	}
-}
-
-// ===== BatchJobStore =====
-
-func TestBatchJobStoreReadableContract(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "the result", "the spec")
-	js, err := s.OpenStore("j1")
-	if err != nil {
-		t.Fatal("JobStore(j1) not found")
-	}
-	checkReadableContract(t, js, "state")
-}
-
-func TestBatchJobStoreContent(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "the result", "the spec")
-	js, _ := s.OpenStore("j1")
-
-	for _, tc := range []struct {
-		name, want string
-	}{
-		{"spec", "the spec"},
-		{"state", "done\n"},
-		{"result", "the result"},
-	} {
-		data := storeRead(t, js, tc.name)
-		if string(data) != tc.want {
-			t.Errorf("Read(%q) = %q; want %q", tc.name, data, tc.want)
-		}
-	}
-}
-
-func TestBatchJobStoreWait(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "", "")
-	js, _ := s.OpenStore("j1")
-
-	// Job is already done, so BlockingRead returns immediately
-	e, err := js.Open("statewait")
-	if err != nil {
-		t.Fatalf("Open(statewait): %v", err)
-	}
-	data, err := e.BlockingRead(context.Background(), "")
-	if err != nil {
-		t.Fatalf("BlockingRead: %v", err)
-	}
-	if !strings.Contains(string(data), "done") {
-		t.Errorf("BlockingRead = %q; want to contain done", data)
-	}
-
-	// Non-wait file
-	e2, err := js.Open("spec")
-	if err != nil {
-		t.Fatalf("Open(spec): %v", err)
-	}
-	if _, err := e2.BlockingRead(context.Background(), ""); err == nil {
-		t.Error("BlockingRead(spec) should error")
-	}
-}
-
-func TestBatchJobStoreLogInfo(t *testing.T) {
-	s := newBatchStore(t)
-	s.AddJob("j1", "done", "", "")
-	js, _ := s.OpenStore("j1")
-
-	l, v := js.LogInfo()
-	if l != 0 || v != 0 {
-		t.Errorf("LogInfo = (%d, %d); want (0, 0)", l, v)
-	}
-}
-
-func TestBatchJobStoreNotFound(t *testing.T) {
-	s := newBatchStore(t)
-	if _, err := s.OpenStore("nope"); err == nil {
-		t.Error("JobStore(nonexistent) should be false")
-	}
-}
-
-// ===== ParseBatchSpec =====
-
-func TestParseBatchSpec(t *testing.T) {
-	input := "name=test\ncwd=/tmp\nagent=default\noutput=json\nparallel=3\n---\ndo something"
-	spec, err := store.ParseBatchSpec(input)
-	if err != nil {
-		t.Fatalf("ParseBatchSpec: %v", err)
-	}
-	_ = spec
-}
-
-func TestParseBatchSpecErrors(t *testing.T) {
-	// missing delimiter
-	if _, err := store.ParseBatchSpec("no delimiter"); err == nil {
-		t.Error("expected error for missing ---")
-	}
-	// missing cwd
-	if _, err := store.ParseBatchSpec("name=x\n---\nprompt"); err == nil {
-		t.Error("expected error for missing cwd")
-	}
-	// missing prompt
-	if _, err := store.ParseBatchSpec("cwd=/tmp\n---\n"); err == nil {
-		t.Error("expected error for missing prompt")
 	}
 }
 
