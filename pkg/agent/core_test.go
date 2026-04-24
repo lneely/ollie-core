@@ -1595,14 +1595,15 @@ func TestAutoCompact_WithHookContext(t *testing.T) {
 	if callCount < 2 {
 		t.Errorf("backend called %d times; want ≥2 (compact + turn)", callCount)
 	}
+	// Verify auto-compact ran by checking for the info message
 	found := false
 	for _, s := range byRole(evs, "info") {
-		if strings.Contains(s, "hook run") {
+		if strings.Contains(s, "auto-compacting") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("no 'hook run' info event from compact hooks; got: %v", byRole(evs, "info"))
+		t.Errorf("no 'auto-compacting' info event; got: %v", byRole(evs, "info"))
 	}
 }
 

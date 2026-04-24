@@ -1022,8 +1022,9 @@ func TestSessionFileStoreBlockingReadCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BlockingRead error: %v", err)
 	}
-	if data != nil {
-		t.Errorf("BlockingRead cancelled = %q; want nil", data)
+	// On cancel/timeout, returns current state instead of nil
+	if string(data) != "idle\n" {
+		t.Errorf("BlockingRead cancelled = %q; want idle\\n", data)
 	}
 }
 
@@ -1064,20 +1065,19 @@ func TestSessionFileStoreBlockingReadAllWaitFiles(t *testing.T) {
 	}
 }
 
-func TestSessionFileStoreBlockingReadIdleImmediate(t *testing.T) {
-	// When state is already "idle" and base="", statewait returns immediately
-	// to prevent wait loops from blocking forever.
+func TestSessionFileStoreBlockingReadIdleTimeout(t *testing.T) {
+	// When state doesn't change, timeout returns current state
 	core := &stubCore{state: "idle", backend: "stub", model: "m", agentName: "default", cwd: "/tmp"}
-	ctx, cancel := context.WithCancel(context.Background())
-	sess := store.NewSession("s1", core, ctx, cancel)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
+	sess := store.NewSession("s1", core, ctx, cancel)
 	sf, _ := newSessionFileStore(t, sess)
 
 	e, err := sf.Open("statewait")
 	if err != nil {
 		t.Fatalf("Open(statewait): %v", err)
 	}
-	data, err := e.BlockingRead(context.Background(), "")
+	data, err := e.BlockingRead(ctx, "")
 	if err != nil {
 		t.Fatalf("BlockingRead: %v", err)
 	}
@@ -1156,8 +1156,9 @@ func TestSessionFileStoreEntryStat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if fi2.Size() != 0 {
-		t.Errorf("entry Stat(statewait).Size() = %d; want 0", fi2.Size())
+	// Wait files report non-zero size so FUSE clients attempt to read
+	if fi2.Size() == 0 {
+		t.Error("entry Stat(statewait).Size() = 0; want non-zero for wait files")
 	}
 
 	e3, _ := sf.Open("cfg")
