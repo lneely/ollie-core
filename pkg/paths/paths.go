@@ -1,6 +1,19 @@
 package paths
 
-import "os"
+import (
+	"os"
+	"strings"
+)
+
+// ExpandHome replaces a leading "~" or "~/" with the user's home directory.
+func ExpandHome(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, _ := os.UserHomeDir(); home != "" {
+			return home + path[1:]
+		}
+	}
+	return path
+}
 
 // CfgDir returns the ollie config root from OLLIE_CFG_PATH, defaulting to ~/.config/ollie.
 func CfgDir() string {

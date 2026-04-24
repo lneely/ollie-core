@@ -311,7 +311,7 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		agentsDir:       cfg.AgentsDir,
 		sessionsDir:     cfg.SessionsDir,
 		sessionID:       cfg.SessionID,
-		cwd:             cfg.CWD,
+		cwd:             paths.ExpandHome(cfg.CWD),
 		agentPrompt:     cfg.Env.agentPrompt,
 		startupMessages: cfg.Env.Messages,
 		dispatcher:      cfg.Env.dispatcher,
@@ -427,6 +427,7 @@ func (s *agentCore) CWD() string {
 // system prompt. Returns an error if the path does not exist.
 func (s *agentCore) SetCWD(dir string) error {
 	s.log.Debug("SetCWD(%q)", dir)
+	dir = paths.ExpandHome(dir)
 	if dir != "" {
 		if _, err := os.Stat(dir); err != nil {
 			return fmt.Errorf("cwd: %w", err)

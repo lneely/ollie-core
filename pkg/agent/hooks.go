@@ -11,6 +11,7 @@ import (
 	"time"
 
 	olog "ollie/pkg/log"
+	"ollie/pkg/paths"
 )
 
 // Hook name constants for well-known agent lifecycle events.
@@ -88,7 +89,7 @@ func runHookCmd(ctx context.Context, name, cmdStr string, payloadJSON []byte, cw
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
 	cmd.Stdin = bytes.NewReader(payloadJSON)
 	if cwd != "" {
-		cmd.Dir = cwd
+		cmd.Dir = paths.ExpandHome(cwd)
 	}
 
 	var stdout, stderr bytes.Buffer

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ollie/internal/sandbox"
+	"ollie/pkg/paths"
 	"ollie/pkg/tools"
 )
 
@@ -133,12 +134,12 @@ func (e *Server) CallTool(ctx context.Context, tool string, args json.RawMessage
 }
 
 // New creates a new Server with the given working directory.
-func New(cwd string) *Server { return &Server{cwd: cwd} }
+func New(cwd string) *Server { return &Server{cwd: paths.ExpandHome(cwd)} }
 
 // SetCWD updates the working directory used for subsequent command executions.
 func (e *Server) SetCWD(dir string) {
 	e.wdMu.Lock()
-	e.cwd = dir
+	e.cwd = paths.ExpandHome(dir)
 	e.wdMu.Unlock()
 }
 

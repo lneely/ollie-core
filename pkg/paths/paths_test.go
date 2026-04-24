@@ -34,3 +34,20 @@ func TestDataDirDefault(t *testing.T) {
 		t.Errorf("DataDir() = %q; want %s/.local/share/ollie", got, home)
 	}
 }
+
+func TestExpandHome(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	tests := []struct{ in, want string }{
+		{"~", home},
+		{"~/src", home + "/src"},
+		{"/abs/path", "/abs/path"},
+		{"relative", "relative"},
+		{"~user/foo", "~user/foo"}, // only bare ~ is expanded
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := ExpandHome(tt.in); got != tt.want {
+			t.Errorf("ExpandHome(%q) = %q; want %q", tt.in, got, tt.want)
+		}
+	}
+}
