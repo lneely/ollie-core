@@ -417,7 +417,7 @@ func (s *SessionStore) renameSession(oldID, newID string) error {
 		s.cfg.OnRename(oldID, newID)
 	}
 
-	sess.AppendLog([]byte(fmt.Sprintf("(session renamed: %s -> %s)\n", oldID, newID)))
+	sess.AppendLog([]byte(fmt.Sprintf(":: session renamed: %s -> %s\n", oldID, newID)))
 	s.cfg.Log.Info("renamed session %s -> %s", oldID, newID)
 	return nil
 }
@@ -456,7 +456,7 @@ func FormatEvent(ev agent.Event) []byte {
 	case "stalled":
 		return []byte("agent stalled\n")
 	case "info":
-		return []byte(ev.Content)
+		return []byte(":: " + ev.Content)
 	default:
 		return nil
 	}

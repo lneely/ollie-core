@@ -1221,7 +1221,7 @@ func TestFormatEvent(t *testing.T) {
 		{agent.Event{Role: "tool", Content: "result\n"}, "result\n"},
 		{agent.Event{Role: "retry", Content: "5"}, "retrying in 5s...\n"},
 		{agent.Event{Role: "stalled"}, "agent stalled\n"},
-		{agent.Event{Role: "info", Content: "note"}, "note"},
+		{agent.Event{Role: "info", Content: "note"}, ":: note"},
 		{agent.Event{Role: "unknown"}, ""},
 	} {
 		got := string(store.FormatEvent(tc.ev))
