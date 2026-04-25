@@ -825,6 +825,9 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 	if stopResult.Warning != "" {
 		handler(infoEvent(stopResult.Warning))
 	}
+	if !stopResult.Blocked && stopResult.Context != "" && s.session != nil {
+		s.session.appendUserMessage(stopResult.Context)
+	}
 
 	s.saveSession()
 
