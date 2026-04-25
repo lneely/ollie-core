@@ -18,6 +18,7 @@ var managed = []string{
 	"OLLIE_MEMORY_PATH",
 	"OLLIE_TMP_PATH",
 	"OLLIE_TRANSCRIPT_PATH",
+	"OLLIE_ELEVATE_SOCKET",
 	"SUPERPOWERD_SESSION_TOKEN",
 	"SUPERPOWERD_SOCKET_DIR",
 }
@@ -26,13 +27,18 @@ var managed = []string{
 // in the process environment.
 func EnsureDefaults() {
 	home, _ := os.UserHomeDir()
+	xdgRuntime := os.Getenv("XDG_RUNTIME_DIR")
+	if xdgRuntime == "" {
+		xdgRuntime = fmt.Sprintf("/run/user/%d", os.Getuid())
+	}
 	defaults := map[string]string{
-		"OLLIE":                 filepath.Join(home, "mnt", "ollie"),
-		"OLLIE_TOOLS_PATH":      filepath.Join(home, ".config", "ollie", "tools"),
-		"OLLIE_SKILLS_PATH":     filepath.Join(home, ".config", "ollie", "skills"),
-		"OLLIE_MEMORY_PATH":     filepath.Join(home, ".config", "ollie", "memory"),
-		"OLLIE_TMP_PATH":        filepath.Join(home, ".local", "share", "ollie", "tmp"),
-		"OLLIE_TRANSCRIPT_PATH": filepath.Join(home, ".config", "ollie", "transcript"),
+		"OLLIE":                  filepath.Join(home, "mnt", "ollie"),
+		"OLLIE_TOOLS_PATH":       filepath.Join(home, ".config", "ollie", "tools"),
+		"OLLIE_SKILLS_PATH":      filepath.Join(home, ".config", "ollie", "skills"),
+		"OLLIE_MEMORY_PATH":      filepath.Join(home, ".config", "ollie", "memory"),
+		"OLLIE_TMP_PATH":         filepath.Join(home, ".local", "share", "ollie", "tmp"),
+		"OLLIE_TRANSCRIPT_PATH":  filepath.Join(home, ".config", "ollie", "transcript"),
+		"OLLIE_ELEVATE_SOCKET":   filepath.Join(xdgRuntime, "ollie", "elevate.sock"),
 	}
 	for k, v := range defaults {
 		if os.Getenv(k) == "" {
