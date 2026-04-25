@@ -10,9 +10,9 @@ import (
 	olog "ollie/pkg/log"
 )
 
-// newTestCore returns a minimal agentCore with changeCond wired up.
-func newTestCore(initialState string) *agentCore {
-	a := &agentCore{
+// newTestCore returns a minimal agent with changeCond wired up.
+func newTestCore(initialState string) *agent {
+	a := &agent{
 		state: initialState,
 		log:   olog.NewWriter("test", olog.LevelError+1, io.Discard, io.Discard),
 	}

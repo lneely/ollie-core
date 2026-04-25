@@ -30,7 +30,7 @@ type AgentEnv struct {
 	tools        []backend.Tool
 	exec         toolExecutor
 	Hooks        Hooks
-	systemPrompt string
+	preamble string
 	agentPrompt  string // agent-specific suffix appended after the base system prompt
 	genParams    backend.GenerationParams
 	Messages     []string
@@ -83,15 +83,7 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 	if err != nil {
 		panic(fmt.Sprintf("loadSystemPrompt: %s: %v", path, err))
 	}
-	base := expandSystemPrompt(string(data), cwd)
-	sp := base
-	if agentPrompt != "" {
-		if sp != "" {
-			sp = sp + "\n\n" + agentPrompt
-		} else {
-			sp = agentPrompt
-		}
-	}
+	preamble := expandSystemPrompt(string(data), cwd)
 
 	exec := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
 		server, ok := serverOf[name]
@@ -110,12 +102,12 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 	}
 
 	return AgentEnv{
-		dispatcher:   d,
-		tools:        allTools,
-		exec:         exec,
-		Hooks:        hooks,
-		systemPrompt: sp,
-		agentPrompt:  agentPrompt,
+		dispatcher:  d,
+		tools:       allTools,
+		exec:        exec,
+		Hooks:       hooks,
+		preamble:    preamble,
+		agentPrompt: agentPrompt,
 		genParams:    genParams,
 		Messages:     messages,
 	}
@@ -178,7 +170,7 @@ type actionHandle struct {
 	cancel context.CancelCauseFunc
 }
 
-// AgentCoreConfig is the configuration for creating an agentCore.
+// AgentCoreConfig is the configuration for creating an agent.
 type AgentCoreConfig struct {
 	Backend       backend.Backend
 	ModelName     string // if non-empty, overrides backend's default model
@@ -194,11 +186,11 @@ type AgentCoreConfig struct {
 	Log           *olog.Logger                     // if nil, logging is disabled
 }
 
-// agentCore is the Core implementation. It owns all agent and session state
+// agent is the Core implementation. It owns all agent and session state
 // but has no knowledge of how output is rendered.
-type agentCore struct {
+type agent struct {
 	session         *Session
-	loopcfg         loopConfig
+	cfg agentConfig
 	hooks           Hooks
 	log             *olog.Logger
 	agentName       string
@@ -211,7 +203,6 @@ type agentCore struct {
 	cwd             string
 	agentPrompt      string // agent-specific prompt suffix; kept for system prompt rebuilds
 	startupMessages  []string
-	agentSpawnFired  bool
 	currentAction   atomic.Pointer[actionHandle]
 	fifo            PromptFIFO
 	pendingInject   atomic.Pointer[string]
@@ -225,7 +216,7 @@ type agentCore struct {
 }
 
 // SetEnv stores a session-scoped variable and propagates it to the execute server.
-func (s *agentCore) SetEnv(key, value string) {
+func (s *agent) SetEnv(key, value string) {
 	s.envMu.Lock()
 	if s.env == nil {
 		s.env = make(map[string]string)
@@ -243,7 +234,7 @@ func (s *agentCore) SetEnv(key, value string) {
 }
 
 // pushSessionEnv injects OLLIE_SESSION_ID into the execute server subprocess env.
-func (s *agentCore) pushSessionEnv() {
+func (s *agent) pushSessionEnv() {
 	if s.dispatcher == nil || s.sessionID == "" {
 		return
 	}
@@ -254,7 +245,7 @@ func (s *agentCore) pushSessionEnv() {
 	}
 }
 
-var _ Core = (*agentCore)(nil) // compile-time interface check
+var _ Core = (*agent)(nil) // compile-time interface check
 
 var sweepTmpOnce sync.Once
 
@@ -277,7 +268,7 @@ func sweepStaleTmpDirs() {
 	})
 }
 
-// NewAgentCore creates an agentCore from the given configuration.
+// NewAgentCore creates an agent from the given configuration.
 func NewAgentCore(cfg AgentCoreConfig) Core {
 	sweepStaleTmpDirs()
 	if cfg.ModelName != "" {
@@ -286,9 +277,9 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 	if cfg.NewBackend == nil {
 		cfg.NewBackend = backend.NewWithName
 	}
-	loopcfg := loopConfig{
+	run := agentConfig{
 		Backend:          cfg.Backend,
-		systemPrompt:     cfg.Env.systemPrompt,
+		preamble:     cfg.Env.preamble,
 		Tools:            cfg.Env.tools,
 		Exec:             cfg.Env.exec,
 		GenerationParams: cfg.Env.genParams,
@@ -302,9 +293,9 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		log = olog.NewWriter("core", olog.LevelError+1, io.Discard, io.Discard)
 	}
 
-	a := &agentCore{
+	a := &agent{
 		session:         cfg.Session,
-		loopcfg:         loopcfg,
+		cfg:         run,
 		hooks:           cfg.Env.Hooks,
 		log:             log,
 		agentName:       cfg.AgentName,
@@ -325,36 +316,36 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 }
 
 // Close releases resources for this session, including its tmpdir.
-func (s *agentCore) Close() {
+func (s *agent) Close() {
 	s.log.Debug("Close() session=%q", s.sessionID)
 	if s.sessionID != "" {
 		os.RemoveAll(filepath.Join(ollieTmpDir(), s.sessionID)) //nolint:errcheck
 	}
 }
 
-func (s *agentCore) AgentName() string {
+func (s *agent) AgentName() string {
 	v := s.agentName
 	s.log.Debug("AgentName() = %q", v)
 	return v
 }
-func (s *agentCore) BackendName() string {
-	v := s.loopcfg.Backend.Name()
+func (s *agent) BackendName() string {
+	v := s.cfg.Backend.Name()
 	s.log.Debug("BackendName() = %q", v)
 	return v
 }
-func (s *agentCore) ModelName() string {
-	v := s.loopcfg.Backend.Model()
+func (s *agent) ModelName() string {
+	v := s.cfg.Backend.Model()
 	s.log.Debug("ModelName() = %q", v)
 	return v
 }
 
-func (s *agentCore) State() string {
+func (s *agent) State() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.state
 }
 
-func (s *agentCore) notifyChange() {
+func (s *agent) notifyChange() {
 	s.changeMu.Lock()
 	s.changeCond.Broadcast()
 	s.changeMu.Unlock()
@@ -362,7 +353,7 @@ func (s *agentCore) notifyChange() {
 
 // WaitChange blocks until the named field changes from current, then returns
 // the new value. Returns ("", false) if ctx is cancelled.
-func (s *agentCore) WaitChange(ctx context.Context, field, current string) (string, bool) {
+func (s *agent) WaitChange(ctx context.Context, field, current string) (string, bool) {
 	read := func() string {
 		switch field {
 		case WatchState:
@@ -397,7 +388,7 @@ func (s *agentCore) WaitChange(ctx context.Context, field, current string) (stri
 	return "", false
 }
 
-func (s *agentCore) setState(state string) {
+func (s *agent) setState(state string) {
 	s.mu.Lock()
 	s.state = state
 	s.mu.Unlock()
@@ -405,7 +396,7 @@ func (s *agentCore) setState(state string) {
 	s.notifyChange()
 }
 
-func (s *agentCore) Reply() string {
+func (s *agent) Reply() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	s.log.Debug("Reply() len=%d", len(s.reply))
@@ -413,7 +404,7 @@ func (s *agentCore) Reply() string {
 }
 
 // CWD returns the current working directory for tool execution.
-func (s *agentCore) CWD() string {
+func (s *agent) CWD() string {
 	if s.cwd != "" {
 		s.log.Debug("CWD() = %q", s.cwd)
 		return s.cwd
@@ -425,7 +416,7 @@ func (s *agentCore) CWD() string {
 
 // SetCWD changes the working directory for tool execution and updates the
 // system prompt. Returns an error if the path does not exist.
-func (s *agentCore) SetCWD(dir string) error {
+func (s *agent) SetCWD(dir string) error {
 	s.log.Debug("SetCWD(%q)", dir)
 	dir = paths.ExpandHome(dir)
 	if dir != "" {
@@ -448,7 +439,7 @@ func (s *agentCore) SetCWD(dir string) error {
 
 // SetSessionID renames the session. It updates the in-memory ID, renames
 // persisted files on disk, and propagates to the execute server env.
-func (s *agentCore) SetSessionID(newID string) error {
+func (s *agent) SetSessionID(newID string) error {
 	s.log.Debug("SetSessionID(%q) old=%q", newID, s.sessionID)
 	oldID := s.sessionID
 	if oldID == newID {
@@ -484,40 +475,37 @@ const defaultContextLength = 128000
 // autoCompactLimit returns the token threshold for auto-compaction.
 // Uses 75% of the model's context length, reserving room for output and the
 // compaction prompt.
-func (s *agentCore) autoCompactLimit(ctx context.Context) int {
-	ctxLen := s.loopcfg.Backend.ContextLength(ctx)
+func (s *agent) autoCompactLimit(ctx context.Context) int {
+	ctxLen := s.cfg.Backend.ContextLength(ctx)
 	if ctxLen <= 0 {
 		ctxLen = defaultContextLength
 	}
 	return ctxLen * 3 / 4
 }
 
-// fireAgentSpawn runs the agentSpawn hook and appends any returned context to
-// the system prompt. It is idempotent: it fires at most once per agent lifetime
-// (reset when the active agent changes).
-func (s *agentCore) fireAgentSpawn(ctx context.Context, handler EventHandler) {
-	if s.agentSpawnFired {
-		return
-	}
-	s.agentSpawnFired = true
+// spawnContext assembles the agent context injected at each session refresh
+// point (session start, post-clear, post-compaction). It combines the
+// agent-specific prompt with any agentSpawn hook output.
+func (s *agent) spawnContext(ctx context.Context, handler EventHandler) string {
 	result := s.hooks.Run(ctx, HookAgentSpawn, map[string]string{
 		"session_id": s.sessionID,
 		"agent":      s.agentName,
 		"cwd":        s.CWD(),
 	}, s.log)
-	// TODO: route hook info to debug/err file instead of chat
-	// if result.Ran {
-	// 	handler(infoEvent(hooksRan(1)))
-	// }
 	if result.Warning != "" {
 		handler(infoEvent(result.Warning))
 	}
-	if result.Context != "" {
-		s.loopcfg.systemPrompt += "\n\n---\n\n" + result.Context
+	var parts []string
+	if s.agentPrompt != "" {
+		parts = append(parts, s.agentPrompt)
 	}
+	if result.Context != "" {
+		parts = append(parts, result.Context)
+	}
+	return strings.Join(parts, "\n\n---\n\n")
 }
 
-func (s *agentCore) saveSession() {
+func (s *agent) saveSession() {
 	if s.session == nil || s.sessionID == "" || s.sessionsDir == "" {
 		return
 	}
@@ -527,7 +515,7 @@ func (s *agentCore) saveSession() {
 	}
 }
 
-func (s *agentCore) getActionCancel() context.CancelCauseFunc {
+func (s *agent) getActionCancel() context.CancelCauseFunc {
 	if a := s.currentAction.Load(); a != nil {
 		return a.cancel
 	}
@@ -536,7 +524,7 @@ func (s *agentCore) getActionCancel() context.CancelCauseFunc {
 
 // Interrupt cancels the current in-progress agent turn.
 // Returns true if an action was running and was cancelled.
-func (s *agentCore) Interrupt(cause error) bool {
+func (s *agent) Interrupt(cause error) bool {
 	s.log.Debug("Interrupt() cause=%v", cause)
 	if cancel := s.getActionCancel(); cancel != nil {
 		cancel(cause)
@@ -545,46 +533,46 @@ func (s *agentCore) Interrupt(cause error) bool {
 	return false
 }
 
-func (s *agentCore) Inject(prompt string) {
+func (s *agent) Inject(prompt string) {
 	// If an inject is already pending, fall back to the normal FIFO so nothing
 	// is lost. Use CompareAndSwap to avoid a race between the nil check and store.
 	if !s.pendingInject.CompareAndSwap(nil, &prompt) {
 		s.fifo.Push(prompt)
 		return
 	}
-	emit(s.loopcfg, Event{Role: "info", Content: "\n"})
-	emit(s.loopcfg, Event{Role: "user", Content: prompt})
+	emit(s.cfg, Event{Role: "info", Content: "\n"})
+	emit(s.cfg, Event{Role: "user", Content: prompt})
 }
 
-func (s *agentCore) injectRewrite(prompt string) {
+func (s *agent) injectRewrite(prompt string) {
 	s.pendingInject.Store(&prompt)
-	emit(s.loopcfg, Event{Role: "info", Content: "\n"})
-	emit(s.loopcfg, Event{Role: "user", Content: prompt})
+	emit(s.cfg, Event{Role: "info", Content: "\n"})
+	emit(s.cfg, Event{Role: "user", Content: prompt})
 }
 
-func (s *agentCore) Queue(prompt string) {
+func (s *agent) Queue(prompt string) {
 	s.log.Debug("Queue() len=%d", len(prompt))
 	s.fifo.Push(prompt)
 }
 
-func (s *agentCore) PopQueue() (string, bool) {
+func (s *agent) PopQueue() (string, bool) {
 	v, ok := s.fifo.Pop()
 	s.log.Debug("PopQueue() ok=%v len=%d", ok, len(v))
 	return v, ok
 }
 
-func (s *agentCore) IsRunning() bool {
+func (s *agent) IsRunning() bool {
 	v := s.currentAction.Load() != nil
 	s.log.Debug("IsRunning() = %v", v)
 	return v
 }
 
-func (s *agentCore) CtxSz() string {
+func (s *agent) CtxSz() string {
 	if s.session == nil {
 		s.log.Debug("CtxSz() no session")
 		return "no active session"
 	}
-	ctxLen := s.loopcfg.Backend.ContextLength(context.Background())
+	ctxLen := s.cfg.Backend.ContextLength(context.Background())
 	if ctxLen <= 0 {
 		ctxLen = defaultContextLength
 	}
@@ -595,7 +583,7 @@ func (s *agentCore) CtxSz() string {
 	return v
 }
 
-func (s *agentCore) Usage() string {
+func (s *agent) Usage() string {
 	if s.session == nil {
 		s.log.Debug("Usage() no session")
 		return "no active session"
@@ -610,30 +598,30 @@ func (s *agentCore) Usage() string {
 	return str
 }
 
-func (s *agentCore) SystemPrompt() string {
-	s.log.Debug("SystemPrompt() len=%d", len(s.loopcfg.systemPrompt))
-	return s.loopcfg.systemPrompt
+func (s *agent) SystemPrompt() string {
+	s.log.Debug("SystemPrompt() len=%d", len(s.cfg.preamble))
+	return s.cfg.preamble
 }
 
-func (s *agentCore) GenerationParams() backend.GenerationParams {
+func (s *agent) GenerationParams() backend.GenerationParams {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.loopcfg.GenerationParams
+	return s.cfg.GenerationParams
 }
 
-func (s *agentCore) SetGenerationParams(params backend.GenerationParams) error {
+func (s *agent) SetGenerationParams(params backend.GenerationParams) error {
 	if s.IsRunning() {
 		return fmt.Errorf("cannot change params while agent is running")
 	}
 	s.mu.Lock()
-	s.loopcfg.GenerationParams = params
+	s.cfg.GenerationParams = params
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *agentCore) ListModels() string {
+func (s *agent) ListModels() string {
 	s.log.Debug("ListModels()")
-	models := s.loopcfg.Backend.Models(context.Background())
+	models := s.cfg.Backend.Models(context.Background())
 	return strings.Join(models, "\n")
 }
 
@@ -659,7 +647,7 @@ func firstSentence(s string) string {
 //
 // Continuations (post-turn hook context, unconsumed inject, FIFO drain) are
 // handled via an explicit loop rather than recursion to avoid stack growth.
-func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandler) {
+func (s *agent) Submit(ctx context.Context, input string, handler EventHandler) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.log.Error("panic: %v\n%s", r, debug.Stack())
@@ -689,7 +677,7 @@ func (s *agentCore) Submit(ctx context.Context, input string, handler EventHandl
 
 // executeTurn runs a single agent turn and returns the next prompt to execute,
 // or "" if there is nothing more to do.
-func (s *agentCore) executeTurn(ctx context.Context, input string, handler EventHandler) string {
+func (s *agent) executeTurn(ctx context.Context, input string, handler EventHandler) string {
 	handler(Event{Role: "user", Content: input})
 
 	hookResult := s.hooks.Run(ctx, HookPreTurn, map[string]string{
@@ -716,8 +704,11 @@ func (s *agentCore) executeTurn(ctx context.Context, input string, handler Event
 			handler(infoEvent(msg))
 		}
 		s.startupMessages = nil
-		s.fireAgentSpawn(ctx, handler)
 		s.session = newSession(input)
+		if sc := s.spawnContext(ctx, handler); sc != "" {
+			s.session.appendUserMessage(sc)
+		}
+		s.session.appendUserMessage(input)
 	} else {
 		s.session.appendUserMessage(input)
 	}
@@ -727,7 +718,7 @@ func (s *agentCore) executeTurn(ctx context.Context, input string, handler Event
 	s.currentAction.Store(handle)
 
 	var replyBuf strings.Builder
-	s.loopcfg.Output = func(ev Event) {
+	s.cfg.Output = func(ev Event) {
 		switch ev.Role {
 		case "assistant":
 			replyBuf.WriteString(ev.Content)
@@ -744,7 +735,7 @@ func (s *agentCore) executeTurn(ctx context.Context, input string, handler Event
 		}
 		handler(ev)
 	}
-	s.loopcfg.PopInject = func() string {
+	s.cfg.PopInject = func() string {
 		if p := s.pendingInject.Swap(nil); p != nil {
 			return *p
 		}
@@ -767,12 +758,15 @@ func (s *agentCore) executeTurn(ctx context.Context, input string, handler Event
 				if pre.Context != "" {
 					s.session.appendUserMessage(pre.Context)
 				}
-				emit(s.loopcfg, Event{Role: "info", Content: "auto-compacting context...\n"})
+				emit(s.cfg, Event{Role: "info", Content: "auto-compacting context...\n"})
 				s.setState("compacting")
-				if _, _, err := s.session.compact(ctx, s.loopcfg.Backend); err != nil {
+				if _, _, err := s.session.compact(ctx, s.cfg.Backend); err != nil {
 					panic(fmt.Sprintf("auto-compact: %v", err))
 				}
 				s.setState("thinking")
+				if sc := s.spawnContext(ctx, handler); sc != "" {
+					s.session.appendUserMessage(sc)
+				}
 				post := s.hooks.Run(ctx, HookPostCompact, payload, s.log)
 				// TODO: route hook info to debug/err file instead of chat
 				// if post.Ran {
@@ -788,7 +782,7 @@ func (s *agentCore) executeTurn(ctx context.Context, input string, handler Event
 		}
 	}
 
-	err := run(actCtx, s.loopcfg, s.session)
+	err := run(actCtx, s.cfg, s.session)
 	actCancel(nil)
 	s.currentAction.CompareAndSwap(handle, nil)
 

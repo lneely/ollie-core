@@ -75,11 +75,10 @@ type Session struct {
 	Estimated         bool // true if any usage was estimated rather than reported by the backend
 }
 
-// newSession creates a new Session with an initial user message.
+// newSession creates a new empty Session. The caller is responsible for
+// appending the initial user message via appendUserMessage.
 func newSession(goal string) *Session {
-	s := &Session{goal: goal}
-	s.messages = append(s.messages, backend.Message{Role: "user", Content: goal})
-	return s
+	return &Session{goal: goal}
 }
 
 func (s *Session) history() []backend.Message {

@@ -11,7 +11,7 @@ import (
 	"ollie/pkg/config"
 )
 
-func (s *agentCore) handleCommand(ctx context.Context, input string, handler EventHandler) bool {
+func (s *agent) handleCommand(ctx context.Context, input string, handler EventHandler) bool {
 	if strings.HasPrefix(input, "!") {
 		handler(infoEvent(""))
 		cmdStr := strings.TrimSpace(input[1:])
@@ -87,7 +87,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 
 		"/backend": func(args []string) {
 			if len(args) == 0 {
-				handler(infoEvent(s.loopcfg.Backend.Name()))
+				handler(infoEvent(s.cfg.Backend.Name()))
 				return
 			}
 			if s.IsRunning() {
@@ -99,17 +99,17 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 				handler(infoEvent(fmt.Sprintf("error: failed to switch backend: %v", err)))
 				return
 			}
-			s.loopcfg.Backend = be
+			s.cfg.Backend = be
 			handler(infoEvent(fmt.Sprintf("switched backend to: %s (model: %s)", be.Name(), be.Model())))
 		},
 
 		"/models": func(args []string) {
-			models := s.loopcfg.Backend.Models(ctx)
+			models := s.cfg.Backend.Models(ctx)
 			if len(models) == 0 {
 				handler(infoEvent("no models available"))
 				return
 			}
-			current := s.loopcfg.Backend.Model()
+			current := s.cfg.Backend.Model()
 			for _, m := range models {
 				marker := "  "
 				if m == current {
@@ -121,14 +121,14 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 
 		"/model": func(args []string) {
 			if len(args) == 0 {
-				handler(infoEvent(s.loopcfg.Backend.Model()))
+				handler(infoEvent(s.cfg.Backend.Model()))
 				return
 			}
 			if s.IsRunning() {
 				handler(infoEvent("error: cannot switch model while agent is running"))
 				return
 			}
-			s.loopcfg.Backend.SetModel(args[0])
+			s.cfg.Backend.SetModel(args[0])
 			handler(infoEvent("switched model to: " + args[0]))
 		},
 
@@ -182,15 +182,14 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			env := BuildAgentEnv(cfg, d, s.cwd)
 			s.dispatcher = env.dispatcher
 			s.hooks = env.Hooks
-			s.loopcfg.systemPrompt = env.systemPrompt
-			s.loopcfg.Tools = env.tools
-			s.loopcfg.Exec = env.exec
-			s.loopcfg.GenerationParams = env.genParams
+			s.cfg.preamble = env.preamble
+			s.cfg.Tools = env.tools
+			s.cfg.Exec = env.exec
+			s.cfg.GenerationParams = env.genParams
 			s.agentPrompt = env.agentPrompt
 			s.agentName = name
 			s.session = nil
 			s.sessionID = NewSessionID()
-			s.agentSpawnFired = false
 			s.pushSessionEnv()
 			for _, msg := range env.Messages {
 				handler(infoEvent(msg))
@@ -225,8 +224,11 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 			}
 			snapshot := s.session.PreCompactionSnapshot()
 			s.setState("compacting")
-			n, _, err := s.session.compact(ctx, s.loopcfg.Backend)
+			n, _, err := s.session.compact(ctx, s.cfg.Backend)
 			s.setState("idle")
+			if sc := s.spawnContext(ctx, handler); sc != "" {
+				s.session.appendUserMessage(sc)
+			}
 			post := s.hooks.Run(ctx, HookPostCompact, payload, s.log)
 			// TODO: route hook info to debug/err file instead of chat
 			// if post.Ran {
@@ -265,7 +267,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 				handler(infoEvent("no active session"))
 				return
 			}
-			ctxLen := s.loopcfg.Backend.ContextLength(ctx)
+			ctxLen := s.cfg.Backend.ContextLength(ctx)
 			if ctxLen <= 0 {
 				ctxLen = defaultContextLength
 			}
@@ -280,7 +282,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 				handler(infoEvent("no active session"))
 				return
 			}
-			ctxLen := s.loopcfg.Backend.ContextLength(ctx)
+			ctxLen := s.cfg.Backend.ContextLength(ctx)
 			if ctxLen <= 0 {
 				ctxLen = defaultContextLength
 			}
@@ -378,7 +380,7 @@ func (s *agentCore) handleCommand(ctx context.Context, input string, handler Eve
 		"/tools":  func(args []string) { listMountDir("t") },
 
 		"/sp": func(args []string) {
-			handler(infoEvent(s.loopcfg.systemPrompt))
+			handler(infoEvent(s.cfg.preamble))
 		},
 
 		"/help": func(args []string) {

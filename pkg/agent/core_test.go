@@ -81,9 +81,9 @@ func defaultBE() *mockBackend {
 	return &mockBackend{name: "mock", model: "test", ctxLen: 128000}
 }
 
-// newCore builds a minimal *agentCore for tests, bypassing loadSystemPrompt
-// by directly setting systemPrompt on AgentEnv.
-func newCore(t *testing.T, be backend.Backend, hooks Hooks) *agentCore {
+// newCore builds a minimal *agent for tests, bypassing loadSystemPrompt
+// by directly setting preamble on AgentEnv.
+func newCore(t *testing.T, be backend.Backend, hooks Hooks) *agent {
 	t.Helper()
 	if be == nil {
 		be = defaultBE()
@@ -93,7 +93,7 @@ func newCore(t *testing.T, be backend.Backend, hooks Hooks) *agentCore {
 	}
 	env := AgentEnv{
 		Hooks:        hooks,
-		systemPrompt: "test system prompt",
+		preamble: "test system prompt",
 	}
 	c := NewAgentCore(AgentCoreConfig{
 		Backend:       be,
@@ -106,7 +106,7 @@ func newCore(t *testing.T, be backend.Backend, hooks Hooks) *agentCore {
 		NewDispatcher: tools.NewDispatcher,
 	})
 	t.Cleanup(c.Close)
-	return c.(*agentCore)
+	return c.(*agent)
 }
 
 // collectEvents runs Submit synchronously and returns all emitted events.
@@ -218,7 +218,7 @@ func TestSubmit_ToolCallStateTransitions(t *testing.T) {
 	c := newCore(t, be, nil)
 
 	var stateAtExec string
-	c.loopcfg.Exec = func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
+	c.cfg.Exec = func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
 		stateAtExec = c.State()
 		return `{}`, nil
 	}
@@ -989,7 +989,7 @@ func TestRun_NoExec(t *testing.T) {
 		return textStream("done"), nil
 	}
 	c := newCore(t, be, nil)
-	c.loopcfg.Exec = nil // no executor
+	c.cfg.Exec = nil // no executor
 	collectEvents(context.Background(), c, "run tool")
 	if callCount != 2 {
 		t.Errorf("backend called %d times; want 2", callCount)
@@ -1555,7 +1555,7 @@ func TestRun_ExecCancelledWithInject(t *testing.T) {
 	c := newCore(t, be, nil)
 	inject := "user interrupt"
 	c.pendingInject.Store(&inject)
-	c.loopcfg.Exec = func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
+	c.cfg.Exec = func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
 		cancel() // ctx cancelled during exec
 		return "", fmt.Errorf("exec cancelled")
 	}
@@ -1773,8 +1773,16 @@ func TestAutoCompactLimit_DefaultWhenZero(t *testing.T) {
 func TestAgentSpawn_WithContext(t *testing.T) {
 	c := newCore(t, nil, Hooks{HookAgentSpawn: []string{`echo "spawn context"`}})
 	collectEvents(context.Background(), c, "first")
-	if !strings.Contains(c.loopcfg.systemPrompt, "spawn context") {
-		t.Errorf("system prompt does not contain spawn context: %q", c.loopcfg.systemPrompt)
+	// spawn context goes into session history, not preamble
+	found := false
+	for _, m := range c.session.messages {
+		if strings.Contains(m.Content, "spawn context") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("spawn context not found in session history")
 	}
 }
 
@@ -1945,7 +1953,7 @@ func TestCommand_Backend_Switch(t *testing.T) {
 	if !found {
 		t.Errorf("/backend switch: expected 'injected' in info events; got %v", infos)
 	}
-	if c.loopcfg.Backend != newBE {
+	if c.cfg.Backend != newBE {
 		t.Errorf("/backend switch: backend not updated")
 	}
 }
@@ -2052,6 +2060,7 @@ func TestRestoreSession_RoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "sess.json")
 
 	s := newSession("first user message")
+	s.appendUserMessage("first user message")
 	s.appendUserMessage("second message")
 	s.messages = append(s.messages, backend.Message{Role: "assistant", Content: "reply"})
 
@@ -2118,13 +2127,13 @@ func (m *mockEnvServer) get(k string) string {
 	return m.env[k]
 }
 
-func newCoreWithExecServer(t *testing.T, srv *mockEnvServer) *agentCore {
+func newCoreWithExecServer(t *testing.T, srv *mockEnvServer) *agent {
 	t.Helper()
 	d := tools.NewDispatcher()
 	d.AddServer("execute", srv)
 	env := AgentEnv{
 		Hooks:        Hooks{},
-		systemPrompt: "test system prompt",
+		preamble: "test system prompt",
 		dispatcher:   d,
 	}
 	c := NewAgentCore(AgentCoreConfig{
@@ -2138,7 +2147,7 @@ func newCoreWithExecServer(t *testing.T, srv *mockEnvServer) *agentCore {
 		NewDispatcher: tools.NewDispatcher,
 	})
 	t.Cleanup(c.Close)
-	return c.(*agentCore)
+	return c.(*agent)
 }
 
 func TestSetEnv_PropagatestoExecuteServer(t *testing.T) {
@@ -2228,13 +2237,13 @@ func TestFirstSentence_ShortNoSentenceEnd(t *testing.T) {
 
 // --- BuildAgentEnv (nil config path) ---
 
-func setupCfgDir(t *testing.T, systemPrompt string) string {
+func setupCfgDir(t *testing.T, preamble string) string {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.MkdirAll(dir+"/prompts", 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(dir+"/prompts/SYSTEM_PROMPT.md", []byte(systemPrompt), 0600); err != nil {
+	if err := os.WriteFile(dir+"/prompts/SYSTEM_PROMPT.md", []byte(preamble), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("OLLIE_CFG_PATH", dir)
@@ -2246,8 +2255,8 @@ func TestBuildAgentEnv_NilConfig(t *testing.T) {
 	d := tools.NewDispatcher()
 	env := BuildAgentEnv(nil, d, t.TempDir())
 
-	if env.systemPrompt != "base prompt" {
-		t.Errorf("systemPrompt = %q; want %q", env.systemPrompt, "base prompt")
+	if env.preamble != "base prompt" {
+		t.Errorf("preamble = %q; want %q", env.preamble, "base prompt")
 	}
 	if len(env.Hooks) != 0 {
 		t.Errorf("expected no hooks; got %v", env.Hooks)
@@ -2266,11 +2275,12 @@ func TestBuildAgentEnv_AgentPromptAppended(t *testing.T) {
 	cfg := &config.Config{Prompt: "agent suffix"}
 	env := BuildAgentEnv(cfg, d, t.TempDir())
 
-	if !strings.Contains(env.systemPrompt, "base prompt") {
-		t.Errorf("systemPrompt missing base: %q", env.systemPrompt)
+	// preamble contains only the system prompt; agent prompt is kept separate
+	if !strings.Contains(env.preamble, "base prompt") {
+		t.Errorf("preamble missing base: %q", env.preamble)
 	}
-	if !strings.Contains(env.systemPrompt, "agent suffix") {
-		t.Errorf("systemPrompt missing agent suffix: %q", env.systemPrompt)
+	if env.agentPrompt != "agent suffix" {
+		t.Errorf("agentPrompt = %q; want %q", env.agentPrompt, "agent suffix")
 	}
 }
 
@@ -2381,13 +2391,13 @@ func TestBuildAgentEnv_TrustedTools(t *testing.T) {
 }
 
 func TestBuildAgentEnv_AgentPromptNoSystemPrompt(t *testing.T) {
-	// Empty system prompt file — agentPrompt should be the entire system prompt.
+	// Empty system prompt file — agentPrompt is kept separate from preamble.
 	setupCfgDir(t, "")
 	d := tools.NewDispatcher()
 	cfg := &config.Config{Prompt: "only agent"}
 	env := BuildAgentEnv(cfg, d, t.TempDir())
-	if env.systemPrompt != "only agent" {
-		t.Errorf("systemPrompt = %q; want %q", env.systemPrompt, "only agent")
+	if env.agentPrompt != "only agent" {
+		t.Errorf("agentPrompt = %q; want %q", env.agentPrompt, "only agent")
 	}
 }
 

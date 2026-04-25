@@ -15,23 +15,23 @@ const maxRateLimitRetries = 3
 
 type toolExecutor func(ctx context.Context, name string, args json.RawMessage) (string, error)
 
-type loopConfig struct {
+type agentConfig struct {
 	Backend          backend.Backend
 	Tools            []backend.Tool
 	Exec             toolExecutor
 	Output           EventHandler
-	systemPrompt     string
+	preamble         string // compiled system+agent prompt sent as the system role
 	GenerationParams backend.GenerationParams
 	PopInject        func() string // returns and clears pending inject, or ""
 }
 
-func run(ctx context.Context, cfg loopConfig, state state) error {
+func run(ctx context.Context, cfg agentConfig, state state) error {
 	var step int
 
 	for {
 		history := state.history()
-		if cfg.systemPrompt != "" {
-			history = append([]backend.Message{{Role: "system", Content: cfg.systemPrompt}}, history...)
+		if cfg.preamble != "" {
+			history = append([]backend.Message{{Role: "system", Content: cfg.preamble}}, history...)
 		}
 
 		// Stream the assistant's response, retrying on HTTP 429.
@@ -243,13 +243,13 @@ func recordInterruption(state state, phase string) {
 	state.update(backend.Message{Role: "assistant", Content: note}, nil) //nolint:errcheck
 }
 
-func emit(cfg loopConfig, msg Event) {
+func emit(cfg agentConfig, msg Event) {
 	if cfg.Output != nil {
 		cfg.Output(msg)
 	}
 }
 
-func retryCountdown(ctx context.Context, cfg loopConfig, wait time.Duration) error {
+func retryCountdown(ctx context.Context, cfg agentConfig, wait time.Duration) error {
 	deadline := time.Now().Add(wait)
 	for {
 		remaining := time.Until(deadline)
