@@ -505,6 +505,41 @@ func (s *agent) spawnContext(ctx context.Context, handler EventHandler) string {
 	return strings.Join(parts, "\n\n---\n\n")
 }
 
+// runCompact executes a full compaction cycle: pre-hook, compact, spawn-context
+// re-injection, post-hook. Returns (n compacted, error). Returns (0, nil) if
+// the pre-hook blocked or there was nothing to compact. Caller manages setState.
+func (s *agent) runCompact(ctx context.Context, trigger string, handler EventHandler) (int, error) {
+	payload := map[string]string{"session_id": s.sessionID, "trigger": trigger, "cwd": s.CWD()}
+	pre := s.hooks.Run(ctx, HookPreCompact, payload, s.log)
+	if pre.Warning != "" {
+		handler(infoEvent(pre.Warning))
+	}
+	if pre.Blocked {
+		handler(infoEvent("compact cancelled by hook"))
+		return 0, nil
+	}
+	if pre.Context != "" {
+		s.session.appendUserMessage(pre.Context)
+	}
+	n, _, err := s.session.compact(ctx, s.cfg.Backend)
+	if err != nil {
+		return 0, err
+	}
+	if n > 0 {
+		if sc := s.spawnContext(ctx, handler); sc != "" {
+			s.session.appendUserMessage(sc)
+		}
+	}
+	post := s.hooks.Run(ctx, HookPostCompact, payload, s.log)
+	if post.Warning != "" {
+		handler(infoEvent(post.Warning))
+	}
+	if post.Context != "" {
+		s.session.appendUserMessage(post.Context)
+	}
+	return n, nil
+}
+
 func (s *agent) saveSession() {
 	if s.session == nil || s.sessionID == "" || s.sessionsDir == "" {
 		return
@@ -741,44 +776,31 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 		}
 		return ""
 	}
+	s.cfg.AutoCompact = func(ctx context.Context) {
+		if ctx.Err() != nil || s.session == nil {
+			return
+		}
+		limit := s.autoCompactLimit(ctx)
+		if limit <= 0 || s.session.estimateTokens() < limit {
+			return
+		}
+		emit(s.cfg, Event{Role: "info", Content: "auto-compacting context...\n"})
+		s.setState("compacting")
+		if _, err := s.runCompact(ctx, "auto", handler); err != nil {
+			panic(fmt.Sprintf("mid-turn auto-compact: %v", err))
+		}
+		s.setState("thinking")
+	}
 
 	// Auto-compact before the turn if approaching the context limit.
 	if s.session != nil {
 		if limit := s.autoCompactLimit(ctx); limit > 0 && s.session.estimateTokens() >= limit {
-			payload := map[string]string{"session_id": s.sessionID, "trigger": "auto", "cwd": s.CWD()}
-			pre := s.hooks.Run(ctx, HookPreCompact, payload, s.log)
-			// TODO: route hook info to debug/err file instead of chat
-			// if pre.Ran {
-			// 	handler(infoEvent(hooksRan(1)))
-			// }
-			if pre.Warning != "" {
-				handler(infoEvent(pre.Warning))
+			emit(s.cfg, Event{Role: "info", Content: "auto-compacting context...\n"})
+			s.setState("compacting")
+			if _, err := s.runCompact(ctx, "auto", handler); err != nil {
+				panic(fmt.Sprintf("auto-compact: %v", err))
 			}
-			if !pre.Blocked {
-				if pre.Context != "" {
-					s.session.appendUserMessage(pre.Context)
-				}
-				emit(s.cfg, Event{Role: "info", Content: "auto-compacting context...\n"})
-				s.setState("compacting")
-				if _, _, err := s.session.compact(ctx, s.cfg.Backend); err != nil {
-					panic(fmt.Sprintf("auto-compact: %v", err))
-				}
-				s.setState("thinking")
-				if sc := s.spawnContext(ctx, handler); sc != "" {
-					s.session.appendUserMessage(sc)
-				}
-				post := s.hooks.Run(ctx, HookPostCompact, payload, s.log)
-				// TODO: route hook info to debug/err file instead of chat
-				// if post.Ran {
-				// 	handler(infoEvent(hooksRan(1)))
-				// }
-				if post.Warning != "" {
-					handler(infoEvent(post.Warning))
-				}
-				if post.Context != "" {
-					s.session.appendUserMessage(post.Context)
-				}
-			}
+			s.setState("thinking")
 		}
 	}
 

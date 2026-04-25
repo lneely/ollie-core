@@ -22,7 +22,8 @@ type agentConfig struct {
 	Output           EventHandler
 	preamble         string // compiled system+agent prompt sent as the system role
 	GenerationParams backend.GenerationParams
-	PopInject        func() string // returns and clears pending inject, or ""
+	PopInject        func() string          // returns and clears pending inject, or ""
+	AutoCompact      func(ctx context.Context) // called after each tool round; may compact in-place
 }
 
 func run(ctx context.Context, cfg agentConfig, state state) error {
@@ -219,6 +220,10 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 
 		if len(toolCalls) == 0 {
 			break
+		}
+
+		if cfg.AutoCompact != nil {
+			cfg.AutoCompact(ctx)
 		}
 
 		step++

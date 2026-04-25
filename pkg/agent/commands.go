@@ -206,40 +206,10 @@ func (s *agent) handleCommand(ctx context.Context, input string, handler EventHa
 				handler(infoEvent("nothing to compact"))
 				return
 			}
-			payload := map[string]string{"session_id": s.sessionID, "trigger": "manual", "cwd": s.CWD()}
-			pre := s.hooks.Run(ctx, HookPreCompact, payload, s.log)
-			// TODO: route hook info to debug/err file instead of chat
-			// if pre.Ran {
-			// 	handler(infoEvent(hooksRan(1)))
-			// }
-			if pre.Warning != "" {
-				handler(infoEvent(pre.Warning))
-			}
-			if pre.Blocked {
-				handler(infoEvent("compact cancelled by hook"))
-				return
-			}
-			if pre.Context != "" {
-				s.session.appendUserMessage(pre.Context)
-			}
 			snapshot := s.session.PreCompactionSnapshot()
 			s.setState("compacting")
-			n, _, err := s.session.compact(ctx, s.cfg.Backend)
+			n, err := s.runCompact(ctx, "manual", handler)
 			s.setState("idle")
-			if sc := s.spawnContext(ctx, handler); sc != "" {
-				s.session.appendUserMessage(sc)
-			}
-			post := s.hooks.Run(ctx, HookPostCompact, payload, s.log)
-			// TODO: route hook info to debug/err file instead of chat
-			// if post.Ran {
-			// 	handler(infoEvent(hooksRan(1)))
-			// }
-			if post.Warning != "" {
-				handler(infoEvent(post.Warning))
-			}
-			if post.Context != "" {
-				s.session.appendUserMessage(post.Context)
-			}
 			if err != nil {
 				handler(infoEvent("compact error: " + err.Error()))
 				return
