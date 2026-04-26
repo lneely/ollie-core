@@ -1258,3 +1258,157 @@ func TestFileEntryDirEntry(t *testing.T) {
 		t.Error("DirEntry.Info() mismatch")
 	}
 }
+
+// ===== FormatParams / ParseParams =====
+
+func TestFormatParamsRoundTrip(t *testing.T) {
+	temp := 0.7
+	freq := 0.1
+	pres := 0.2
+	p := backend.GenerationParams{
+		MaxTokens:        1024,
+		Temperature:      &temp,
+		FrequencyPenalty: &freq,
+		PresencePenalty:  &pres,
+	}
+	out := store.FormatParams(p)
+	got, err := store.ParseParams(out, backend.GenerationParams{})
+	if err != nil {
+		t.Fatalf("ParseParams: %v", err)
+	}
+	if got.MaxTokens != 1024 {
+		t.Errorf("MaxTokens = %d; want 1024", got.MaxTokens)
+	}
+	if got.Temperature == nil || *got.Temperature != 0.7 {
+		t.Errorf("Temperature = %v; want 0.7", got.Temperature)
+	}
+	if got.FrequencyPenalty == nil || *got.FrequencyPenalty != 0.1 {
+		t.Errorf("FrequencyPenalty = %v; want 0.1", got.FrequencyPenalty)
+	}
+	if got.PresencePenalty == nil || *got.PresencePenalty != 0.2 {
+		t.Errorf("PresencePenalty = %v; want 0.2", got.PresencePenalty)
+	}
+}
+
+func TestFormatParamsNilOptionals(t *testing.T) {
+	p := backend.GenerationParams{MaxTokens: 512}
+	out := store.FormatParams(p)
+	got, err := store.ParseParams(out, backend.GenerationParams{})
+	if err != nil {
+		t.Fatalf("ParseParams: %v", err)
+	}
+	if got.MaxTokens != 512 {
+		t.Errorf("MaxTokens = %d; want 512", got.MaxTokens)
+	}
+	if got.Temperature != nil {
+		t.Errorf("Temperature should be nil, got %v", got.Temperature)
+	}
+}
+
+func TestParseParamsClearWithEmpty(t *testing.T) {
+	temp := 1.0
+	p := backend.GenerationParams{MaxTokens: 100, Temperature: &temp}
+	got, err := store.ParseParams("maxTokens=\ntemperature=\nfrequencyPenalty=\npresencePenalty=\n", p)
+	if err != nil {
+		t.Fatalf("ParseParams: %v", err)
+	}
+	if got.MaxTokens != 0 {
+		t.Errorf("MaxTokens = %d; want 0", got.MaxTokens)
+	}
+	if got.Temperature != nil {
+		t.Errorf("Temperature should be nil")
+	}
+}
+
+func TestParseParamsErrors(t *testing.T) {
+	if _, err := store.ParseParams("maxTokens=bad", backend.GenerationParams{}); err == nil {
+		t.Error("expected error for invalid maxTokens")
+	}
+	if _, err := store.ParseParams("temperature=bad", backend.GenerationParams{}); err == nil {
+		t.Error("expected error for invalid temperature")
+	}
+	if _, err := store.ParseParams("frequencyPenalty=bad", backend.GenerationParams{}); err == nil {
+		t.Error("expected error for invalid frequencyPenalty")
+	}
+	if _, err := store.ParseParams("presencePenalty=bad", backend.GenerationParams{}); err == nil {
+		t.Error("expected error for invalid presencePenalty")
+	}
+}
+
+// ===== Session.Interrupt =====
+
+func TestSessionInterrupt(t *testing.T) {
+	sess := testSession("i1")
+	defer sess.Cancel()
+	sess.Interrupt()
+	// stubCore.Interrupt is a no-op; just ensure it doesn't panic
+}
+
+// ===== SessionStore.createSession =====
+
+func TestSessionStoreCreateSessionViaWrite(t *testing.T) {
+	s := newSessionStoreWithCore(t)
+	e, err := s.Open("new")
+	if err != nil {
+		t.Fatalf("Open(new): %v", err)
+	}
+	if err := e.Write([]byte("name=testsess cwd=/tmp agent=default")); err != nil {
+		t.Fatalf("Write(new): %v", err)
+	}
+	if s.Session("testsess") == nil {
+		t.Error("session 'testsess' not found after create")
+	}
+	s.KillSession("testsess")
+}
+
+func TestSessionStoreCreateSessionNoCwd(t *testing.T) {
+	s := newSessionStoreWithCore(t)
+	e, _ := s.Open("new")
+	if err := e.Write([]byte("name=nocwd")); err == nil {
+		t.Error("expected error for missing cwd")
+	}
+}
+
+func TestSessionStoreCreateSessionDuplicate(t *testing.T) {
+	s := newSessionStoreWithCore(t)
+	e, _ := s.Open("new")
+	e.Write([]byte("name=dup cwd=/tmp")) //nolint:errcheck
+	if err := e.Write([]byte("name=dup cwd=/tmp")); err == nil {
+		t.Error("expected error for duplicate session name")
+	}
+	s.KillSession("dup")
+}
+
+func TestSessionStoreCreateSessionBadOption(t *testing.T) {
+	s := newSessionStoreWithCore(t)
+	e, _ := s.Open("new")
+	if err := e.Write([]byte("bogus cwd=/tmp")); err == nil {
+		t.Error("expected error for invalid option")
+	}
+}
+
+func TestSessionStoreCreateSessionUnknownKey(t *testing.T) {
+	s := newSessionStoreWithCore(t)
+	e, _ := s.Open("new")
+	if err := e.Write([]byte("unknown=x cwd=/tmp")); err == nil {
+		t.Error("expected error for unknown key")
+	}
+}
+
+// ===== openEntry not-found =====
+
+func TestSessionStoreOpenEntryNotFound(t *testing.T) {
+	s := newSessionStore(t)
+	if _, err := s.Open("__nonexistent__"); err == nil {
+		t.Error("Open(nonexistent) should error")
+	}
+}
+
+// ===== OpenStore not-found =====
+
+func TestSessionStoreOpenStoreNotFound(t *testing.T) {
+	s := newSessionStore(t)
+	if _, err := s.OpenStore("__missing__"); err == nil {
+		t.Error("OpenStore(missing) should error")
+	}
+}
