@@ -854,14 +854,17 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 	s.setState("idle")
 
 	if err != nil {
-		if snapSession == nil {
-			s.session = nil
-		} else {
-			s.session.messages = snapMessages
-		}
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, ErrInterrupted) {
+		interrupted := errors.Is(err, context.Canceled) || errors.Is(err, ErrInterrupted)
+		if !interrupted {
+			// Real error: restore pre-turn state so the session is clean for retry.
+			if snapSession == nil {
+				s.session = nil
+			} else {
+				s.session.messages = snapMessages
+			}
 			handler(Event{Role: "error", Content: err.Error()})
 		}
+		// Interrupt: keep whatever session state was built during the turn.
 		return ""
 	}
 
