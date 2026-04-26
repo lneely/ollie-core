@@ -27,6 +27,7 @@ type Session struct {
 	log        []byte
 	logVers    uint32
 	ChatOffset int
+	plan       []byte
 }
 
 func NewSession(id string, core agent.Core, ctx context.Context, cancel context.CancelFunc) *Session {

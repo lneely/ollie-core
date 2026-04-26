@@ -17,6 +17,7 @@ var SessionFileList = []struct {
 	Name string
 	Mode os.FileMode
 }{
+	{"plan", 0666},
 	{"ctl", 0200},
 	{"prompt", 0200},
 	{"fifo.in", 0200},
@@ -58,6 +59,20 @@ func (h *sessionHelper) fileSpec(name string, mode os.FileMode) FileSpec {
 
 	// Read
 	switch name {
+	case "plan":
+		fs.Read = func() ([]byte, error) {
+			h.sess.mu.RLock()
+			data := make([]byte, len(h.sess.plan))
+			copy(data, h.sess.plan)
+			h.sess.mu.RUnlock()
+			return data, nil
+		}
+		fs.Size = func() int64 {
+			h.sess.mu.RLock()
+			n := len(h.sess.plan)
+			h.sess.mu.RUnlock()
+			return int64(n)
+		}
 	case "chat":
 		fs.Read = func() ([]byte, error) {
 			h.sess.mu.RLock()
@@ -88,6 +103,14 @@ func (h *sessionHelper) fileSpec(name string, mode os.FileMode) FileSpec {
 
 	// Write
 	switch name {
+	case "plan":
+		fs.Write = func(data []byte) error {
+			h.sess.mu.Lock()
+			h.sess.plan = make([]byte, len(data))
+			copy(h.sess.plan, data)
+			h.sess.mu.Unlock()
+			return nil
+		}
 	case "chat":
 		fs.Write = func(data []byte) error {
 			input := strings.TrimSpace(string(data))
