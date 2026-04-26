@@ -357,6 +357,9 @@ func (s *SessionStore) createSession(args []string) error {
 			return fmt.Errorf("backend: %w", err)
 		}
 
+		if modelOverride == "" {
+			modelOverride = os.Getenv("OLLIE_MODEL")
+		}
 		if modelOverride != "" {
 			be.SetModel(modelOverride)
 		}

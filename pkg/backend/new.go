@@ -59,13 +59,13 @@ func New() (Backend, error) {
 
 // NewWithName constructs a Backend for the given backend name, loading
 // env-file defaults for API keys/URLs but ignoring OLLIE_BACKEND.
-// If name is empty, falls back to OLLIE_BACKEND / "ollama".
+// If name is empty, falls back to OLLIE_BACKEND; errors if neither is set.
 func NewWithName(name string) (Backend, error) {
 	loadEnvFile(paths.CfgDir() + "/env")
 	if name == "" {
 		name = os.Getenv("OLLIE_BACKEND")
 		if name == "" {
-			name = "ollama"
+			return nil, fmt.Errorf("no backend specified: set OLLIE_BACKEND or pass backend= to the session")
 		}
 	}
 	return newBackend(name)
@@ -76,7 +76,7 @@ func newFromEnv(envFile string) (Backend, error) {
 
 	which := os.Getenv("OLLIE_BACKEND")
 	if which == "" {
-		which = "ollama"
+		return nil, fmt.Errorf("OLLIE_BACKEND is not set")
 	}
 
 	return newBackend(which)

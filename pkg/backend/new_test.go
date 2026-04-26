@@ -31,14 +31,11 @@ func clearEnv(t *testing.T, keys ...string) {
 	}
 }
 
-func TestNewFromEnv_DefaultOllama(t *testing.T) {
+func TestNewFromEnv_NoBackendErrors(t *testing.T) {
 	clearEnv(t, "OLLIE_BACKEND", "OLLIE_OLLAMA_URL")
-	b, err := newFromEnv("/nonexistent")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if b.Name() != "ollama" {
-		t.Errorf("name = %q; want ollama", b.Name())
+	_, err := newFromEnv("/nonexistent")
+	if err == nil {
+		t.Fatal("expected error when OLLIE_BACKEND is unset, got nil")
 	}
 }
 
