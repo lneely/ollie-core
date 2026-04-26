@@ -540,13 +540,21 @@ func (s *sqliteKiroAuth) Refresh(ctx context.Context) error {
 		return nil // already refreshed by another process
 	}
 
-	oidcEndpoint := fmt.Sprintf("https://oidc.%s.amazonaws.com/token", strings.TrimSpace(state.Region))
-	client := newKiroOIDCClient(oidcEndpoint, nil)
-
 	refreshToken := currentRefresh
 	if refreshToken == "" {
 		refreshToken = state.RefreshToken
 	}
+
+	if state.IsSocial {
+		return s.refreshSocial(ctx, state, refreshToken)
+	}
+	return s.refreshOIDC(ctx, state, refreshToken)
+}
+
+func (s *sqliteKiroAuth) refreshOIDC(ctx context.Context, state kiroSQLiteState, refreshToken string) error {
+	oidcEndpoint := fmt.Sprintf("https://oidc.%s.amazonaws.com/token", strings.TrimSpace(state.Region))
+	client := newKiroOIDCClient(oidcEndpoint, nil)
+
 	resp, err := client.RefreshToken(ctx, kiroRefreshTokenRequest{
 		ClientID:     state.ClientID,
 		ClientSecret: state.ClientSecret,
@@ -566,14 +574,39 @@ func (s *sqliteKiroAuth) Refresh(ctx context.Context) error {
 	return kiroUpdateSQLiteTokens(ctx, s.path, newAccess, newRefresh, expiresAt)
 }
 
+func (s *sqliteKiroAuth) refreshSocial(ctx context.Context, state kiroSQLiteState, refreshToken string) error {
+	client := newKiroSocialAuthClient(nil)
+	resp, err := client.RefreshToken(ctx, refreshToken)
+	if err != nil {
+		return err
+	}
+
+	newAccess := strings.TrimSpace(resp.AccessToken)
+	newRefresh := strings.TrimSpace(resp.RefreshToken)
+	var expiresAt string
+	if resp.ExpiresIn != nil && *resp.ExpiresIn > 0 {
+		expiresAt = time.Now().Add(time.Duration(*resp.ExpiresIn) * time.Second).UTC().Format(time.RFC3339Nano)
+	}
+	profileARN := strings.TrimSpace(resp.ProfileARN)
+	if profileARN == "" {
+		profileARN = state.ProfileARN
+	}
+	return kiroUpdateSQLiteSocialTokens(ctx, s.path, newAccess, newRefresh, expiresAt, profileARN)
+}
+
 func (s *sqliteKiroAuth) CanRefresh() bool {
 	state, err := s.load(context.Background())
 	return err == nil && s.canRefreshState(state)
 }
 
 func (s *sqliteKiroAuth) canRefreshState(state kiroSQLiteState) bool {
-	return strings.TrimSpace(state.RefreshToken) != "" &&
-		strings.TrimSpace(state.Region) != "" &&
+	if strings.TrimSpace(state.RefreshToken) == "" {
+		return false
+	}
+	if state.IsSocial {
+		return true
+	}
+	return strings.TrimSpace(state.Region) != "" &&
 		strings.TrimSpace(state.ClientID) != "" &&
 		strings.TrimSpace(state.ClientSecret) != ""
 }
@@ -777,6 +810,32 @@ func kiroUpdateSQLiteTokens(ctx context.Context, path, access, refresh, expiresA
 		sb.WriteString(kiroSQLiteQuote(e))
 	}
 	sb.WriteString(") WHERE key = 'kirocli:odic:token';\nCOMMIT;\n")
+	_, err := kiroRunSQLite(ctx, "-batch", path, sb.String())
+	return err
+}
+
+func kiroUpdateSQLiteSocialTokens(ctx context.Context, path, access, refresh, expiresAt, profileARN string) error {
+	access = strings.TrimSpace(access)
+	if access == "" {
+		return fmt.Errorf("access token must not be empty")
+	}
+	var sb strings.Builder
+	sb.WriteString("BEGIN IMMEDIATE;\n")
+	sb.WriteString("UPDATE auth_kv SET value = json_set(value, '$.access_token', ")
+	sb.WriteString(kiroSQLiteQuote(access))
+	if r := strings.TrimSpace(refresh); r != "" {
+		sb.WriteString(", '$.refresh_token', ")
+		sb.WriteString(kiroSQLiteQuote(r))
+	}
+	if e := strings.TrimSpace(expiresAt); e != "" {
+		sb.WriteString(", '$.expires_at', ")
+		sb.WriteString(kiroSQLiteQuote(e))
+	}
+	if p := strings.TrimSpace(profileARN); p != "" {
+		sb.WriteString(", '$.profile_arn', ")
+		sb.WriteString(kiroSQLiteQuote(p))
+	}
+	sb.WriteString(") WHERE key = 'kirocli:social:token';\nCOMMIT;\n")
 	_, err := kiroRunSQLite(ctx, "-batch", path, sb.String())
 	return err
 }

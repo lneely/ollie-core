@@ -677,3 +677,56 @@ func (c *kiroAPIClient) ListModels(ctx context.Context, profileARN string) (*kir
 	}
 	return &result, nil
 }
+
+// ── Social token refresh client ───────────────────────────────────────────────
+
+const kiroSocialAuthEndpoint = "https://prod.us-east-1.auth.desktop.kiro.dev"
+
+type kiroSocialAuthClient struct {
+	endpoint   string
+	httpClient *http.Client
+}
+
+type kiroSocialRefreshResponse struct {
+	AccessToken  string `json:"accessToken"`
+	RefreshToken string `json:"refreshToken,omitempty"`
+	ExpiresIn    *int   `json:"expiresIn,omitempty"`
+	ProfileARN   string `json:"profileArn,omitempty"`
+}
+
+func newKiroSocialAuthClient(httpClient *http.Client) *kiroSocialAuthClient {
+	if httpClient == nil {
+		httpClient = &http.Client{}
+	}
+	return &kiroSocialAuthClient{endpoint: kiroSocialAuthEndpoint, httpClient: httpClient}
+}
+
+func (c *kiroSocialAuthClient) RefreshToken(ctx context.Context, refreshToken string) (*kiroSocialRefreshResponse, error) {
+	body, err := json.Marshal(map[string]string{"refreshToken": refreshToken})
+	if err != nil {
+		return nil, fmt.Errorf("marshal social refresh request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/refreshToken", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build social refresh request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("send social refresh request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, kiroDecodeHTTPError(resp)
+	}
+	var result kiroSocialRefreshResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode social refresh response: %w", err)
+	}
+	if strings.TrimSpace(result.AccessToken) == "" {
+		return nil, fmt.Errorf("social refresh response did not contain accessToken")
+	}
+	return &result, nil
+}
