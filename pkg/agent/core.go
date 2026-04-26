@@ -246,6 +246,18 @@ func (s *agent) pushSessionEnv() {
 	}
 }
 
+// pushLockDir sets the flock directory on the execute server to the session tmpdir.
+func (s *agent) pushLockDir() {
+	if s.dispatcher == nil || s.sessionID == "" {
+		return
+	}
+	if srv, ok := s.dispatcher.GetServer("execute"); ok {
+		if ls, ok := srv.(tools.LockDirSetter); ok {
+			ls.SetLockDir(filepath.Join(ollieTmpDir(), s.sessionID))
+		}
+	}
+}
+
 var _ Core = (*agent)(nil) // compile-time interface check
 
 var sweepTmpOnce sync.Once
@@ -313,6 +325,7 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 	}
 	a.changeCond = sync.NewCond(&a.changeMu)
 	a.pushSessionEnv()
+	a.pushLockDir()
 	return a
 }
 

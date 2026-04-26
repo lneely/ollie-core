@@ -39,6 +39,10 @@ type Server struct {
 	envMu    sync.RWMutex
 	envExtra map[string]string
 
+	// lockDir is the directory for advisory flock files used during parallel
+	// step dispatch. Set once at session init via SetLockDir; empty disables locking.
+	lockDir string
+
 	// rate limiting state (per-Server)
 	rateLimitMu        sync.Mutex
 	validationFailures int
@@ -168,6 +172,10 @@ func (e *Server) allowed(tool, detail string) bool {
 	}
 	return e.Confirm(detail)
 }
+
+// SetLockDir sets the directory used for advisory flock files during parallel
+// step dispatch. Must be called before the Server handles concurrent requests.
+func (e *Server) SetLockDir(dir string) { e.lockDir = dir }
 
 // SetEnv adds a session-scoped environment variable injected into all
 // subsequent subprocess invocations for this session.

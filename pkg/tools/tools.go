@@ -106,3 +106,9 @@ type EnvSetter interface {
 type TrustedToolsSetter interface {
 	SetTrustedTools(tools []string)
 }
+
+// LockDirSetter is implemented by tool servers that use advisory flock files
+// for parallel-step coordination. SetLockDir must be called once at session init.
+type LockDirSetter interface {
+	SetLockDir(dir string)
+}
