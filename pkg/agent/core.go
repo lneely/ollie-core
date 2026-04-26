@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -733,6 +734,14 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 
 	s.setState("thinking")
 
+	// Snapshot session state before this turn modifies it. Restored on failure
+	// so the session is clean for the next attempt.
+	snapSession := s.session
+	var snapMessages []backend.Message
+	if s.session != nil {
+		snapMessages = slices.Clone(s.session.messages)
+	}
+
 	if s.session == nil {
 		for _, msg := range s.startupMessages {
 			s.log.Debug("startup: %s", msg)
@@ -831,8 +840,16 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 	replyBuf.Reset()
 	s.setState("idle")
 
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrInterrupted) {
-		handler(Event{Role: "error", Content: err.Error()})
+	if err != nil {
+		if snapSession == nil {
+			s.session = nil
+		} else {
+			s.session.messages = snapMessages
+		}
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, ErrInterrupted) {
+			handler(Event{Role: "error", Content: err.Error()})
+		}
+		return ""
 	}
 
 	stopResult := s.hooks.Run(ctx, HookPostTurn, map[string]string{

@@ -46,7 +46,6 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 				break
 			}
 			if ctx.Err() != nil {
-				recordInterruption(state, "request")
 				return ctx.Err()
 			}
 			var rlErr *backend.RateLimitError
@@ -112,7 +111,6 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 				})
 			}
 			state.update(msg, results) //nolint:errcheck
-			recordInterruption(state, "stream")
 			return fmt.Errorf("step %d: stream interrupted: %w", step, ctx.Err())
 		}
 
@@ -242,7 +240,6 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 		}
 
 		if interrupted {
-			recordInterruption(state, "tools")
 			return ctx.Err()
 		}
 
@@ -260,21 +257,6 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 	return nil
 }
 
-// recordInterruption appends a note to history so the model knows what happened.
-func recordInterruption(state state, phase string) {
-	var note string
-	switch phase {
-	case "stream":
-		note = "Note: generation was interrupted before completion. Treat the previous assistant output as partial."
-	case "tools":
-		note = "Note: tool execution was interrupted before completion. Tool outputs may be missing or cancelled."
-	case "request":
-		note = "Note: the previous assistant turn was interrupted before any response was received."
-	default:
-		note = "Note: the previous assistant turn was interrupted."
-	}
-	state.update(backend.Message{Role: "assistant", Content: note}, nil) //nolint:errcheck
-}
 
 func emit(cfg agentConfig, msg Event) {
 	if cfg.Output != nil {
