@@ -110,7 +110,7 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 					IsError:    true,
 				})
 			}
-			state.update(msg, results) //nolint:errcheck
+			state.update(msg, results)
 			return fmt.Errorf("step %d: stream interrupted: %w", step, ctx.Err())
 		}
 
@@ -235,9 +235,7 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 			}
 		}
 
-		if err := state.update(msg, results); err != nil {
-			return fmt.Errorf("step %d update: %w", step, err)
-		}
+		state.update(msg, results)
 
 		if interrupted {
 			return ctx.Err()

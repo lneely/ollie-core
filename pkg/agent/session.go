@@ -94,7 +94,7 @@ func (s *Session) addUsage(u backend.Usage, estimated bool) {
 	}
 }
 
-func (s *Session) update(assistant backend.Message, results []toolResult) error {
+func (s *Session) update(assistant backend.Message, results []toolResult) {
 	s.messages = append(s.messages, assistant)
 	for _, r := range results {
 		s.messages = append(s.messages, backend.Message{
@@ -103,7 +103,6 @@ func (s *Session) update(assistant backend.Message, results []toolResult) error 
 			ToolCallID: r.ToolCallID,
 		})
 	}
-	return nil
 }
 
 // PreCompactionSnapshot returns a copy of the current messages for persistence

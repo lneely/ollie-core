@@ -19,6 +19,6 @@ type state interface {
 
 	// Update appends the assistant's reply and any tool results to the history.
 	// Called once per loop iteration after Act completes.
-	update(assistant backend.Message, results []toolResult) error
+	update(assistant backend.Message, results []toolResult)
 
 }
