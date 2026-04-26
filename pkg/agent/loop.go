@@ -22,8 +22,10 @@ type agentConfig struct {
 	Output           EventHandler
 	preamble         string // compiled system+agent prompt sent as the system role
 	GenerationParams backend.GenerationParams
-	PopInject        func() string          // returns and clears pending inject, or ""
-	AutoCompact      func(ctx context.Context) // called after each tool round; may compact in-place
+	PopInject        func() string                                                      // returns and clears pending inject, or ""
+	AutoCompact      func(ctx context.Context)                                           // called after each tool round; may compact in-place
+	PreTool          func(ctx context.Context, name string, args json.RawMessage) HookResult  // called before each tool; exit 2 blocks execution
+	PostTool         func(ctx context.Context, name string, args json.RawMessage, result string) HookResult // called after each tool; exit 0 appends, exit 2 replaces result
 }
 
 func run(ctx context.Context, cfg agentConfig, state state) error {
@@ -154,6 +156,24 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 
 			emit(cfg, Event{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
 
+			if cfg.PreTool != nil {
+				hr := cfg.PreTool(ctx, tc.Name, tc.Arguments)
+				if hr.Blocked {
+					msg := hr.Context
+					if msg == "" {
+						msg = fmt.Sprintf("tool %q blocked by hook", tc.Name)
+					}
+					results = append(results, toolResult{
+						ToolCallID: tc.ID,
+						Name:       tc.Name,
+						Content:    msg,
+						IsError:    true,
+					})
+					emit(cfg, Event{Role: "tool", Name: tc.Name, Content: msg})
+					continue
+				}
+			}
+
 			var result string
 			var isErr bool
 			if cfg.Exec != nil {
@@ -194,6 +214,14 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 			}
 
 			if !interrupted {
+				if cfg.PostTool != nil {
+					hr := cfg.PostTool(ctx, tc.Name, tc.Arguments, result)
+					if hr.Blocked {
+						result = hr.Context
+					} else if hr.Context != "" {
+						result += "\n" + hr.Context
+					}
+				}
 				if cfg.PopInject != nil {
 					if injected := cfg.PopInject(); injected != "" {
 						result += "\n\n<system-user-interruption>\n" + injected + "\n</system-user-interruption>"

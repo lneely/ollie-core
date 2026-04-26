@@ -19,6 +19,8 @@ const (
 	HookAgentSpawn  = "agentSpawn"
 	HookPreTurn     = "preTurn"
 	HookPostTurn    = "postTurn"
+	HookPreTool     = "preTool"
+	HookPostTool    = "postTool"
 	HookPreCompact  = "preCompact"
 	HookPostCompact = "postCompact"
 )

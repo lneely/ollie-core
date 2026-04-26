@@ -776,6 +776,23 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 		}
 		return ""
 	}
+	s.cfg.PreTool = func(ctx context.Context, name string, args json.RawMessage) HookResult {
+		return s.hooks.Run(ctx, HookPreTool, map[string]string{
+			"session_id": s.sessionID,
+			"cwd":        s.CWD(),
+			"tool":       name,
+			"args":       string(args),
+		}, s.log)
+	}
+	s.cfg.PostTool = func(ctx context.Context, name string, args json.RawMessage, result string) HookResult {
+		return s.hooks.Run(ctx, HookPostTool, map[string]string{
+			"session_id": s.sessionID,
+			"cwd":        s.CWD(),
+			"tool":       name,
+			"args":       string(args),
+			"result":     result,
+		}, s.log)
+	}
 	s.cfg.AutoCompact = func(ctx context.Context) {
 		if ctx.Err() != nil || s.session == nil {
 			return
