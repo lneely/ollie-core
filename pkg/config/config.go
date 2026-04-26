@@ -23,9 +23,44 @@ func (h *HookCmds) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Prompt holds the agent prompt. It unmarshals from either a JSON string
+// (treated as literal text, with the existing resolvePrompt semantics) or
+// an array of strings (each element is a shell command whose stdout is
+// concatenated with newlines).
+type Prompt struct {
+	Value []string // len==1 for a plain string; len>1 for command list
+	IsExec bool    // true when the value came from an array (execute mode)
+}
+
+func (p *Prompt) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		p.Value = []string{s}
+		p.IsExec = false
+		return nil
+	}
+	var ss []string
+	if err := json.Unmarshal(data, &ss); err != nil {
+		return err
+	}
+	p.Value = ss
+	p.IsExec = true
+	return nil
+}
+
+func (p Prompt) MarshalJSON() ([]byte, error) {
+	if p.IsExec {
+		return json.Marshal(p.Value)
+	}
+	if len(p.Value) == 1 {
+		return json.Marshal(p.Value[0])
+	}
+	return json.Marshal(p.Value)
+}
+
 type Config struct {
 	Hooks            map[string]HookCmds     `json:"hooks,omitempty"`
-	Prompt           string                  `json:"prompt,omitempty"`
+	Prompt           Prompt                  `json:"prompt,omitempty"`
 	TrustedTools     []string                `json:"trustedTools,omitempty"`
 	MaxTokens        int                     `json:"maxTokens,omitempty"`
 	Temperature      *float64                `json:"temperature,omitempty"`

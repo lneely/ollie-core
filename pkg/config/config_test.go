@@ -60,6 +60,36 @@ func TestHookCmdsInvalid(t *testing.T) {
 	}
 }
 
+func TestPromptString(t *testing.T) {
+	cfg, err := Load(strings.NewReader(`{"prompt": "be helpful"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Prompt.IsExec || len(cfg.Prompt.Value) != 1 || cfg.Prompt.Value[0] != "be helpful" {
+		t.Errorf("Prompt = %v", cfg.Prompt)
+	}
+}
+
+func TestPromptArray(t *testing.T) {
+	cfg, err := Load(strings.NewReader(`{"prompt": ["echo hello", "echo world"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Prompt.IsExec {
+		t.Error("expected IsExec=true for array prompt")
+	}
+	if len(cfg.Prompt.Value) != 2 || cfg.Prompt.Value[0] != "echo hello" || cfg.Prompt.Value[1] != "echo world" {
+		t.Errorf("Prompt.Value = %v", cfg.Prompt.Value)
+	}
+}
+
+func TestPromptInvalid(t *testing.T) {
+	_, err := Load(strings.NewReader(`{"prompt": 42}`))
+	if err == nil {
+		t.Error("expected error for invalid prompt type")
+	}
+}
+
 func TestLoadAllFields(t *testing.T) {
 	cfg, err := Load(strings.NewReader(`{
 		"prompt": "be helpful",
@@ -72,8 +102,8 @@ func TestLoadAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Prompt != "be helpful" {
-		t.Errorf("Prompt = %q", cfg.Prompt)
+	if cfg.Prompt.IsExec || len(cfg.Prompt.Value) != 1 || cfg.Prompt.Value[0] != "be helpful" {
+		t.Errorf("Prompt = %v", cfg.Prompt)
 	}
 	if len(cfg.TrustedTools) != 1 || cfg.TrustedTools[0] != "execute_code" {
 		t.Errorf("TrustedTools = %v", cfg.TrustedTools)

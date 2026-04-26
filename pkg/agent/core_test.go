@@ -2272,7 +2272,7 @@ func TestBuildAgentEnv_NilConfig(t *testing.T) {
 func TestBuildAgentEnv_AgentPromptAppended(t *testing.T) {
 	setupCfgDir(t, "base prompt")
 	d := tools.NewDispatcher()
-	cfg := &config.Config{Prompt: "agent suffix"}
+	cfg := &config.Config{Prompt: config.Prompt{Value: []string{"agent suffix"}}}
 	env := BuildAgentEnv(cfg, d, t.TempDir())
 
 	// preamble contains only the system prompt; agent prompt is kept separate
@@ -2394,7 +2394,7 @@ func TestBuildAgentEnv_AgentPromptNoSystemPrompt(t *testing.T) {
 	// Empty system prompt file — agentPrompt is kept separate from preamble.
 	setupCfgDir(t, "")
 	d := tools.NewDispatcher()
-	cfg := &config.Config{Prompt: "only agent"}
+	cfg := &config.Config{Prompt: config.Prompt{Value: []string{"only agent"}}}
 	env := BuildAgentEnv(cfg, d, t.TempDir())
 	if env.agentPrompt != "only agent" {
 		t.Errorf("agentPrompt = %q; want %q", env.agentPrompt, "only agent")

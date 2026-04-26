@@ -63,7 +63,9 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 		for k, v := range cfg.Hooks {
 			hooks[k] = []string(v)
 		}
-		agentPrompt = cfg.Prompt
+		if resolved, err := resolvePrompt(cfg.Prompt, cwd); err == nil {
+			agentPrompt = resolved
+		}
 		genParams = backend.GenerationParams{
 			MaxTokens:        cfg.MaxTokens,
 			Temperature:      cfg.Temperature,
