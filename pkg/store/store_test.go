@@ -41,12 +41,16 @@ type stubCore struct {
 	queued     []string
 	interrupted     bool
 	setSessionIDErr error
+	submitCh        chan struct{} // closed after each Submit call
 }
 
 func (c *stubCore) Submit(_ context.Context, input string, handler agent.EventHandler) {
 	c.submitted = append(c.submitted, input)
 	if handler != nil && c.reply != "" {
 		handler(agent.Event{Role: "assistant", Content: c.reply})
+	}
+	if c.submitCh != nil {
+		close(c.submitCh)
 	}
 }
 func (c *stubCore) Interrupt(error) bool                                        { c.interrupted = true; return c.running }
@@ -815,8 +819,9 @@ func TestSessionFileStoreWritePrompt(t *testing.T) {
 	defer sess.Cancel()
 	sf, core := newSessionFileStore(t, sess)
 
+	core.submitCh = make(chan struct{})
 	storeWrite(t, sf, "prompt", []byte("hello agent"))
-	time.Sleep(10 * time.Millisecond)
+	<-core.submitCh
 	if len(core.submitted) != 1 || core.submitted[0] != "hello agent" {
 		t.Errorf("submitted = %v; want [hello agent]", core.submitted)
 	}

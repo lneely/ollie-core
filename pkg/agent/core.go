@@ -180,6 +180,7 @@ type agent struct {
 	env             map[string]string // session-scoped env vars
 	changeMu        sync.Mutex
 	changeCond      *sync.Cond
+	submitMu        sync.Mutex // serializes Submit calls (commands + turns)
 }
 
 // SetEnv stores a session-scoped variable and propagates it to the execute server.
@@ -673,6 +674,23 @@ func (s *agent) Submit(ctx context.Context, input string, handler EventHandler) 
 	if input == "" {
 		return
 	}
+
+	// Fast path: inject and FIFO push use atomics and are safe without
+	// the submit lock. Handle them before acquiring submitMu so they
+	// don't block behind a long-running turn or command.
+	if s.IsRunning() {
+		if s.handleCommand(ctx, input, handler) {
+			return
+		}
+		s.fifo.Push(input)
+		return
+	}
+
+	// Serialize commands and turns so that e.g. a /compact arriving via
+	// ctl cannot race with an executeTurn arriving via prompt.
+	s.submitMu.Lock()
+	defer s.submitMu.Unlock()
+
 	if s.handleCommand(ctx, input, handler) {
 		return
 	}
