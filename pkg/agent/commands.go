@@ -186,7 +186,6 @@ func (s *agent) handleCommand(ctx context.Context, input string, handler EventHa
 			s.cfg.Tools = env.tools
 			s.cfg.Exec = env.exec
 			s.cfg.GenerationParams = env.genParams
-			s.agentPrompt = env.agentPrompt
 			s.agentName = name
 			s.session = nil
 			s.sessionID = NewSessionID()

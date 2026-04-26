@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -32,7 +31,6 @@ type AgentEnv struct {
 	exec         toolExecutor
 	Hooks        Hooks
 	preamble string
-	agentPrompt  string // agent-specific suffix appended after the base system prompt
 	genParams    backend.GenerationParams
 	Messages     []string
 }
@@ -57,14 +55,14 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 	allTools := toolInfosToBackend(allToolInfos)
 
 	hooks := Hooks{}
-	agentPrompt := ""
+	var preamble string
 	var genParams backend.GenerationParams
 	if cfg != nil {
 		for k, v := range cfg.Hooks {
 			hooks[k] = []string(v)
 		}
 		if resolved, err := resolvePrompt(cfg.Prompt, cwd); err == nil {
-			agentPrompt = resolved
+			preamble = resolved
 		}
 		genParams = backend.GenerationParams{
 			MaxTokens:        cfg.MaxTokens,
@@ -80,13 +78,6 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 			}
 		}
 	}
-
-	path := DefaultPromptsDir() + "/SYSTEM_PROMPT.md"
-	data, err := os.ReadFile(path)
-	if err != nil {
-		panic(fmt.Sprintf("loadSystemPrompt: %s: %v", path, err))
-	}
-	preamble := expandSystemPrompt(string(data), cwd)
 
 	exec := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
 		server, ok := serverOf[name]
@@ -110,7 +101,6 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 		exec:        exec,
 		Hooks:       hooks,
 		preamble:    preamble,
-		agentPrompt: agentPrompt,
 		genParams:    genParams,
 		Messages:     messages,
 	}
@@ -120,31 +110,6 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 // DefaultPromptsDir returns the default directory for prompt templates.
 func DefaultPromptsDir() string {
 	return paths.CfgDir() + "/prompts"
-}
-
-func expandSystemPrompt(content, cwd string) string {
-	if cwd == "" {
-		cwd, _ = os.Getwd()
-	}
-	isGit := "false"
-	if _, err := os.Stat(filepath.Join(cwd, ".git")); err == nil {
-		isGit = "true"
-	}
-	mapper := func(key string) string {
-		switch key {
-		case "PWD":
-			return cwd
-		case "PRIME_DATE":
-			return time.Now().Format("2006-01-02")
-		case "PRIME_PLATFORM":
-			return strings.ToLower(runtime.GOOS)
-		case "PRIME_IS_GIT_REPO":
-			return isGit
-		default:
-			return os.Getenv(key)
-		}
-	}
-	return os.Expand(content, mapper)
 }
 
 
@@ -204,7 +169,6 @@ type agent struct {
 	newDispatcher   func() tools.Dispatcher
 	newBackend      func(string) (backend.Backend, error)
 	cwd             string
-	agentPrompt      string // agent-specific prompt suffix; kept for system prompt rebuilds
 	startupMessages  []string
 	currentAction   atomic.Pointer[actionHandle]
 	fifo            PromptFIFO
@@ -318,7 +282,6 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		sessionsDir:     cfg.SessionsDir,
 		sessionID:       cfg.SessionID,
 		cwd:             paths.ExpandHome(cfg.CWD),
-		agentPrompt:     cfg.Env.agentPrompt,
 		startupMessages: cfg.Env.Messages,
 		dispatcher:      cfg.Env.dispatcher,
 		newDispatcher:   cfg.NewDispatcher,
@@ -512,9 +475,6 @@ func (s *agent) spawnContext(ctx context.Context, handler EventHandler) string {
 		handler(infoEvent(result.Warning))
 	}
 	var parts []string
-	if s.agentPrompt != "" {
-		parts = append(parts, s.agentPrompt)
-	}
 	if result.Context != "" {
 		parts = append(parts, result.Context)
 	}

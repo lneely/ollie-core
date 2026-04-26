@@ -526,45 +526,6 @@ func TestAgentSpawnFiresOnce(t *testing.T) {
 	}
 }
 
-// --- expandSystemPrompt ---
-
-func TestExpandSystemPrompt_IsGitTrue(t *testing.T) {
-	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0700)
-	got := expandSystemPrompt("${PRIME_IS_GIT_REPO}", dir)
-	if got != "true" {
-		t.Errorf("got %q; want true", got)
-	}
-}
-
-func TestExpandSystemPrompt_IsGitFalse(t *testing.T) {
-	got := expandSystemPrompt("${PRIME_IS_GIT_REPO}", t.TempDir())
-	if got != "false" {
-		t.Errorf("got %q; want false", got)
-	}
-}
-
-func TestExpandSystemPrompt_PWDUsesCWD(t *testing.T) {
-	dir := t.TempDir()
-	got := expandSystemPrompt("${PWD}", dir)
-	if got != dir {
-		t.Errorf("got %q; want %q", got, dir)
-	}
-}
-
-// --- BuildAgentEnv: missing system prompt ---
-
-func TestBuildAgentEnv_MissingSystemPrompt(t *testing.T) {
-	t.Setenv("OLLIE_CFG_PATH", t.TempDir()) // no SYSTEM_PROMPT.md written
-
-	defer func() {
-		if recover() == nil {
-			t.Error("expected panic from BuildAgentEnv; got none")
-		}
-	}()
-	BuildAgentEnv(nil, tools.NewDispatcher(), "")
-}
-
 // --- panic recovery ---
 
 func TestSubmit_PanicRecovery(t *testing.T) {
@@ -2237,26 +2198,20 @@ func TestFirstSentence_ShortNoSentenceEnd(t *testing.T) {
 
 // --- BuildAgentEnv (nil config path) ---
 
-func setupCfgDir(t *testing.T, preamble string) string {
+func setupCfgDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.MkdirAll(dir+"/prompts", 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dir+"/prompts/SYSTEM_PROMPT.md", []byte(preamble), 0600); err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv("OLLIE_CFG_PATH", dir)
 	return dir
 }
 
 func TestBuildAgentEnv_NilConfig(t *testing.T) {
-	setupCfgDir(t, "base prompt")
+	setupCfgDir(t)
 	d := tools.NewDispatcher()
 	env := BuildAgentEnv(nil, d, t.TempDir())
 
-	if env.preamble != "base prompt" {
-		t.Errorf("preamble = %q; want %q", env.preamble, "base prompt")
+	if env.preamble != "" {
+		t.Errorf("preamble = %q; want empty", env.preamble)
 	}
 	if len(env.Hooks) != 0 {
 		t.Errorf("expected no hooks; got %v", env.Hooks)
@@ -2269,23 +2224,19 @@ func TestBuildAgentEnv_NilConfig(t *testing.T) {
 	}
 }
 
-func TestBuildAgentEnv_AgentPromptAppended(t *testing.T) {
-	setupCfgDir(t, "base prompt")
+func TestBuildAgentEnv_PromptBecomesPreamble(t *testing.T) {
+	setupCfgDir(t)
 	d := tools.NewDispatcher()
-	cfg := &config.Config{Prompt: config.Prompt{Value: []string{"agent suffix"}}}
+	cfg := &config.Config{Prompt: config.Prompt{Value: []string{"the prompt"}}}
 	env := BuildAgentEnv(cfg, d, t.TempDir())
 
-	// preamble contains only the system prompt; agent prompt is kept separate
-	if !strings.Contains(env.preamble, "base prompt") {
-		t.Errorf("preamble missing base: %q", env.preamble)
-	}
-	if env.agentPrompt != "agent suffix" {
-		t.Errorf("agentPrompt = %q; want %q", env.agentPrompt, "agent suffix")
+	if env.preamble != "the prompt" {
+		t.Errorf("preamble = %q; want %q", env.preamble, "the prompt")
 	}
 }
 
 func TestBuildAgentEnv_HooksAndParams(t *testing.T) {
-	setupCfgDir(t, "base")
+	setupCfgDir(t)
 	d := tools.NewDispatcher()
 	temp := 0.7
 	cfg := &config.Config{
@@ -2307,7 +2258,7 @@ func TestBuildAgentEnv_HooksAndParams(t *testing.T) {
 }
 
 func TestBuildAgentEnv_ExecUnknownTool(t *testing.T) {
-	setupCfgDir(t, "base")
+	setupCfgDir(t)
 	d := tools.NewDispatcher()
 	env := BuildAgentEnv(nil, d, t.TempDir())
 
@@ -2360,7 +2311,7 @@ func (m *mockTrustedSetter) CallTool(ctx context.Context, tool string, args json
 }
 
 func TestBuildAgentEnv_ListToolsError(t *testing.T) {
-	setupCfgDir(t, "")
+	setupCfgDir(t)
 	d := &mockDispatcher{listErr: fmt.Errorf("boom")}
 	env := BuildAgentEnv(nil, d, t.TempDir())
 	if len(env.Messages) != 1 || !strings.Contains(env.Messages[0], "boom") {
@@ -2369,7 +2320,7 @@ func TestBuildAgentEnv_ListToolsError(t *testing.T) {
 }
 
 func TestBuildAgentEnv_ToolsPopulated(t *testing.T) {
-	setupCfgDir(t, "")
+	setupCfgDir(t)
 	d := &mockDispatcher{
 		tools: []tools.ToolInfo{{Server: "s1", Name: "mytool", Description: "desc", InputSchema: json.RawMessage(`{}`)}},
 	}
@@ -2380,7 +2331,7 @@ func TestBuildAgentEnv_ToolsPopulated(t *testing.T) {
 }
 
 func TestBuildAgentEnv_TrustedTools(t *testing.T) {
-	setupCfgDir(t, "")
+	setupCfgDir(t)
 	setter := &mockTrustedSetter{}
 	d := &mockDispatcher{servers: map[string]tools.Server{"execute": setter}}
 	cfg := &config.Config{TrustedTools: []string{"bash"}}
@@ -2390,19 +2341,18 @@ func TestBuildAgentEnv_TrustedTools(t *testing.T) {
 	}
 }
 
-func TestBuildAgentEnv_AgentPromptNoSystemPrompt(t *testing.T) {
-	// Empty system prompt file — agentPrompt is kept separate from preamble.
-	setupCfgDir(t, "")
+func TestBuildAgentEnv_PromptOnly(t *testing.T) {
+	setupCfgDir(t)
 	d := tools.NewDispatcher()
 	cfg := &config.Config{Prompt: config.Prompt{Value: []string{"only agent"}}}
 	env := BuildAgentEnv(cfg, d, t.TempDir())
-	if env.agentPrompt != "only agent" {
-		t.Errorf("agentPrompt = %q; want %q", env.agentPrompt, "only agent")
+	if env.preamble != "only agent" {
+		t.Errorf("preamble = %q; want %q", env.preamble, "only agent")
 	}
 }
 
 func TestBuildAgentEnv_ExecDispatchSuccess(t *testing.T) {
-	setupCfgDir(t, "")
+	setupCfgDir(t)
 	d := &mockDispatcher{
 		tools: []tools.ToolInfo{{Server: "s1", Name: "mytool"}},
 		dispatch: func(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error) {
@@ -2420,7 +2370,7 @@ func TestBuildAgentEnv_ExecDispatchSuccess(t *testing.T) {
 }
 
 func TestBuildAgentEnv_ExecDispatchError(t *testing.T) {
-	setupCfgDir(t, "")
+	setupCfgDir(t)
 	d := &mockDispatcher{
 		tools: []tools.ToolInfo{{Server: "s1", Name: "mytool"}},
 		dispatch: func(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error) {
@@ -2435,7 +2385,7 @@ func TestBuildAgentEnv_ExecDispatchError(t *testing.T) {
 }
 
 func TestBuildAgentEnv_ExecToolResultIsError(t *testing.T) {
-	setupCfgDir(t, "")
+	setupCfgDir(t)
 	d := &mockDispatcher{
 		tools: []tools.ToolInfo{{Server: "s1", Name: "mytool"}},
 		dispatch: func(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error) {
