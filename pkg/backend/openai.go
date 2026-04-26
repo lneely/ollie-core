@@ -226,6 +226,79 @@ func encodeOpenAITools(tools []Tool) []openAITool {
 
 // -- stream parsing --
 
+// parseDSMLToolCalls recovers tool calls from DeepSeek's native DSML format,
+// which leaks into the content stream when OpenRouter fails to convert it.
+// Format: <｜DSML｜invoke name="TOOL"><｜DSML｜parameter name="P">VALUE</｜DSML｜parameter>
+func parseDSMLToolCalls(s string) []ToolCall {
+	const (
+		invokeOpen = "<｜DSML｜invoke name=\""
+		paramOpen  = "<｜DSML｜parameter name=\""
+		paramClose = "</｜DSML｜parameter>"
+		anyTag     = "<｜DSML｜"
+	)
+	var calls []ToolCall
+	for {
+		idx := strings.Index(s, invokeOpen)
+		if idx < 0 {
+			break
+		}
+		s = s[idx+len(invokeOpen):]
+		q := strings.IndexByte(s, '"')
+		if q < 0 {
+			break
+		}
+		toolName := s[:q]
+		s = s[q:]
+
+		params := map[string]json.RawMessage{}
+		for {
+			pidx := strings.Index(s, paramOpen)
+			if pidx < 0 {
+				break
+			}
+			s = s[pidx+len(paramOpen):]
+			pq := strings.IndexByte(s, '"')
+			if pq < 0 {
+				break
+			}
+			paramName := s[:pq]
+			s = s[pq:]
+			gt := strings.IndexByte(s, '>')
+			if gt < 0 {
+				break
+			}
+			s = s[gt+1:]
+			var value string
+			if ci := strings.Index(s, paramClose); ci >= 0 {
+				value = strings.TrimSpace(s[:ci])
+				s = s[ci+len(paramClose):]
+			} else if ti := strings.Index(s, anyTag); ti >= 0 {
+				value = strings.TrimSpace(s[:ti])
+				s = s[ti:]
+			} else {
+				value = strings.TrimSpace(s)
+				s = ""
+			}
+			if value != "" {
+				params[paramName] = json.RawMessage(value)
+			}
+		}
+		if len(params) > 0 {
+			if argsJSON, err := json.Marshal(params); err == nil {
+				calls = append(calls, ToolCall{
+					ID:        fmt.Sprintf("dsml-%s-%d", toolName, len(calls)),
+					Name:      toolName,
+					Arguments: argsJSON,
+				})
+			}
+		}
+		if s == "" {
+			break
+		}
+	}
+	return calls
+}
+
 // streamOpenAISSE reads an OpenAI-format SSE stream from r and sends
 // StreamEvents to ch. It is the core parsing loop, separated from HTTP
 // transport so it can be tested with an io.Reader directly.
@@ -242,6 +315,13 @@ func streamOpenAISSE(r io.Reader, ch chan<- StreamEvent) {
 	// finishReason and usage arrive in separate trailing chunks.
 	var finishReason string
 	var usage Usage
+
+	// DeepSeek quirk: when OpenRouter fails to convert DeepSeek's native DSML
+	// tool-call tokens to standard tool_calls chunks, they leak into the content
+	// stream as raw text. Detect and buffer them; parse at [DONE] if no
+	// structured tool calls accumulated.
+	var dsmlBuf strings.Builder
+	var seenDSML bool
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -260,6 +340,9 @@ func streamOpenAISSE(r io.Reader, ch chan<- StreamEvent) {
 					Name:      a.name,
 					Arguments: json.RawMessage(a.args),
 				})
+			}
+			if seenDSML && len(ev.ToolCalls) == 0 {
+				ev.ToolCalls = append(ev.ToolCalls, parseDSMLToolCalls(dsmlBuf.String())...)
 			}
 			ch <- ev
 			return
@@ -289,8 +372,13 @@ func streamOpenAISSE(r io.Reader, ch chan<- StreamEvent) {
 		if choice.FinishReason != "" {
 			finishReason = choice.FinishReason
 		}
-		if choice.Delta.Content != "" {
-			ch <- StreamEvent{Content: choice.Delta.Content}
+		if content := choice.Delta.Content; content != "" {
+			if seenDSML || strings.Contains(content, "<｜DSML｜") {
+				seenDSML = true
+				dsmlBuf.WriteString(content)
+			} else {
+				ch <- StreamEvent{Content: content}
+			}
 		}
 
 		for _, dtc := range choice.Delta.ToolCalls {
