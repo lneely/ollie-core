@@ -948,3 +948,144 @@ func TestDispatchSingleElevated(t *testing.T) {
 		t.Errorf("result = %q", result)
 	}
 }
+
+// ---- flock / locking ----
+
+func TestDetectParallelClass(t *testing.T) {
+	tests := []struct {
+		code string
+		want lockClass
+	}{
+		{"#!/bin/sh\n# ollie:parallel read\ncat $1\n", lockClassRead},
+		{"#!/bin/sh\n# ollie:parallel write\n", lockClassWrite},
+		{"#!/bin/sh\n# ollie:parallel read extra\ncat\n", lockClassRead},
+		{"#!/bin/sh\n# ollie:parallel write extra\n", lockClassWrite},
+		{"#!/bin/sh\nno annotation\n", lockClassGlobal},
+		{"", lockClassGlobal},
+		// annotation after line 10 is ignored
+		{strings.Repeat("# filler\n", 10) + "# ollie:parallel read\n", lockClassGlobal},
+	}
+	for _, tt := range tests {
+		got := detectParallelClass(tt.code)
+		if got != tt.want {
+			t.Errorf("detectParallelClass(code) = %v; want %v", got, tt.want)
+		}
+	}
+}
+
+func TestSanitizeLockName(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"simple", "simple"},
+		{"path/to/file", "path_to_file"},
+		{"a b:c*d?e<f>g|h\"i\\j", "a_b_c_d_e_f_g_h_i_j"},
+		{"", "unnamed"},
+		{strings.Repeat("x", 100), strings.Repeat("x", 64)},
+	}
+	for _, tt := range tests {
+		got := sanitizeLockName(tt.in)
+		if got != tt.want {
+			t.Errorf("sanitizeLockName(%q) = %q; want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestAcquireFlockDisabled(t *testing.T) {
+	f, err := acquireFlock("", "name", true)
+	if err != nil || f != nil {
+		t.Errorf("acquireFlock with empty dir: f=%v err=%v; want nil,nil", f, err)
+	}
+}
+
+func TestAcquireFlockShared(t *testing.T) {
+	dir := t.TempDir()
+	f, err := acquireFlock(dir, "test", false)
+	if err != nil {
+		t.Fatalf("acquireFlock: %v", err)
+	}
+	if f == nil {
+		t.Fatal("expected non-nil file")
+	}
+	f.Close()
+}
+
+func TestAcquireFlockExclusive(t *testing.T) {
+	dir := t.TempDir()
+	f, err := acquireFlock(dir, "excl", true)
+	if err != nil {
+		t.Fatalf("acquireFlock exclusive: %v", err)
+	}
+	f.Close()
+}
+
+func TestClassifyStep(t *testing.T) {
+	// inline code → global
+	if got := classifyStep(CodeStep{Code: "echo hi"}); got != lockClassGlobal {
+		t.Errorf("inline code: got %v; want global", got)
+	}
+	// parallel group → global
+	if got := classifyStep(CodeStep{Parallel: []CodeStep{{Code: "x"}}}); got != lockClassGlobal {
+		t.Errorf("parallel group: got %v; want global", got)
+	}
+	// elevated → global
+	if got := classifyStep(CodeStep{Elevated: true}); got != lockClassGlobal {
+		t.Errorf("elevated: got %v; want global", got)
+	}
+	// unknown tool → global
+	if got := classifyStep(CodeStep{Tool: "nonexistent_tool_xyz"}); got != lockClassGlobal {
+		t.Errorf("unknown tool: got %v; want global", got)
+	}
+}
+
+func TestSetLockDir(t *testing.T) {
+	s := newServer(t)
+	dir := t.TempDir()
+	s.SetLockDir(dir)
+	if s.lockDir != dir {
+		t.Errorf("lockDir = %q; want %q", s.lockDir, dir)
+	}
+}
+
+func TestRunReadBatch_Single(t *testing.T) {
+	s := newServer(t)
+	ctx := context.Background()
+	stages := []CodeStep{{Code: "echo batch", Tool: ""}}
+	out, err := s.runReadBatch(ctx, 0, stages, 10, "default", "")
+	if err != nil {
+		t.Fatalf("runReadBatch: %v", err)
+	}
+	if !strings.Contains(out, "batch") {
+		t.Errorf("output = %q; want 'batch'", out)
+	}
+}
+
+func TestRunReadBatch_Multi(t *testing.T) {
+	s := newServer(t)
+	ctx := context.Background()
+	stages := []CodeStep{
+		{Code: "echo one"},
+		{Code: "echo two"},
+	}
+	out, err := s.runReadBatch(ctx, 0, stages, 10, "default", "")
+	if err != nil {
+		t.Fatalf("runReadBatch multi: %v", err)
+	}
+	if !strings.Contains(out, "one") || !strings.Contains(out, "two") {
+		t.Errorf("output = %q; want 'one' and 'two'", out)
+	}
+}
+
+func TestRunReadBatch_WithLockDir(t *testing.T) {
+	s := newServer(t)
+	s.SetLockDir(t.TempDir())
+	ctx := context.Background()
+	stages := []CodeStep{{Code: "echo locked"}}
+	out, err := s.runReadBatch(ctx, 0, stages, 10, "default", "")
+	if err != nil {
+		t.Fatalf("runReadBatch with lockdir: %v", err)
+	}
+	if !strings.Contains(out, "locked") {
+		t.Errorf("output = %q; want 'locked'", out)
+	}
+}
