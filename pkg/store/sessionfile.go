@@ -30,6 +30,7 @@ var SessionFileList = []struct {
 	{"ctxsz", 0444},
 	{"models", 0444},
 	{"systemprompt", 0444},
+	{"env", 0444},
 	{"tail", 0555},
 }
 
@@ -194,11 +195,26 @@ func (h *sessionHelper) content(name string) string {
 		return h.sess.Core.SystemPrompt()
 	case "offset":
 		return fmt.Sprintf("%d\n", h.sess.ChatOffset)
+	case "env":
+		return h.envContent()
 	case "tail":
 		return "#!/bin/sh\nexec tail -f \"$(dirname \"$0\")/chat\"\n"
 	}
 	return ""
 }
+
+func (h *sessionHelper) envContent() string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "OLLIE_SESSION_ID=%s\n", h.sess.RunnableID())
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "OLLIE_") && !strings.HasPrefix(e, "OLLIE_SESSION_ID=") {
+			sb.WriteString(e)
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}
+
 
 func (h *sessionHelper) cfgContent() string {
 	h.sess.mu.RLock()
