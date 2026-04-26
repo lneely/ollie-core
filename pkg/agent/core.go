@@ -817,20 +817,18 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 	s.setState("idle")
 
 	if err != nil {
-		interrupted := errors.Is(err, context.Canceled) || errors.Is(err, ErrInterrupted)
-		if interrupted && s.session != nil && sessionClean(s.session.messages) {
-			// Interrupt with clean state: keep whatever was built during the turn.
+		if errors.Is(err, context.Canceled) || errors.Is(err, ErrInterrupted) {
+			// Interrupted: mid-turn state was already saved to disk by SaveSession.
+			// Keep in-memory session as-is so it matches the on-disk state.
 			return ""
 		}
-		// Real error or dirty session (dangling tool calls): restore pre-turn state.
+		// Real error: restore pre-turn snapshot.
 		if snapSession == nil {
 			s.session = nil
 		} else {
 			s.session.messages = snapMessages
 		}
-		if !interrupted {
-			handler(Event{Role: "error", Content: err.Error()})
-		}
+		handler(Event{Role: "error", Content: err.Error()})
 		return ""
 	}
 
@@ -866,17 +864,6 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 	return ""
 }
 
-// sessionClean reports whether the message history is in a consistent state
-// that is safe to resume from. An interrupted turn may leave dangling tool
-// calls (assistant message with ToolCalls but no following tool results) or
-// end on a tool result with no subsequent assistant message — both are unsafe.
-func sessionClean(msgs []backend.Message) bool {
-	if len(msgs) == 0 {
-		return true
-	}
-	last := msgs[len(msgs)-1]
-	return last.Role == "assistant" && len(last.ToolCalls) == 0
-}
 
 func toolInfosToBackend(infos []tools.ToolInfo) []backend.Tool {
 	out := make([]backend.Tool, len(infos))
