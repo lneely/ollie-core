@@ -24,6 +24,7 @@ type agentConfig struct {
 	GenerationParams backend.GenerationParams
 	PopInject        func() string                                                      // returns and clears pending inject, or ""
 	AutoCompact      func(ctx context.Context)                                           // called after each tool round; may compact in-place
+	SaveSession      func()                                                             // called after each state.update(); persists mid-turn progress
 	PreTool          func(ctx context.Context, name string, args json.RawMessage) HookResult  // called before each tool; exit 2 blocks execution
 	PostTool         func(ctx context.Context, name string, args json.RawMessage, result string) HookResult // called after each tool; exit 0 appends, exit 2 replaces result
 }
@@ -127,6 +128,9 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 				})
 			}
 			state.update(msg, results)
+			if cfg.SaveSession != nil {
+				cfg.SaveSession()
+			}
 			return fmt.Errorf("step %d: stream interrupted: %w", step, ctx.Err())
 		}
 
@@ -252,6 +256,9 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 		}
 
 		state.update(msg, results)
+		if cfg.SaveSession != nil {
+			cfg.SaveSession()
+		}
 
 		if interrupted {
 			return ctx.Err()

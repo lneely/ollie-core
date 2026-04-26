@@ -777,6 +777,7 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 			"result":     result,
 		}, s.log)
 	}
+	s.cfg.SaveSession = func() { s.saveSession() }
 	s.cfg.AutoCompact = func(ctx context.Context) {
 		if ctx.Err() != nil || s.session == nil {
 			return
