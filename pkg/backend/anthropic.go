@@ -47,13 +47,19 @@ func (b *AnthropicBackend) Models(_ context.Context) []string {
 // -- wire types --
 
 type anthropicRequest struct {
-	Model       string             `json:"model"`
-	MaxTokens   int                `json:"max_tokens"`
-	System      string             `json:"system,omitempty"`
-	Messages    []anthropicMessage `json:"messages"`
-	Tools       []anthropicTool    `json:"tools,omitempty"`
-	Stream      bool               `json:"stream"`
-	Temperature *float64           `json:"temperature,omitempty"`
+	Model       string              `json:"model"`
+	MaxTokens   int                 `json:"max_tokens"`
+	System      string              `json:"system,omitempty"`
+	Messages    []anthropicMessage  `json:"messages"`
+	Tools       []anthropicTool     `json:"tools,omitempty"`
+	Stream      bool                `json:"stream"`
+	Temperature *float64            `json:"temperature,omitempty"`
+	Thinking    *anthropicThinking  `json:"thinking,omitempty"`
+}
+
+type anthropicThinking struct {
+	Type         string `json:"type"`          // always "enabled"
+	BudgetTokens int    `json:"budget_tokens"`
 }
 
 type anthropicMessage struct {
@@ -96,6 +102,9 @@ func (b *AnthropicBackend) ChatStream(ctx context.Context, messages []Message, t
 		Stream:      true,
 		Temperature: params.Temperature,
 	}
+	if params.ThinkingBudget > 0 {
+		areq.Thinking = &anthropicThinking{Type: "enabled", BudgetTokens: params.ThinkingBudget}
+	}
 	for _, t := range tools {
 		schema := t.Parameters
 		if schema == nil {
@@ -114,6 +123,9 @@ func (b *AnthropicBackend) ChatStream(ctx context.Context, messages []Message, t
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("X-Api-Key", b.apiKey)
 	httpReq.Header.Set("Anthropic-Version", "2023-06-01")
+	if params.ThinkingBudget > 0 {
+		httpReq.Header.Set("Anthropic-Beta", "interleaved-thinking-2025-05-14")
+	}
 
 	return streamRequest(b.client, httpReq, "anthropic", streamAnthropicSSE)
 }
@@ -226,6 +238,7 @@ func streamAnthropicSSE(body io.Reader, ch chan<- StreamEvent) {
 				Delta struct {
 					Type        string `json:"type"`
 					Text        string `json:"text"`
+					Thinking    string `json:"thinking"`
 					PartialJSON string `json:"partial_json"`
 				} `json:"delta"`
 			}
@@ -234,6 +247,10 @@ func streamAnthropicSSE(body io.Reader, ch chan<- StreamEvent) {
 			case "text_delta":
 				if v.Delta.Text != "" {
 					ch <- StreamEvent{Content: v.Delta.Text}
+				}
+			case "thinking_delta":
+				if v.Delta.Thinking != "" {
+					ch <- StreamEvent{Reasoning: v.Delta.Thinking}
 				}
 			case "input_json_delta":
 				if t := tools[v.Index]; t != nil {

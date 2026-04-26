@@ -466,6 +466,8 @@ func FormatEvent(ev agent.Event) []byte {
 		return []byte("error: " + ev.Content + "\n")
 	case "stalled":
 		return []byte("agent stalled\n")
+	case "reasoning":
+		return []byte(ev.Content)
 	case "info":
 		return []byte(":: " + ev.Content)
 	default:

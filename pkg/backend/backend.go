@@ -42,10 +42,12 @@ type Usage struct {
 
 // StreamEvent is a single increment from a streaming chat call.
 // Content is an incremental text delta (append, not replace).
+// Reasoning is an incremental thinking/reasoning delta (append, not replace).
 // ToolCalls accumulates complete calls; they may arrive on any event.
 // The final event has Done==true.
 type StreamEvent struct {
 	Content    string     // incremental text delta (may be "")
+	Reasoning  string     // incremental thinking delta (may be ""); Anthropic extended thinking, OpenAI reasoning
 	ToolCalls  []ToolCall // complete tool calls assembled so far
 	Done       bool
 	StopReason string // meaningful when Done==true
@@ -73,6 +75,7 @@ type GenerationParams struct {
 	Temperature      *float64 // nil = API default
 	FrequencyPenalty *float64 // nil = API default
 	PresencePenalty  *float64 // nil = API default
+	ThinkingBudget   int      // Anthropic extended thinking token budget; 0 = disabled
 }
 
 // Backend is the interface all LLM providers must implement.

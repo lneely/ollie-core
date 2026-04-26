@@ -65,14 +65,30 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 		var toolCalls []backend.ToolCall
 		var stopReason string
 		var done bool
+		var hadReasoning bool
 
 		for ev := range ch {
+			if ev.Reasoning != "" {
+				if !hadReasoning {
+					emit(cfg, Event{Role: "reasoning", Content: "<think>\n"})
+					hadReasoning = true
+				}
+				emit(cfg, Event{Role: "reasoning", Content: ev.Reasoning})
+			}
 			if ev.Content != "" {
+				if hadReasoning {
+					emit(cfg, Event{Role: "reasoning", Content: "\n</think>\n"})
+					hadReasoning = false
+				}
 				content.WriteString(ev.Content)
 				emit(cfg, Event{Role: "assistant", Content: ev.Content})
 			}
 			toolCalls = append(toolCalls, ev.ToolCalls...)
 			if ev.Done {
+				if hadReasoning {
+					emit(cfg, Event{Role: "reasoning", Content: "\n</think>\n"})
+					hadReasoning = false
+				}
 				stopReason = ev.StopReason
 				done = true
 				if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 {

@@ -163,9 +163,11 @@ type openAIUsage struct {
 }
 
 type openAIDelta struct {
-	Role      string           `json:"role"`
-	Content   string           `json:"content"`
-	ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
+	Role             string           `json:"role"`
+	Content          string           `json:"content"`
+	Reasoning        string           `json:"reasoning,omitempty"`         // OpenAI o-series
+	ReasoningContent string           `json:"reasoning_content,omitempty"` // OpenRouter
+	ToolCalls        []openAIToolCall `json:"tool_calls,omitempty"`
 }
 
 type openAIStreamChoice struct {
@@ -371,6 +373,11 @@ func streamOpenAISSE(r io.Reader, ch chan<- StreamEvent) {
 		choice := wire.Choices[0]
 		if choice.FinishReason != "" {
 			finishReason = choice.FinishReason
+		}
+		if r := choice.Delta.Reasoning; r != "" {
+			ch <- StreamEvent{Reasoning: r}
+		} else if r := choice.Delta.ReasoningContent; r != "" {
+			ch <- StreamEvent{Reasoning: r}
 		}
 		if content := choice.Delta.Content; content != "" {
 			if seenDSML || strings.Contains(content, "<｜DSML｜") {
