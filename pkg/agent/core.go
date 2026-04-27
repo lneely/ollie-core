@@ -774,7 +774,7 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 	handle := &actionHandle{cancel: actCancel}
 	s.currentAction.Store(handle)
 
-	s.auditLog.Debug("turn: start session=%s", s.sessionID)
+	s.auditLog.Debug("turn: start input=%s session=%s", auditTruncate(input), s.sessionID)
 
 	var replyBuf strings.Builder
 	s.cfg.Output = func(ev Event) {
@@ -877,6 +877,7 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 		if errors.Is(err, context.Canceled) || errors.Is(err, ErrInterrupted) {
 			// Interrupted: mid-turn state was already saved to disk by SaveSession.
 			// Keep in-memory session as-is so it matches the on-disk state.
+			s.auditLog.Debug("turn: interrupted session=%s", s.sessionID)
 			return ""
 		}
 		// Real error: restore pre-turn snapshot.
@@ -903,8 +904,8 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 	if s.session != nil {
 		s.session.recordTurnCost(s.cfg.Backend.Model())
 		handler(Event{Role: "info", Content: fmt.Sprintf("costLast=$%.4f\n", s.session.LastTurnCostUSD)})
-		s.auditLog.Debug("turn: end cost=$%.4f session_total=$%.4f session=%s",
-			s.session.LastTurnCostUSD, s.session.SessionCostUSD, s.sessionID)
+		s.auditLog.Debug("turn: end reply=%s cost=$%.4f session_total=$%.4f session=%s",
+			auditTruncate(s.reply), s.session.LastTurnCostUSD, s.session.SessionCostUSD, s.sessionID)
 		s.notifyChange()
 	}
 	s.saveSession()
