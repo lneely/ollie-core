@@ -246,6 +246,15 @@ func (s *agent) handleCommand(ctx context.Context, input string, handler EventHa
 			handler(infoEvent(strings.TrimRight(s.session.contextDebug(), "\n")))
 		},
 
+		"/cost": func(args []string) {
+			if s.session == nil {
+				handler(infoEvent("no active session"))
+				return
+			}
+			handler(infoEvent(fmt.Sprintf("last=$%.4f  session=$%.4f",
+				s.session.LastTurnCostUSD, s.session.SessionCostUSD)))
+		},
+
 		"/usage": func(args []string) {
 			if s.session == nil {
 				handler(infoEvent("no active session"))
@@ -369,6 +378,7 @@ func (s *agent) handleCommand(ctx context.Context, input string, handler EventHa
 				"  /queued [pop|clear] - manage queued prompts",
 				"  /compact         - summarize conversation and compact context",
 				"  /context         - show context size and message breakdown",
+				"  /cost            - show last turn and session cost",
 				"  /usage           - show token usage and context percentage",
 				"  /history         - dump bounded message history",
 				"  /clear           - clear session",

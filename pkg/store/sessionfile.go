@@ -373,7 +373,7 @@ func (h *sessionHelper) handleCtl(input string) error {
 		return h.saveTranscript(data)
 	case "compact", "clear", "backend", "model", "models",
 		"agents", "agent", "sessions", "cwd", "skills",
-		"tools", "context", "usage", "history",
+		"tools", "context", "usage", "cost", "history",
 		"irw", "help":
 		h.sess.Core.Submit(h.sess.Ctx, "/"+input, h.makePublish())
 	default:
