@@ -796,6 +796,12 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 			fmt.Sscanf(ev.Content, "%d %d %d %g", &in, &out, &est, &costUSD)
 			s.session.addUsage(backend.Usage{InputTokens: in, OutputTokens: out, CostUSD: costUSD}, est != 0)
 			s.notifyChange()
+			if maxCostStr := os.Getenv("OLLIE_MAX_SESSION_COST"); maxCostStr != "" {
+				if limit, ferr := strconv.ParseFloat(maxCostStr, 64); ferr == nil && limit > 0 && s.session.SessionCostUSD >= limit {
+					handler(infoEvent(fmt.Sprintf("spending cap $%.2f reached — stopping", limit)))
+					s.Interrupt(ErrInterrupted)
+				}
+			}
 		}
 		handler(ev)
 	}
@@ -860,12 +866,64 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 		}
 	}
 
+	// Spending cap: reject before spending more tokens.
+	if maxCostStr := os.Getenv("OLLIE_MAX_SESSION_COST"); maxCostStr != "" && s.session != nil {
+		if limit, err := strconv.ParseFloat(maxCostStr, 64); err == nil && limit > 0 {
+			if s.session.SessionCostUSD >= limit {
+				handler(Event{Role: "error", Content: fmt.Sprintf("spending cap $%.2f reached (session total $%.4f)", limit, s.session.SessionCostUSD)})
+				s.setState("idle")
+				actCancel(nil)
+				s.currentAction.CompareAndSwap(handle, nil)
+				if snapSession == nil {
+					s.session = nil
+				} else {
+					s.session.messages = snapMessages
+				}
+				return ""
+			}
+		}
+	}
+
 	if s.session != nil {
 		s.session.resetTurnAccumulators()
 	}
-	err := run(actCtx, s.cfg, s.session)
-	actCancel(nil)
-	s.currentAction.CompareAndSwap(handle, nil)
+
+	// Run the turn, retrying once after compaction on context overflow.
+	var (
+		overflowRetried bool
+		err             error
+	)
+	for {
+		err = run(actCtx, s.cfg, s.session)
+		actCancel(nil)
+		s.currentAction.CompareAndSwap(handle, nil)
+
+		if err == nil {
+			break
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, ErrInterrupted) {
+			break
+		}
+		var ctxErr *backend.ContextOverflowError
+		if !overflowRetried && errors.As(err, &ctxErr) && s.session != nil {
+			overflowRetried = true
+			s.session.messages = snapMessages
+			emit(s.cfg, Event{Role: "info", Content: "context overflow — compacting and retrying...\n"})
+			s.setState("compacting")
+			if _, cerr := s.runCompact(ctx, "overflow", handler); cerr != nil {
+				break
+			}
+			s.session.appendUserMessage(input)
+			s.setState("thinking")
+			s.session.resetTurnAccumulators()
+			replyBuf.Reset()
+			actCtx, actCancel = context.WithCancelCause(ctx)
+			handle = &actionHandle{cancel: actCancel}
+			s.currentAction.Store(handle)
+			continue
+		}
+		break
+	}
 
 	s.mu.Lock()
 	s.reply = replyBuf.String()

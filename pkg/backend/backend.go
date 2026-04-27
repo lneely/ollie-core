@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -78,6 +79,14 @@ type TransientError struct {
 
 func (e *TransientError) Error() string { return e.Message }
 
+// ContextOverflowError is returned when the request exceeds the model's
+// context window. The caller should compact history and retry.
+type ContextOverflowError struct {
+	Message string
+}
+
+func (e *ContextOverflowError) Error() string { return e.Message }
+
 // GenerationParams controls sampling behaviour for a single ChatStream call.
 // Zero values mean "use the API default".
 type GenerationParams struct {
@@ -131,7 +140,11 @@ func streamRequest(client *http.Client, req *http.Request, label string, parseFn
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("%s HTTP %d: %s", label, resp.StatusCode, body)
+		msg := string(body)
+		if resp.StatusCode == http.StatusBadRequest && isContextOverflow(msg) {
+			return nil, &ContextOverflowError{Message: fmt.Sprintf("%s HTTP %d: %s", label, resp.StatusCode, msg)}
+		}
+		return nil, fmt.Errorf("%s HTTP %d: %s", label, resp.StatusCode, msg)
 	}
 	ch := make(chan StreamEvent, 8)
 	go func() {
@@ -140,4 +153,22 @@ func streamRequest(client *http.Client, req *http.Request, label string, parseFn
 		parseFn(resp.Body, ch)
 	}()
 	return ch, nil
+}
+
+// isContextOverflow returns true when a 400 response body indicates the request
+// exceeded the model's context window.
+func isContextOverflow(body string) bool {
+	markers := []string{
+		"context_length_exceeded", // OpenAI/OpenRouter error code
+		"prompt is too long",      // Anthropic
+		"Please reduce the length", // OpenAI prose
+		"too many tokens",
+	}
+	lower := strings.ToLower(body)
+	for _, m := range markers {
+		if strings.Contains(lower, strings.ToLower(m)) {
+			return true
+		}
+	}
+	return false
 }
