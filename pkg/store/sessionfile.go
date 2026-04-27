@@ -330,11 +330,6 @@ func (h *sessionHelper) makePublish() func(agent.Event) {
 			return
 		} else {
 			switch ev.Role {
-			case "call", "tool":
-				if assistantStarted {
-					h.sess.AppendLog([]byte("\n"))
-					assistantStarted = false
-				}
 			case "assistant":
 				if !assistantStarted {
 					h.sess.AppendLog([]byte("assistant: "))
@@ -342,6 +337,11 @@ func (h *sessionHelper) makePublish() func(agent.Event) {
 					h.sess.ChatOffset = len(h.sess.log)
 					h.sess.mu.Unlock()
 					assistantStarted = true
+				}
+			default:
+				if assistantStarted {
+					h.sess.AppendLog([]byte("\n"))
+					assistantStarted = false
 				}
 			}
 		}
