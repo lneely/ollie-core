@@ -182,6 +182,7 @@ type agent struct {
 	changeCond      *sync.Cond
 	submitMu        sync.Mutex // serializes Submit calls (commands + turns)
 	warnedContext   bool       // true after a context-usage warning; cleared on compaction
+	auditLog        *olog.Logger
 }
 
 // SetEnv stores a session-scoped variable and propagates it to the execute server.
@@ -279,6 +280,7 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		cfg:         run,
 		hooks:           cfg.Env.Hooks,
 		log:             log,
+		auditLog:        log.Sub("audit"),
 		agentName:       cfg.AgentName,
 		agentsDir:       cfg.AgentsDir,
 		sessionsDir:     cfg.SessionsDir,
@@ -511,6 +513,7 @@ func (s *agent) runCompact(ctx context.Context, trigger string, handler EventHan
 		return 0, err
 	}
 	if n > 0 {
+		s.auditLog.Debug("compact: removed %d messages trigger=%s session=%s", n, trigger, s.sessionID)
 		s.warnedContext = false
 		if sc := s.spawnContext(ctx, handler); sc != "" {
 			s.session.appendUserMessage(sc)
@@ -771,6 +774,8 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 	handle := &actionHandle{cancel: actCancel}
 	s.currentAction.Store(handle)
 
+	s.auditLog.Debug("turn: start session=%s", s.sessionID)
+
 	var replyBuf strings.Builder
 	s.cfg.Output = func(ev Event) {
 		switch ev.Role {
@@ -778,8 +783,12 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 			replyBuf.WriteString(ev.Content)
 		case "call":
 			s.setState("calling: " + ev.Name)
+			s.auditLog.Debug("call: %s %s", ev.Name, auditTruncate(string(ev.Content)))
 		case "tool":
 			s.setState("thinking")
+			s.auditLog.Debug("result: %s %s", ev.Name, auditTruncate(ev.Content))
+		case "error":
+			s.auditLog.Debug("error: %s", ev.Content)
 		}
 		if ev.Role == "usage" && s.session != nil {
 			var in, out, est int
@@ -894,6 +903,8 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 	if s.session != nil {
 		s.session.recordTurnCost(s.cfg.Backend.Model())
 		handler(Event{Role: "info", Content: fmt.Sprintf("costLast=$%.4f\n", s.session.LastTurnCostUSD)})
+		s.auditLog.Debug("turn: end cost=$%.4f session_total=$%.4f session=%s",
+			s.session.LastTurnCostUSD, s.session.SessionCostUSD, s.sessionID)
 		s.notifyChange()
 	}
 	s.saveSession()

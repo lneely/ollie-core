@@ -131,3 +131,14 @@ func (l *Logger) Debug(format string, args ...any) { l.emit(LevelDebug, format, 
 func (l *Logger) Info(format string, args ...any)  { l.emit(LevelInfo, format, args...) }
 func (l *Logger) Warn(format string, args ...any)  { l.emit(LevelWarn, format, args...) }
 func (l *Logger) Error(format string, args ...any) { l.emit(LevelError, format, args...) }
+
+// Sub returns a new Logger with the given tag sharing the same output writers
+// and inheriting this logger's level. The level can be overridden independently
+// via the OLLIE_{TAG}_LOG environment variable.
+func (l *Logger) Sub(tag string) *Logger {
+	level := l.level
+	if env := os.Getenv("OLLIE_" + strings.ToUpper(tag) + "_LOG"); env != "" {
+		level = ParseLevel(env, level)
+	}
+	return &Logger{tag: tag, level: level, out: l.out, errout: l.errout}
+}

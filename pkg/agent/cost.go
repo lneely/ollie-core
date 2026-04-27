@@ -2,6 +2,15 @@ package agent
 
 import "strings"
 
+// auditTruncate trims s to 200 runes for log output.
+func auditTruncate(s string) string {
+	runes := []rune(s)
+	if len(runes) <= 200 {
+		return s
+	}
+	return string(runes[:200]) + "…"
+}
+
 // modelPrice holds USD per 1M input and output tokens for a model family.
 type modelPrice struct {
 	inputPer1M  float64
