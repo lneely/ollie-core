@@ -80,6 +80,9 @@ type Core interface {
 	// Usage returns billed token counts as a one-line summary.
 	Usage() string
 
+	// Cost returns per-turn and session cost as a two-line key=value summary.
+	Cost() string
+
 	// ListModels returns available model names, one per line.
 	ListModels() string
 

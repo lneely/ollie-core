@@ -72,7 +72,13 @@ type Session struct {
 	TotalInputTokens  int
 	TotalOutputTokens int
 	TotalRequests     int
-	Estimated         bool // true if any usage was estimated rather than reported by the backend
+	Estimated         bool    // true if any usage was estimated rather than reported by the backend
+	LastTurnCostUSD   float64 // cost of the most recently completed turn in USD
+	SessionCostUSD    float64 // cumulative cost of all turns in this session in USD
+	// per-turn accumulators; reset at the start of each turn
+	turnInputTokens  int
+	turnOutputTokens int
+	turnCostUSD      float64 // >0 when backend reported cost directly (e.g. OpenRouter)
 }
 
 // newSession creates a new empty Session. The caller is responsible for
@@ -89,9 +95,32 @@ func (s *Session) addUsage(u backend.Usage, estimated bool) {
 	s.TotalInputTokens += u.InputTokens
 	s.TotalOutputTokens += u.OutputTokens
 	s.TotalRequests++
+	s.turnInputTokens += u.InputTokens
+	s.turnOutputTokens += u.OutputTokens
+	s.turnCostUSD += u.CostUSD
 	if estimated {
 		s.Estimated = true
 	}
+}
+
+func (s *Session) resetTurnAccumulators() {
+	s.turnInputTokens = 0
+	s.turnOutputTokens = 0
+	s.turnCostUSD = 0
+}
+
+// recordTurnCost computes and stores the last turn's cost, adding it to the
+// session total. model is used for the pricing-table fallback when the backend
+// did not report cost directly.
+func (s *Session) recordTurnCost(model string) {
+	var cost float64
+	if s.turnCostUSD > 0 {
+		cost = s.turnCostUSD
+	} else {
+		cost = computeCostUSD(model, s.turnInputTokens, s.turnOutputTokens)
+	}
+	s.LastTurnCostUSD = cost
+	s.SessionCostUSD += cost
 }
 
 func (s *Session) update(assistant backend.Message, results []toolResult) {

@@ -158,8 +158,9 @@ type openAIChatRequest struct {
 }
 
 type openAIUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	Cost             float64 `json:"cost"` // OpenRouter only
 }
 
 type openAIDelta struct {
@@ -364,6 +365,9 @@ func streamOpenAISSE(r io.Reader, ch chan<- StreamEvent) {
 		}
 		if wire.Usage.CompletionTokens > 0 {
 			usage.OutputTokens = wire.Usage.CompletionTokens
+		}
+		if wire.Usage.Cost > 0 {
+			usage.CostUSD = wire.Usage.Cost
 		}
 
 		if len(wire.Choices) == 0 {

@@ -92,7 +92,7 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 					if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 {
 						emit(cfg, Event{
 							Role:    "usage",
-							Content: fmt.Sprintf("%d %d 0", ev.Usage.InputTokens, ev.Usage.OutputTokens),
+							Content: fmt.Sprintf("%d %d 0 %g", ev.Usage.InputTokens, ev.Usage.OutputTokens, ev.Usage.CostUSD),
 						})
 					} else {
 						// Backend didn't report usage; estimate from content.
@@ -105,7 +105,7 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 						}
 						emit(cfg, Event{
 							Role:    "usage",
-							Content: fmt.Sprintf("%d %d 1", inChars/4, content.Len()/4),
+							Content: fmt.Sprintf("%d %d 1 0", inChars/4, content.Len()/4),
 						})
 					}
 					break

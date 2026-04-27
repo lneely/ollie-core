@@ -72,6 +72,7 @@ func (c *stubCore) BackendName() string                                         
 func (c *stubCore) ModelName() string                                           { return c.model }
 func (c *stubCore) CtxSz() string                                               { return c.ctxsz }
 func (c *stubCore) Usage() string                                               { return c.usage }
+func (c *stubCore) Cost() string                                                { return "" }
 func (c *stubCore) ListModels() string                                          { return c.models }
 func (c *stubCore) CWD() string                                                 { return c.cwd }
 func (c *stubCore) SetCWD(dir string) error                                     { c.cwd = dir; return nil }

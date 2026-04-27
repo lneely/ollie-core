@@ -34,10 +34,12 @@ type ToolCall struct {
 	Arguments json.RawMessage `json:"arguments"` // always a JSON object
 }
 
-// Usage holds token counts for a single Chat call.
+// Usage holds token counts and optional cost for a single Chat call.
+// CostUSD is non-zero only when the backend reports it directly (e.g. OpenRouter).
 type Usage struct {
 	InputTokens  int
 	OutputTokens int
+	CostUSD      float64
 }
 
 // StreamEvent is a single increment from a streaming chat call.

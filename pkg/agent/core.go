@@ -604,6 +604,14 @@ func (s *agent) CtxSz() string {
 	return v
 }
 
+func (s *agent) Cost() string {
+	if s.session == nil {
+		return "no active session"
+	}
+	return fmt.Sprintf("costLast=$%.4f\ncostSession=$%.4f\n",
+		s.session.LastTurnCostUSD, s.session.SessionCostUSD)
+}
+
 func (s *agent) Usage() string {
 	if s.session == nil {
 		s.log.Debug("Usage() no session")
@@ -775,8 +783,9 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 		}
 		if ev.Role == "usage" && s.session != nil {
 			var in, out, est int
-			fmt.Sscanf(ev.Content, "%d %d %d", &in, &out, &est)
-			s.session.addUsage(backend.Usage{InputTokens: in, OutputTokens: out}, est != 0)
+			var costUSD float64
+			fmt.Sscanf(ev.Content, "%d %d %d %g", &in, &out, &est, &costUSD)
+			s.session.addUsage(backend.Usage{InputTokens: in, OutputTokens: out, CostUSD: costUSD}, est != 0)
 			s.notifyChange()
 		}
 		handler(ev)
@@ -842,6 +851,9 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 		}
 	}
 
+	if s.session != nil {
+		s.session.resetTurnAccumulators()
+	}
 	err := run(actCtx, s.cfg, s.session)
 	actCancel(nil)
 	s.currentAction.CompareAndSwap(handle, nil)
@@ -879,6 +891,11 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 		s.session.appendUserMessage(stopResult.Context)
 	}
 
+	if s.session != nil {
+		s.session.recordTurnCost(s.cfg.Backend.Model())
+		handler(Event{Role: "info", Content: fmt.Sprintf("costLast=$%.4f\n", s.session.LastTurnCostUSD)})
+		s.notifyChange()
+	}
 	s.saveSession()
 
 	// Post-turn hook said "continue" — its context becomes the next prompt.

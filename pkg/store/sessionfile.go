@@ -27,6 +27,7 @@ var SessionFileList = []struct {
 	{"cfg", 0666},
 	{"statewait", 0444},
 	{"usage", 0444},
+	{"cost", 0444},
 	{"ctxsz", 0444},
 	{"models", 0444},
 	{"systemprompt", 0444},
@@ -187,6 +188,8 @@ func (h *sessionHelper) content(name string) string {
 	switch name {
 	case "usage":
 		return h.sess.Core.Usage() + "\n"
+	case "cost":
+		return h.sess.Core.Cost()
 	case "ctxsz":
 		return h.sess.Core.CtxSz() + "\n"
 	case "models":
