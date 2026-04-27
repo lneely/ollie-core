@@ -181,6 +181,7 @@ type agent struct {
 	changeMu        sync.Mutex
 	changeCond      *sync.Cond
 	submitMu        sync.Mutex // serializes Submit calls (commands + turns)
+	warnedContext   bool       // true after a context-usage warning; cleared on compaction
 }
 
 // SetEnv stores a session-scoped variable and propagates it to the execute server.
@@ -452,15 +453,22 @@ func (s *agent) SetSessionID(newID string) error {
 // for modern models.
 const defaultContextLength = 128000
 
-// autoCompactLimit returns the token threshold for auto-compaction.
-// Uses 75% of the model's context length, reserving room for output and the
-// compaction prompt.
+// autoCompactLimit returns the token threshold for auto-compaction (75%).
 func (s *agent) autoCompactLimit(ctx context.Context) int {
 	ctxLen := s.cfg.Backend.ContextLength(ctx)
 	if ctxLen <= 0 {
 		ctxLen = defaultContextLength
 	}
 	return ctxLen * 3 / 4
+}
+
+// autoWarnLimit returns the token threshold for a context-usage warning (60%).
+func (s *agent) autoWarnLimit(ctx context.Context) int {
+	ctxLen := s.cfg.Backend.ContextLength(ctx)
+	if ctxLen <= 0 {
+		ctxLen = defaultContextLength
+	}
+	return ctxLen * 3 / 5
 }
 
 // spawnContext assembles the agent context injected at each session refresh
@@ -503,6 +511,7 @@ func (s *agent) runCompact(ctx context.Context, trigger string, handler EventHan
 		return 0, err
 	}
 	if n > 0 {
+		s.warnedContext = false
 		if sc := s.spawnContext(ctx, handler); sc != "" {
 			s.session.appendUserMessage(sc)
 		}
@@ -812,15 +821,24 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 		s.setState("thinking")
 	}
 
-	// Auto-compact before the turn if approaching the context limit.
+	// Warn once when context usage crosses 60%; compact at 75%.
 	if s.session != nil {
-		if limit := s.autoCompactLimit(ctx); limit > 0 && s.session.estimateTokens() >= limit {
+		tokens := s.session.estimateTokens()
+		if compactLimit := s.autoCompactLimit(ctx); compactLimit > 0 && tokens >= compactLimit {
 			emit(s.cfg, Event{Role: "info", Content: "auto-compacting context...\n"})
 			s.setState("compacting")
 			if _, err := s.runCompact(ctx, "auto", handler); err != nil {
 				panic(fmt.Sprintf("auto-compact: %v", err))
 			}
 			s.setState("thinking")
+		} else if warnLimit := s.autoWarnLimit(ctx); warnLimit > 0 && tokens >= warnLimit && !s.warnedContext {
+			ctxLen := s.cfg.Backend.ContextLength(ctx)
+			if ctxLen <= 0 {
+				ctxLen = defaultContextLength
+			}
+			pct := tokens * 100 / ctxLen
+			emit(s.cfg, Event{Role: "info", Content: fmt.Sprintf("context at %d%% — will auto-compact at 75%%\n", pct)})
+			s.warnedContext = true
 		}
 	}
 
