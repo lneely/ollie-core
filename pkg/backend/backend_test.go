@@ -245,6 +245,21 @@ func checkErrorHTTP(t *testing.T, b backend.Backend) {
 	}
 }
 
+// checkErrorTransient verifies that 5xx responses return *TransientError.
+func checkErrorTransient(t *testing.T, b backend.Backend) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := b.ChatStream(ctx, []backend.Message{{Role: "user", Content: "hi"}}, nil, backend.GenerationParams{})
+	if err == nil {
+		t.Fatal("expected error for 5xx")
+	}
+	if _, ok := err.(*backend.TransientError); !ok {
+		t.Errorf("error type = %T; want *TransientError", err)
+	}
+}
+
 // checkErrorRateLimit verifies that 429 returns *RateLimitError.
 func checkErrorRateLimit(t *testing.T, b backend.Backend) {
 	t.Helper()
@@ -434,7 +449,12 @@ func TestOpenAIErrorHTTP(t *testing.T) {
 		t.Run(fmt.Sprintf("%d", code), func(t *testing.T) {
 			srv := openAIErrorServer(code)
 			defer srv.Close()
-			checkErrorHTTP(t, mustNewOpenAI(t, "openai", srv.URL, "k"))
+			b := mustNewOpenAI(t, "openai", srv.URL, "k")
+			if code >= 500 {
+				checkErrorTransient(t, b)
+			} else {
+				checkErrorHTTP(t, b)
+			}
 		})
 	}
 }
@@ -494,7 +514,12 @@ func TestOllamaErrorHTTP(t *testing.T) {
 		t.Run(fmt.Sprintf("%d", code), func(t *testing.T) {
 			srv := ollamaErrorServer(code)
 			defer srv.Close()
-			checkErrorHTTP(t, mustNewOllama(t, srv.URL))
+			b := mustNewOllama(t, srv.URL)
+			if code >= 500 {
+				checkErrorTransient(t, b)
+			} else {
+				checkErrorHTTP(t, b)
+			}
 		})
 	}
 }
@@ -547,7 +572,11 @@ func TestAnthropicErrorHTTP(t *testing.T) {
 			defer srv.Close()
 			b := mustNewAnthropic(t, "k")
 			b.BaseURL, _ = url.Parse(srv.URL)
-			checkErrorHTTP(t, b)
+			if code >= 500 {
+				checkErrorTransient(t, b)
+			} else {
+				checkErrorHTTP(t, b)
+			}
 		})
 	}
 }

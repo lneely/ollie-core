@@ -11,7 +11,7 @@ import (
 	"ollie/pkg/backend"
 )
 
-const maxRateLimitRetries = 3
+const maxTransientRetries = 3
 
 type toolExecutor func(ctx context.Context, name string, args json.RawMessage) (string, error)
 
@@ -38,100 +38,117 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 			history = append([]backend.Message{{Role: "system", Content: cfg.preamble}}, history...)
 		}
 
-		// Stream the assistant's response, retrying on HTTP 429.
-		var ch <-chan backend.StreamEvent
-		for attempt := range maxRateLimitRetries + 1 {
-			var err error
-			ch, err = cfg.Backend.ChatStream(ctx, history, cfg.Tools, cfg.GenerationParams)
-			if err == nil {
-				break
-			}
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			var rlErr *backend.RateLimitError
-			if !errors.As(err, &rlErr) || attempt >= maxRateLimitRetries {
-				return fmt.Errorf("step %d: %w", step, err)
-			}
-			wait := rlErr.RetryAfter
-			if wait == 0 {
-				wait = time.Duration(5<<attempt) * time.Second
-			}
-			if err := retryCountdown(ctx, cfg, wait); err != nil {
-				return fmt.Errorf("step %d: %w", step, err)
-			}
-		}
-
+		// Stream the assistant's response, retrying on rate limits, transient
+		// backend errors (5xx, network), and mid-stream drops.
 		var content strings.Builder
 		var toolCalls []backend.ToolCall
 		var stopReason string
-		var done bool
-		var hadReasoning bool
 
-		for ev := range ch {
-			if ev.Reasoning != "" {
-				if !hadReasoning {
-					emit(cfg, Event{Role: "reasoning", Content: "<think>\n"})
-					hadReasoning = true
+		for attempt := range maxTransientRetries + 1 {
+			content.Reset()
+			toolCalls = nil
+
+			ch, err := cfg.Backend.ChatStream(ctx, history, cfg.Tools, cfg.GenerationParams)
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
 				}
-				emit(cfg, Event{Role: "reasoning", Content: ev.Reasoning})
+				wait, retryable := transientWait(err, attempt)
+				if !retryable || attempt >= maxTransientRetries {
+					return fmt.Errorf("step %d: %w", step, err)
+				}
+				if err := retryCountdown(ctx, cfg, wait); err != nil {
+					return fmt.Errorf("step %d: %w", step, err)
+				}
+				continue
 			}
-			if ev.Content != "" {
-				if hadReasoning {
-					emit(cfg, Event{Role: "reasoning", Content: "\n</think>\n"})
-					hadReasoning = false
-				}
-				content.WriteString(ev.Content)
-				emit(cfg, Event{Role: "assistant", Content: ev.Content})
-			}
-			toolCalls = append(toolCalls, ev.ToolCalls...)
-			if ev.Done {
-				if hadReasoning {
-					emit(cfg, Event{Role: "reasoning", Content: "\n</think>\n"})
-					hadReasoning = false
-				}
-				stopReason = ev.StopReason
-				done = true
-				if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 {
-					emit(cfg, Event{
-						Role:    "usage",
-						Content: fmt.Sprintf("%d %d 0", ev.Usage.InputTokens, ev.Usage.OutputTokens),
-					})
-				} else {
-					// Backend didn't report usage; estimate from content.
-					inChars := 0
-					for _, m := range history {
-						inChars += len(m.Content)
-						for _, tc := range m.ToolCalls {
-							inChars += len(tc.Name) + len(tc.Arguments)
-						}
+
+			var done bool
+			var hadReasoning bool
+			for ev := range ch {
+				if ev.Reasoning != "" {
+					if !hadReasoning {
+						emit(cfg, Event{Role: "reasoning", Content: "<think>\n"})
+						hadReasoning = true
 					}
-					emit(cfg, Event{
-						Role:    "usage",
-						Content: fmt.Sprintf("%d %d 1", inChars/4, content.Len()/4),
-					})
+					emit(cfg, Event{Role: "reasoning", Content: ev.Reasoning})
 				}
+				if ev.Content != "" {
+					if hadReasoning {
+						emit(cfg, Event{Role: "reasoning", Content: "\n</think>\n"})
+						hadReasoning = false
+					}
+					content.WriteString(ev.Content)
+					emit(cfg, Event{Role: "assistant", Content: ev.Content})
+				}
+				toolCalls = append(toolCalls, ev.ToolCalls...)
+				if ev.Done {
+					if hadReasoning {
+						emit(cfg, Event{Role: "reasoning", Content: "\n</think>\n"})
+						hadReasoning = false
+					}
+					stopReason = ev.StopReason
+					done = true
+					if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 {
+						emit(cfg, Event{
+							Role:    "usage",
+							Content: fmt.Sprintf("%d %d 0", ev.Usage.InputTokens, ev.Usage.OutputTokens),
+						})
+					} else {
+						// Backend didn't report usage; estimate from content.
+						inChars := 0
+						for _, m := range history {
+							inChars += len(m.Content)
+							for _, tc := range m.ToolCalls {
+								inChars += len(tc.Name) + len(tc.Arguments)
+							}
+						}
+						emit(cfg, Event{
+							Role:    "usage",
+							Content: fmt.Sprintf("%d %d 1", inChars/4, content.Len()/4),
+						})
+					}
+					break
+				}
+			}
+
+			if done {
 				break
 			}
-		}
 
-		if !done {
-			// Stream interrupted. Record whatever we got.
-			msg := backend.Message{Role: "assistant", Content: content.String(), ToolCalls: toolCalls}
-			var results []toolResult
-			for _, tc := range toolCalls {
-				results = append(results, toolResult{
-					ToolCallID: tc.ID,
-					Name:       tc.Name,
-					Content:    `{"status":"cancelled","error":"stream interrupted"}`,
-					IsError:    true,
-				})
+			if ctx.Err() != nil {
+				// User pause: record partial state and return.
+				if hadReasoning {
+					emit(cfg, Event{Role: "reasoning", Content: "\n</think>\n"})
+				}
+				msg := backend.Message{Role: "assistant", Content: content.String(), ToolCalls: toolCalls}
+				var results []toolResult
+				for _, tc := range toolCalls {
+					results = append(results, toolResult{
+						ToolCallID: tc.ID,
+						Name:       tc.Name,
+						Content:    `{"status":"cancelled","error":"stream interrupted"}`,
+						IsError:    true,
+					})
+				}
+				state.update(msg, results)
+				if cfg.SaveSession != nil {
+					cfg.SaveSession()
+				}
+				return ctx.Err()
 			}
-			state.update(msg, results)
-			if cfg.SaveSession != nil {
-				cfg.SaveSession()
+
+			// Pure stream drop — retry if attempts remain.
+			if attempt >= maxTransientRetries {
+				return fmt.Errorf("step %d: stream dropped (no more retries)", step)
 			}
-			return fmt.Errorf("step %d: stream interrupted: %w", step, ctx.Err())
+			if hadReasoning {
+				emit(cfg, Event{Role: "reasoning", Content: "\n</think>\n"})
+			}
+			wait := time.Duration(2<<attempt) * time.Second
+			if err := retryCountdown(ctx, cfg, wait); err != nil {
+				return fmt.Errorf("step %d: %w", step, err)
+			}
 		}
 
 		switch stopReason {
@@ -283,6 +300,24 @@ func emit(cfg agentConfig, msg Event) {
 	if cfg.Output != nil {
 		cfg.Output(msg)
 	}
+}
+
+// transientWait returns the retry wait for a retryable error and whether it is
+// retryable. Rate limits use longer waits; transient/network errors use shorter.
+func transientWait(err error, attempt int) (time.Duration, bool) {
+	var rlErr *backend.RateLimitError
+	if errors.As(err, &rlErr) {
+		wait := rlErr.RetryAfter
+		if wait == 0 {
+			wait = time.Duration(5<<attempt) * time.Second
+		}
+		return wait, true
+	}
+	var tErr *backend.TransientError
+	if errors.As(err, &tErr) {
+		return time.Duration(2<<attempt) * time.Second, true
+	}
+	return 0, false
 }
 
 func retryCountdown(ctx context.Context, cfg agentConfig, wait time.Duration) error {

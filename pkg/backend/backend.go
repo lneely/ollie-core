@@ -68,6 +68,14 @@ func (e *RateLimitError) Error() string {
 	return fmt.Sprintf("rate limited: %s", e.Message)
 }
 
+// TransientError is returned for retryable backend failures: 5xx HTTP responses
+// and network-level errors (connection reset, DNS failure, etc.).
+type TransientError struct {
+	Message string
+}
+
+func (e *TransientError) Error() string { return e.Message }
+
 // GenerationParams controls sampling behaviour for a single ChatStream call.
 // Zero values mean "use the API default".
 type GenerationParams struct {
@@ -98,18 +106,25 @@ type Backend interface {
 	Models(ctx context.Context) []string
 }
 
-// streamRequest executes req via client, handles 429/non-200 errors, and
-// spawns a goroutine that feeds resp.Body through parseFn into the returned
-// channel. label is used in error messages (e.g. "openai", "ollama").
+// streamRequest executes req via client, handles status errors, and spawns a
+// goroutine that feeds resp.Body through parseFn into the returned channel.
+// label is used in error messages (e.g. "openai", "ollama").
+// Returns *RateLimitError for 429, *TransientError for 5xx and network errors,
+// and a plain error for other non-200 responses.
 func streamRequest(client *http.Client, req *http.Request, label string, parseFn func(io.Reader, chan<- StreamEvent)) (<-chan StreamEvent, error) {
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, &TransientError{Message: err.Error()}
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		return nil, &RateLimitError{RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")), Message: string(body)}
+	}
+	if resp.StatusCode >= 500 {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, &TransientError{Message: fmt.Sprintf("%s HTTP %d: %s", label, resp.StatusCode, string(body))}
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
