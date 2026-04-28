@@ -179,6 +179,17 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 			return fmt.Errorf("step %d: %s", step, stopReason)
 		}
 
+		// Detect models that emit tool calls as plain text instead of using the
+		// function-calling API. If the response contains no API-level tool calls
+		// but the text matches a registered tool name followed by ':' or '(',
+		// the model does not support function calling — treat as ToolUnsupportedError
+		// so freeloader can blacklist and cycle to the next model.
+		if len(toolCalls) == 0 && len(cfg.Tools) > 0 && hasTextToolCall(content.String(), cfg.Tools) {
+			return fmt.Errorf("step %d: %w", step, &backend.ToolUnsupportedError{
+				Message: "model emitted tool call as text (function calling API not supported)",
+			})
+		}
+
 		// Execute tool calls, running consecutive parallel-read-safe tools concurrently.
 		msg := backend.Message{Role: "assistant", Content: content.String(), ToolCalls: toolCalls}
 		results := make([]toolResult, 0, len(toolCalls))
@@ -367,6 +378,18 @@ func emit(cfg agentConfig, msg Event) {
 	if cfg.Output != nil {
 		cfg.Output(msg)
 	}
+}
+
+// hasTextToolCall returns true when the assistant text contains a registered
+// tool name immediately followed by ':' or '(', indicating the model tried to
+// invoke a tool by writing the call as plain text rather than via the API.
+func hasTextToolCall(text string, tools []backend.Tool) bool {
+	for _, t := range tools {
+		if strings.Contains(text, t.Name+":") || strings.Contains(text, t.Name+"(") {
+			return true
+		}
+	}
+	return false
 }
 
 // classifyError returns a short string identifying the error type for the
