@@ -37,10 +37,17 @@ type ToolCall struct {
 
 // Usage holds token counts and optional cost for a single Chat call.
 // CostUSD is non-zero only when the backend reports it directly (e.g. OpenRouter).
+// CachedInputTokens are tokens served from the prompt cache; they are NOT
+// included in InputTokens (Anthropic normalises this way; we do the same for
+// OpenAI by subtracting cached_tokens from prompt_tokens before setting
+// InputTokens).
+// CacheCreationTokens are tokens written to the cache (Anthropic only).
 type Usage struct {
-	InputTokens  int
-	OutputTokens int
-	CostUSD      float64
+	InputTokens         int
+	CachedInputTokens   int
+	CacheCreationTokens int
+	OutputTokens        int
+	CostUSD             float64
 }
 
 // StreamEvent is a single increment from a streaming chat call.

@@ -623,6 +623,9 @@ func (s *agent) Usage() string {
 	str := fmt.Sprintf("%d in, %d out, %d requests",
 		s.session.TotalInputTokens, s.session.TotalOutputTokens,
 		s.session.TotalRequests)
+	if s.session.TotalCachedInputTokens > 0 {
+		str += fmt.Sprintf(", %d cached", s.session.TotalCachedInputTokens)
+	}
 	if s.session.Estimated {
 		str += " [estimated]"
 	}
@@ -791,10 +794,16 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 			s.auditLog.Debug("error: %s", ev.Content)
 		}
 		if ev.Role == "usage" && s.session != nil {
-			var in, out, est int
+			var in, out, est, cached, creation int
 			var costUSD float64
-			fmt.Sscanf(ev.Content, "%d %d %d %g", &in, &out, &est, &costUSD)
-			s.session.addUsage(backend.Usage{InputTokens: in, OutputTokens: out, CostUSD: costUSD}, est != 0)
+			fmt.Sscanf(ev.Content, "%d %d %d %g %d %d", &in, &out, &est, &costUSD, &cached, &creation)
+			s.session.addUsage(backend.Usage{
+				InputTokens:         in,
+				CachedInputTokens:   cached,
+				CacheCreationTokens: creation,
+				OutputTokens:        out,
+				CostUSD:             costUSD,
+			}, est != 0)
 			s.notifyChange()
 			if maxCostStr := os.Getenv("OLLIE_MAX_SESSION_COST"); maxCostStr != "" {
 				if limit, ferr := strconv.ParseFloat(maxCostStr, 64); ferr == nil && limit > 0 && s.session.SessionCostUSD >= limit {

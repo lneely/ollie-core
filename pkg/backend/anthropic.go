@@ -47,14 +47,24 @@ func (b *AnthropicBackend) Models(_ context.Context) []string {
 // -- wire types --
 
 type anthropicRequest struct {
-	Model       string              `json:"model"`
-	MaxTokens   int                 `json:"max_tokens"`
-	System      string              `json:"system,omitempty"`
-	Messages    []anthropicMessage  `json:"messages"`
-	Tools       []anthropicTool     `json:"tools,omitempty"`
-	Stream      bool                `json:"stream"`
-	Temperature *float64            `json:"temperature,omitempty"`
-	Thinking    *anthropicThinking  `json:"thinking,omitempty"`
+	Model       string                 `json:"model"`
+	MaxTokens   int                    `json:"max_tokens"`
+	System      []anthropicSystemBlock `json:"system,omitempty"`
+	Messages    []anthropicMessage     `json:"messages"`
+	Tools       []anthropicTool        `json:"tools,omitempty"`
+	Stream      bool                   `json:"stream"`
+	Temperature *float64               `json:"temperature,omitempty"`
+	Thinking    *anthropicThinking     `json:"thinking,omitempty"`
+}
+
+type anthropicSystemBlock struct {
+	Type         string              `json:"type"` // "text"
+	Text         string              `json:"text"`
+	CacheControl *anthropicCacheCtrl `json:"cache_control,omitempty"`
+}
+
+type anthropicCacheCtrl struct {
+	Type string `json:"type"` // "ephemeral"
 }
 
 type anthropicThinking struct {
@@ -87,7 +97,7 @@ type anthropicTool struct {
 
 func (b *AnthropicBackend) ChatStream(ctx context.Context, messages []Message, tools []Tool, params GenerationParams) (<-chan StreamEvent, error) {
 	model := b.model
-	system, wireMessages := buildAnthropicMessages(messages)
+	systemBlocks, wireMessages := buildAnthropicMessages(messages)
 
 	maxTokens := params.MaxTokens
 	if maxTokens == 0 {
@@ -97,7 +107,7 @@ func (b *AnthropicBackend) ChatStream(ctx context.Context, messages []Message, t
 	areq := anthropicRequest{
 		Model:       model,
 		MaxTokens:   maxTokens,
-		System:      system,
+		System:      systemBlocks,
 		Messages:    wireMessages,
 		Stream:      true,
 		Temperature: params.Temperature,
@@ -131,18 +141,20 @@ func (b *AnthropicBackend) ChatStream(ctx context.Context, messages []Message, t
 }
 
 // buildAnthropicMessages converts ollie messages to Anthropic wire format.
-// System messages are extracted into the top-level system field.
+// System messages are collected into a single cacheable block (cache_control:
+// ephemeral marks the prefix as eligible for prompt-cache reuse).
 // Consecutive tool messages are batched into a single user message with
 // multiple tool_result blocks (Anthropic requires strictly alternating roles).
-func buildAnthropicMessages(messages []Message) (system string, out []anthropicMessage) {
+func buildAnthropicMessages(messages []Message) (system []anthropicSystemBlock, out []anthropicMessage) {
+	var systemText string
 	for i := 0; i < len(messages); {
 		m := messages[i]
 		switch m.Role {
 		case "system":
-			if system != "" {
-				system += "\n\n"
+			if systemText != "" {
+				systemText += "\n\n"
 			}
-			system += m.Content
+			systemText += m.Content
 			i++
 		case "user":
 			out = append(out, anthropicMessage{
@@ -185,6 +197,13 @@ func buildAnthropicMessages(messages []Message) (system string, out []anthropicM
 			i++
 		}
 	}
+	if systemText != "" {
+		system = []anthropicSystemBlock{{
+			Type:         "text",
+			Text:         systemText,
+			CacheControl: &anthropicCacheCtrl{Type: "ephemeral"},
+		}}
+	}
 	return
 }
 
@@ -199,7 +218,7 @@ func streamAnthropicSSE(body io.Reader, ch chan<- StreamEvent) {
 	}
 	tools := map[int]*toolAccum{}
 
-	var inputTokens, outputTokens int
+	var inputTokens, outputTokens, cachedInputTokens, cacheCreationTokens int
 	var stopReason string
 	var curEvent, curData string
 	done := false
@@ -211,12 +230,16 @@ func streamAnthropicSSE(body io.Reader, ch chan<- StreamEvent) {
 			var v struct {
 				Message struct {
 					Usage struct {
-						InputTokens int `json:"input_tokens"`
+						InputTokens            int `json:"input_tokens"`
+						CacheReadInputTokens   int `json:"cache_read_input_tokens"`
+						CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 					} `json:"usage"`
 				} `json:"message"`
 			}
 			json.Unmarshal(raw, &v) //nolint:errcheck
 			inputTokens = v.Message.Usage.InputTokens
+			cachedInputTokens = v.Message.Usage.CacheReadInputTokens
+			cacheCreationTokens = v.Message.Usage.CacheCreationInputTokens
 
 		case "content_block_start":
 			var v struct {
@@ -275,7 +298,12 @@ func streamAnthropicSSE(body io.Reader, ch chan<- StreamEvent) {
 			ev := StreamEvent{
 				Done:       true,
 				StopReason: mapAnthropicStopReason(stopReason),
-				Usage:      Usage{InputTokens: inputTokens, OutputTokens: outputTokens},
+				Usage: Usage{
+					InputTokens:         inputTokens,
+					CachedInputTokens:   cachedInputTokens,
+					CacheCreationTokens: cacheCreationTokens,
+					OutputTokens:        outputTokens,
+				},
 			}
 			for _, t := range tools {
 				ev.ToolCalls = append(ev.ToolCalls, ToolCall{

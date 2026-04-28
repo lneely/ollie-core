@@ -193,8 +193,11 @@ func TestBuildAnthropicMessages_SystemConcat(t *testing.T) {
 		{Role: "system", Content: "a"},
 		{Role: "system", Content: "b"},
 	})
-	if sys != "a\n\nb" {
-		t.Errorf("system = %q", sys)
+	if len(sys) != 1 || sys[0].Text != "a\n\nb" {
+		t.Errorf("system = %+v", sys)
+	}
+	if sys[0].CacheControl == nil || sys[0].CacheControl.Type != "ephemeral" {
+		t.Errorf("system block missing cache_control: %+v", sys[0])
 	}
 }
 
@@ -268,8 +271,8 @@ func TestBuildAnthropicMessages_FullConversation(t *testing.T) {
 		{Role: "tool", Content: "result", ToolCallID: "c1"},
 		{Role: "assistant", Content: "done"},
 	})
-	if sys != "sys" {
-		t.Errorf("system = %q", sys)
+	if len(sys) != 1 || sys[0].Text != "sys" {
+		t.Errorf("system = %+v", sys)
 	}
 	if len(out) != 4 {
 		t.Fatalf("len = %d; want 4", len(out))

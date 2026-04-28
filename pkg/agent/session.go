@@ -69,16 +69,20 @@ type Session struct {
 	goal     string
 	messages []backend.Message
 	// Cumulative usage tracking.
-	TotalInputTokens  int
-	TotalOutputTokens int
-	TotalRequests     int
-	Estimated         bool    // true if any usage was estimated rather than reported by the backend
-	LastTurnCostUSD   float64 // cost of the most recently completed turn in USD
-	SessionCostUSD    float64 // cumulative cost of all turns in this session in USD
+	TotalInputTokens         int
+	TotalCachedInputTokens   int
+	TotalCacheCreationTokens int
+	TotalOutputTokens        int
+	TotalRequests            int
+	Estimated                bool    // true if any usage was estimated rather than reported by the backend
+	LastTurnCostUSD          float64 // cost of the most recently completed turn in USD
+	SessionCostUSD           float64 // cumulative cost of all turns in this session in USD
 	// per-turn accumulators; reset at the start of each turn
-	turnInputTokens  int
-	turnOutputTokens int
-	turnCostUSD      float64 // >0 when backend reported cost directly (e.g. OpenRouter)
+	turnInputTokens    int
+	turnCachedTokens   int
+	turnCreationTokens int
+	turnOutputTokens   int
+	turnCostUSD        float64 // >0 when backend reported cost directly (e.g. OpenRouter)
 }
 
 // newSession creates a new empty Session. The caller is responsible for
@@ -93,9 +97,13 @@ func (s *Session) history() []backend.Message {
 
 func (s *Session) addUsage(u backend.Usage, estimated bool) {
 	s.TotalInputTokens += u.InputTokens
+	s.TotalCachedInputTokens += u.CachedInputTokens
+	s.TotalCacheCreationTokens += u.CacheCreationTokens
 	s.TotalOutputTokens += u.OutputTokens
 	s.TotalRequests++
 	s.turnInputTokens += u.InputTokens
+	s.turnCachedTokens += u.CachedInputTokens
+	s.turnCreationTokens += u.CacheCreationTokens
 	s.turnOutputTokens += u.OutputTokens
 	s.turnCostUSD += u.CostUSD
 	if estimated {
@@ -105,6 +113,8 @@ func (s *Session) addUsage(u backend.Usage, estimated bool) {
 
 func (s *Session) resetTurnAccumulators() {
 	s.turnInputTokens = 0
+	s.turnCachedTokens = 0
+	s.turnCreationTokens = 0
 	s.turnOutputTokens = 0
 	s.turnCostUSD = 0
 }
@@ -117,7 +127,12 @@ func (s *Session) recordTurnCost(model string) {
 	if s.turnCostUSD > 0 {
 		cost = s.turnCostUSD
 	} else {
-		cost = computeCostUSD(model, s.turnInputTokens, s.turnOutputTokens)
+		cost = computeCostUSD(model, backend.Usage{
+			InputTokens:         s.turnInputTokens,
+			CachedInputTokens:   s.turnCachedTokens,
+			CacheCreationTokens: s.turnCreationTokens,
+			OutputTokens:        s.turnOutputTokens,
+		})
 	}
 	s.LastTurnCostUSD = cost
 	s.SessionCostUSD += cost

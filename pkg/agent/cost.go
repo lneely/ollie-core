@@ -1,6 +1,10 @@
 package agent
 
-import "strings"
+import (
+	"strings"
+
+	"ollie/pkg/backend"
+)
 
 // auditTruncate trims s to 200 runes for log output.
 func auditTruncate(s string) string {
@@ -49,14 +53,29 @@ var modelPrices = []struct {
 	{"gemini-1.5-flash", modelPrice{0.075, 0.30}},
 }
 
-// computeCostUSD returns the cost in USD for the given token counts and model.
+// computeCostUSD returns the cost in USD for the given usage and model.
+// CachedInputTokens are NOT included in u.InputTokens; they are charged at a
+// discount (10% for Anthropic, 50% for other providers).
+// CacheCreationTokens are charged at 125% of the normal input rate (Anthropic).
 // Returns 0 for unknown/local models.
-func computeCostUSD(model string, inputTokens, outputTokens int) float64 {
+func computeCostUSD(model string, u backend.Usage) float64 {
 	lower := strings.ToLower(model)
 	for _, entry := range modelPrices {
 		if strings.HasPrefix(lower, entry.prefix) {
-			return float64(inputTokens)*entry.price.inputPer1M/1e6 +
-				float64(outputTokens)*entry.price.outputPer1M/1e6
+			inRate := entry.price.inputPer1M / 1e6
+			outRate := entry.price.outputPer1M / 1e6
+			cost := float64(u.InputTokens)*inRate + float64(u.OutputTokens)*outRate
+			if u.CachedInputTokens > 0 {
+				cacheReadRate := 0.50
+				if strings.HasPrefix(lower, "claude-") {
+					cacheReadRate = 0.10
+				}
+				cost += float64(u.CachedInputTokens) * inRate * cacheReadRate
+			}
+			if u.CacheCreationTokens > 0 {
+				cost += float64(u.CacheCreationTokens) * inRate * 1.25
+			}
+			return cost
 		}
 	}
 	return 0
