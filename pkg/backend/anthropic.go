@@ -78,19 +78,21 @@ type anthropicMessage struct {
 }
 
 type anthropicContentBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"` // tool_result text
+	Type         string              `json:"type"`
+	Text         string              `json:"text,omitempty"`
+	ID           string              `json:"id,omitempty"`
+	Name         string              `json:"name,omitempty"`
+	Input        json.RawMessage     `json:"input,omitempty"`
+	ToolUseID    string              `json:"tool_use_id,omitempty"`
+	Content      string              `json:"content,omitempty"` // tool_result text
+	CacheControl *anthropicCacheCtrl `json:"cache_control,omitempty"`
 }
 
 type anthropicTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name         string              `json:"name"`
+	Description  string              `json:"description,omitempty"`
+	InputSchema  json.RawMessage     `json:"input_schema"`
+	CacheControl *anthropicCacheCtrl `json:"cache_control,omitempty"`
 }
 
 // -- implementation --
@@ -125,6 +127,9 @@ func (b *AnthropicBackend) ChatStream(ctx context.Context, messages []Message, t
 			Description: t.Description,
 			InputSchema: schema,
 		})
+	}
+	if len(areq.Tools) > 0 {
+		areq.Tools[len(areq.Tools)-1].CacheControl = &anthropicCacheCtrl{Type: "ephemeral"}
 	}
 
 	data, _ := json.Marshal(areq)
@@ -203,6 +208,21 @@ func buildAnthropicMessages(messages []Message) (system []anthropicSystemBlock, 
 			Text:         systemText,
 			CacheControl: &anthropicCacheCtrl{Type: "ephemeral"},
 		}}
+	}
+	// Cache the last large tool result to avoid re-reading it on every turn.
+	// Anthropic requires ≥1024 tokens (~4096 bytes) for a cache entry to be stored.
+outer:
+	for i := len(out) - 1; i >= 0; i-- {
+		if out[i].Role != "user" {
+			continue
+		}
+		for j := len(out[i].Content) - 1; j >= 0; j-- {
+			b := &out[i].Content[j]
+			if b.Type == "tool_result" && len(b.Content) >= 4096 {
+				b.CacheControl = &anthropicCacheCtrl{Type: "ephemeral"}
+				break outer
+			}
+		}
 	}
 	return
 }

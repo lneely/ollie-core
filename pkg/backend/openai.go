@@ -154,8 +154,9 @@ type openAIFunctionCall struct {
 }
 
 type openAITool struct {
-	Type     string             `json:"type"`
-	Function openAIToolFunction `json:"function"`
+	Type         string              `json:"type"`
+	Function     openAIToolFunction  `json:"function"`
+	CacheControl *anthropicCacheCtrl `json:"cache_control,omitempty"`
 }
 
 type openAIToolFunction struct {
@@ -444,6 +445,7 @@ func streamOpenAISSE(r io.Reader, ch chan<- StreamEvent) {
 
 func (b *OpenAIBackend) ChatStream(ctx context.Context, messages []Message, tools []Tool, params GenerationParams) (<-chan StreamEvent, error) {
 	wireMessages := encodeOpenAIMessages(messages)
+	wireTools := encodeOpenAITools(tools)
 	if b.name == "openrouter" && strings.Contains(strings.ToLower(b.model), "claude-") {
 		for i := range wireMessages {
 			if wireMessages[i].Role == "system" && wireMessages[i].Content != nil {
@@ -455,11 +457,14 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, messages []Message, tool
 				wireMessages[i].Content = nil
 			}
 		}
+		if len(wireTools) > 0 {
+			wireTools[len(wireTools)-1].CacheControl = &anthropicCacheCtrl{Type: "ephemeral"}
+		}
 	}
 	req := openAIChatRequest{
 		Model:            b.model,
 		Messages:         wireMessages,
-		Tools:            encodeOpenAITools(tools),
+		Tools:            wireTools,
 		Stream:           true,
 		StreamOptions:    &openAIStreamOptions{IncludeUsage: true},
 		MaxTokens:        params.MaxTokens,
