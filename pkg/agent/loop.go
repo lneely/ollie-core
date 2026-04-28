@@ -66,7 +66,7 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 				// responsible for recovery (e.g. switching model and resubmitting).
 				if attempt == 0 && cfg.TurnError != nil {
 					errType := classifyError(err)
-					if r := cfg.TurnError(ctx, errType, err.Error()); r.Ran {
+					if r := cfg.TurnError(ctx, errType, err.Error()); r.Handled {
 						return fmt.Errorf("step %d: %w", step, err)
 					}
 				}

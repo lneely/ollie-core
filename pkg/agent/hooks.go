@@ -38,6 +38,9 @@ type Hooks map[string][]string
 type HookResult struct {
 	// Ran is true when a hook command was configured and executed.
 	Ran bool
+	// Handled is true when all hook commands exited 0 (no warnings, not blocked).
+	// Use this to check whether a hook fully handled an event (e.g. turnError).
+	Handled bool
 	// Blocked is true when the hook wants to prevent the action (exit 2).
 	// For Stop hooks, Blocked means "don't stop, continue".
 	Blocked bool
@@ -69,13 +72,16 @@ func (h Hooks) Run(ctx context.Context, name string, payload any, log *olog.Logg
 
 	var contextParts []string
 	var warnings []string
+	allHandled := true
 	for _, cmdStr := range cmds {
 		log.Debug("hook %s: cmd=%q", name, cmdStr)
 		result := runHookCmd(ctx, name, cmdStr, payloadJSON, cwd, log)
 		if result.Warning != "" {
 			warnings = append(warnings, result.Warning)
+			allHandled = false
 		}
 		if !result.Ran {
+			allHandled = false
 			continue
 		}
 		if result.Blocked {
@@ -85,7 +91,7 @@ func (h Hooks) Run(ctx context.Context, name string, payload any, log *olog.Logg
 			contextParts = append(contextParts, result.Context)
 		}
 	}
-	return HookResult{Ran: true, Context: strings.Join(contextParts, "\n"), Warning: strings.Join(warnings, "; ")}
+	return HookResult{Ran: true, Handled: allHandled, Context: strings.Join(contextParts, "\n"), Warning: strings.Join(warnings, "; ")}
 }
 
 func runHookCmd(ctx context.Context, name, cmdStr string, payloadJSON []byte, cwd string, log *olog.Logger) HookResult {
@@ -142,7 +148,7 @@ func runHookCmd(ctx context.Context, name, cmdStr string, payloadJSON []byte, cw
 			return HookResult{Ran: true, Blocked: true, Context: msg}
 		default:
 			log.Debug("hook %s: exit=%d (non-blocking error) stderr=%q", name, exitCode, stderr.String())
-			return HookResult{Ran: true}
+			return HookResult{Ran: false, Warning: fmt.Sprintf("hook %s: exit %d", name, exitCode)}
 		}
 	case <-ctx.Done():
 		cmd.Process.Kill() //nolint:errcheck

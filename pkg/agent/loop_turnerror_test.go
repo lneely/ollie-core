@@ -39,7 +39,7 @@ func TestTurnError_HookInterceptsRateLimit(t *testing.T) {
 		if errType != "rate_limit" {
 			t.Errorf("errType = %q; want rate_limit", errType)
 		}
-		return HookResult{Ran: true}
+		return HookResult{Ran: true, Handled: true}
 	}
 
 	evs := collectEvents(context.Background(), c, "hi")
@@ -66,7 +66,7 @@ func TestTurnError_HookInterceptsToolUnsupported(t *testing.T) {
 		if errType != "tool_unsupported" {
 			t.Errorf("errType = %q; want tool_unsupported", errType)
 		}
-		return HookResult{Ran: true}
+		return HookResult{Ran: true, Handled: true}
 	}
 
 	collectEvents(context.Background(), c, "hi")
@@ -107,7 +107,7 @@ func TestTurnError_NonRetryableErrorNoHook(t *testing.T) {
 	c := newCore(t, be, nil)
 	c.cfg.TurnError = func(_ context.Context, errType, _ string) HookResult {
 		atomic.AddInt32(&hookCalls, 1)
-		return HookResult{Ran: true}
+		return HookResult{Ran: true, Handled: true}
 	}
 
 	collectEvents(context.Background(), c, "hi")
