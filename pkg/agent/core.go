@@ -310,8 +310,12 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 	a.changeCond = sync.NewCond(&a.changeMu)
 	a.pushSessionEnv()
 	a.pushLockDir()
-	a.cfg.TurnError = func(ctx context.Context, errType, errMsg string) HookResult {
-		return a.hooks.Run(ctx, HookTurnError, map[string]string{
+	a.cfg.TurnError = func(_ context.Context, errType, errMsg string) HookResult {
+		// Use a detached context so the hook can safely write "stop" to ctl
+		// without cancelling its own execution via the action context.
+		hookCtx, cancel := context.WithTimeout(context.Background(), time.Duration(hookTimeout)*time.Second)
+		defer cancel()
+		return a.hooks.Run(hookCtx, HookTurnError, map[string]string{
 			"session_id": a.sessionID,
 			"cwd":        a.CWD(),
 			"model":      a.cfg.Backend.Model(),

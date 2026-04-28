@@ -1071,19 +1071,19 @@ func TestCommand_Model_WhileRunning(t *testing.T) {
 	}()
 	waitState(t, c, "thinking")
 
+	// /model is now allowed while running (needed for turnError hook recovery).
 	evs := collectEvents(context.Background(), c, "/model new-model")
 
 	close(unblock)
 	<-done
 
-	found := false
 	for _, s := range byRole(evs, "info") {
 		if strings.Contains(s, "error") {
-			found = true
+			t.Errorf("/model while running: unexpected error: %s", s)
 		}
 	}
-	if !found {
-		t.Errorf("/model while running: expected error event, got: %v", byRole(evs, "info"))
+	if got := be.Model(); got != "new-model" {
+		t.Errorf("model = %q; want new-model", got)
 	}
 }
 

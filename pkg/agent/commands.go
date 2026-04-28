@@ -126,10 +126,6 @@ func (s *agent) handleCommand(ctx context.Context, input string, handler EventHa
 				handler(infoEvent(s.cfg.Backend.Model()))
 				return
 			}
-			if s.IsRunning() {
-				handler(infoEvent("error: cannot switch model while agent is running"))
-				return
-			}
 			s.cfg.Backend.SetModel(args[0])
 			handler(infoEvent("switched model to: " + args[0]))
 		},
