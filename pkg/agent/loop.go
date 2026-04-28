@@ -181,7 +181,9 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 				return toolResult{ToolCallID: tc.ID, Name: tc.Name, Content: "error: empty tool name", IsError: true}, false
 			}
 			if ctx.Err() != nil {
-				return cancelledResult(tc), true
+				cr := cancelledResult(tc)
+				emit(cfg, Event{Role: "tool", Name: tc.Name, Content: cr.Content})
+				return cr, true
 			}
 			emit(cfg, Event{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
 			if cfg.PreTool != nil {
@@ -242,7 +244,9 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 		for i := 0; i < len(toolCalls) && !interrupted; {
 			if ctx.Err() != nil {
 				for _, remaining := range toolCalls[i:] {
-					results = append(results, cancelledResult(remaining))
+					cr := cancelledResult(remaining)
+					emit(cfg, Event{Role: "tool", Name: remaining.Name, Content: cr.Content})
+					results = append(results, cr)
 				}
 				interrupted = true
 				break
@@ -257,13 +261,19 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 			}
 			batch := toolCalls[i:j]
 
+			fillCancelled := func(from int) {
+				for _, remaining := range toolCalls[from:] {
+					cr := cancelledResult(remaining)
+					emit(cfg, Event{Role: "tool", Name: remaining.Name, Content: cr.Content})
+					results = append(results, cr)
+				}
+			}
+
 			if len(batch) == 1 {
 				tr, wasInt := execOne(batch[0])
 				results = append(results, tr)
 				if wasInt {
-					for _, remaining := range toolCalls[j:] {
-						results = append(results, cancelledResult(remaining))
-					}
+					fillCancelled(j)
 					interrupted = true
 				}
 			} else {
@@ -279,12 +289,11 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 					}(k, tc)
 				}
 				wg.Wait()
-				for k, tr := range batchResults {
-					results = append(results, tr)
-					if batchInt[k] {
-						for _, remaining := range toolCalls[j:] {
-							results = append(results, cancelledResult(remaining))
-						}
+				// Add all batch results — model needs a result for every tool call.
+				results = append(results, batchResults...)
+				for _, wasInt := range batchInt {
+					if wasInt {
+						fillCancelled(j)
 						interrupted = true
 						break
 					}

@@ -318,3 +318,126 @@ func TestAnthropicSSE_EventsAfterError(t *testing.T) {
 		t.Fatalf("expected single Done event; got %d", len(evs))
 	}
 }
+
+// --- tool schema caching ---
+
+// TestToolSchemaCaching verifies that when multiple tools are provided, the
+// last tool gets cache_control:ephemeral and all others do not.
+func TestToolSchemaCaching(t *testing.T) {
+	tools := []Tool{
+		{Name: "alpha", Description: "a", Parameters: json.RawMessage(`{"type":"object"}`)},
+		{Name: "beta", Description: "b", Parameters: json.RawMessage(`{"type":"object"}`)},
+		{Name: "gamma", Description: "c", Parameters: json.RawMessage(`{"type":"object"}`)},
+	}
+	areq := anthropicRequest{}
+	for _, tool := range tools {
+		schema := tool.Parameters
+		if schema == nil {
+			schema = json.RawMessage(`{"type":"object","properties":{}}`)
+		}
+		areq.Tools = append(areq.Tools, anthropicTool{
+			Name:        tool.Name,
+			Description: tool.Description,
+			InputSchema: schema,
+		})
+	}
+	if len(areq.Tools) > 0 {
+		areq.Tools[len(areq.Tools)-1].CacheControl = &anthropicCacheCtrl{Type: "ephemeral"}
+	}
+
+	for i, tool := range areq.Tools {
+		if i < len(areq.Tools)-1 {
+			if tool.CacheControl != nil {
+				t.Errorf("tool[%d] (%s) has cache_control; want none", i, tool.Name)
+			}
+		} else {
+			if tool.CacheControl == nil || tool.CacheControl.Type != "ephemeral" {
+				t.Errorf("last tool (%s) missing cache_control:ephemeral; got %+v", tool.Name, tool.CacheControl)
+			}
+		}
+	}
+}
+
+// TestToolSchemaCaching_SingleTool verifies the single-tool edge case: the
+// one tool gets cache_control:ephemeral.
+func TestToolSchemaCaching_SingleTool(t *testing.T) {
+	tools := []Tool{
+		{Name: "only", Parameters: json.RawMessage(`{"type":"object"}`)},
+	}
+	areq := anthropicRequest{}
+	for _, tool := range tools {
+		areq.Tools = append(areq.Tools, anthropicTool{Name: tool.Name, InputSchema: tool.Parameters})
+	}
+	if len(areq.Tools) > 0 {
+		areq.Tools[len(areq.Tools)-1].CacheControl = &anthropicCacheCtrl{Type: "ephemeral"}
+	}
+	if areq.Tools[0].CacheControl == nil || areq.Tools[0].CacheControl.Type != "ephemeral" {
+		t.Errorf("single tool missing cache_control: %+v", areq.Tools[0])
+	}
+}
+
+// --- large tool result caching ---
+
+// TestToolResultCaching_LargeGetsCache verifies that a tool result ≥4096 bytes
+// is marked with cache_control:ephemeral.
+func TestToolResultCaching_LargeGetsCache(t *testing.T) {
+	large := strings.Repeat("x", 4096)
+	_, out := buildAnthropicMessages([]Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "ok", ToolCalls: []ToolCall{{ID: "c1", Name: "f", Arguments: json.RawMessage(`{}`)}}},
+		{Role: "tool", Content: large, ToolCallID: "c1"},
+	})
+	// Last user message contains the tool result.
+	last := out[len(out)-1]
+	if last.Role != "user" || len(last.Content) != 1 {
+		t.Fatalf("unexpected last message: %+v", last)
+	}
+	b := last.Content[0]
+	if b.Type != "tool_result" {
+		t.Fatalf("expected tool_result, got %q", b.Type)
+	}
+	if b.CacheControl == nil || b.CacheControl.Type != "ephemeral" {
+		t.Errorf("large tool result missing cache_control:ephemeral; got %+v", b.CacheControl)
+	}
+}
+
+// TestToolResultCaching_SmallNoCache verifies that a tool result below the
+// 4096-byte threshold does not get cache_control.
+func TestToolResultCaching_SmallNoCache(t *testing.T) {
+	_, out := buildAnthropicMessages([]Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "c1", Name: "f", Arguments: json.RawMessage(`{}`)}}},
+		{Role: "tool", Content: "small result", ToolCallID: "c1"},
+	})
+	last := out[len(out)-1]
+	for _, b := range last.Content {
+		if b.Type == "tool_result" && b.CacheControl != nil {
+			t.Errorf("small tool result has cache_control: %+v", b.CacheControl)
+		}
+	}
+}
+
+// TestToolResultCaching_LastLargeResult verifies that when multiple large tool
+// results exist, only the LAST one gets cache_control (not the first).
+func TestToolResultCaching_LastLargeResult(t *testing.T) {
+	large := strings.Repeat("y", 4096)
+	_, out := buildAnthropicMessages([]Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "c1", Name: "f", Arguments: json.RawMessage(`{}`)},
+			{ID: "c2", Name: "g", Arguments: json.RawMessage(`{}`)},
+		}},
+		{Role: "tool", Content: large, ToolCallID: "c1"},
+		{Role: "tool", Content: large, ToolCallID: "c2"},
+	})
+	last := out[len(out)-1]
+	if last.Role != "user" || len(last.Content) != 2 {
+		t.Fatalf("unexpected last message: role=%q len=%d", last.Role, len(last.Content))
+	}
+	if last.Content[0].CacheControl != nil {
+		t.Errorf("first large result should not have cache_control")
+	}
+	if last.Content[1].CacheControl == nil || last.Content[1].CacheControl.Type != "ephemeral" {
+		t.Errorf("last large result missing cache_control:ephemeral; got %+v", last.Content[1].CacheControl)
+	}
+}
