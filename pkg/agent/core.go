@@ -673,6 +673,7 @@ func (s *agent) SetGenerationParams(params backend.GenerationParams) error {
 func (s *agent) ListModels() string {
 	s.log.Debug("ListModels()")
 	models := s.cfg.Backend.Models(context.Background())
+	slices.Sort(models)
 	return strings.Join(models, "\n")
 }
 

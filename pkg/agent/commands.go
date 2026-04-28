@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
-
-	"sort"
 
 	"ollie/pkg/config"
 )
@@ -111,7 +110,7 @@ func (s *agent) handleCommand(ctx context.Context, input string, handler EventHa
 				handler(infoEvent("no models available"))
 				return
 			}
-			sort.Strings(models)
+			slices.Sort(models)
 			current := s.cfg.Backend.Model()
 			for _, m := range models {
 				marker := "  "
