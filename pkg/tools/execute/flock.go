@@ -87,6 +87,16 @@ func acquireFlock(dir, name string, exclusive bool) (*os.File, error) {
 	return f, nil
 }
 
+// IsParallelRead implements tools.ParallelClassifier. Returns true when the
+// named tool script carries a "# ollie:parallel read" annotation.
+func (e *Server) IsParallelRead(name string) bool {
+	code, err := ReadTool(name)
+	if err != nil {
+		return false
+	}
+	return detectParallelClass(code) == lockClassRead
+}
+
 func sanitizeLockName(s string) string {
 	var b strings.Builder
 	for _, r := range s {

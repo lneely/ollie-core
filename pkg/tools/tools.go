@@ -112,3 +112,10 @@ type TrustedToolsSetter interface {
 type LockDirSetter interface {
 	SetLockDir(dir string)
 }
+
+// ParallelClassifier is implemented by tool servers that can report whether a
+// named tool is safe to run concurrently with other read-class tools.
+// Returns false for unknown tools (conservative default).
+type ParallelClassifier interface {
+	IsParallelRead(name string) bool
+}

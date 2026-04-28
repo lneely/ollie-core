@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"ollie/pkg/backend"
@@ -19,13 +20,14 @@ type agentConfig struct {
 	Backend          backend.Backend
 	Tools            []backend.Tool
 	Exec             toolExecutor
+	ClassifyTool     func(name string) bool // nil=treat all as serial; true=parallel-read-safe
 	Output           EventHandler
 	preamble         string // compiled system+agent prompt sent as the system role
 	GenerationParams backend.GenerationParams
-	PopInject        func() string                                                      // returns and clears pending inject, or ""
-	AutoCompact      func(ctx context.Context)                                           // called after each tool round; may compact in-place
-	SaveSession      func()                                                             // called after each state.update(); persists mid-turn progress
-	PreTool          func(ctx context.Context, name string, args json.RawMessage) HookResult  // called before each tool; exit 2 blocks execution
+	PopInject        func() string                                                                         // returns and clears pending inject, or ""
+	AutoCompact      func(ctx context.Context)                                                             // called after each tool round; may compact in-place
+	SaveSession      func()                                                                                // called after each state.update(); persists mid-turn progress
+	PreTool          func(ctx context.Context, name string, args json.RawMessage) HookResult              // called before each tool; exit 2 blocks execution
 	PostTool         func(ctx context.Context, name string, args json.RawMessage, result string) HookResult // called after each tool; exit 0 appends, exit 2 replaces result
 }
 
@@ -158,57 +160,41 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 			return fmt.Errorf("step %d: %s", step, stopReason)
 		}
 
-		// Execute tool calls, handling mid-execution interruption.
+		// Execute tool calls, running consecutive parallel-read-safe tools concurrently.
 		msg := backend.Message{Role: "assistant", Content: content.String(), ToolCalls: toolCalls}
-		var results []toolResult
+		results := make([]toolResult, 0, len(toolCalls))
 		interrupted := false
 
-		for i, tc := range toolCalls {
+		cancelledResult := func(tc backend.ToolCall) toolResult {
+			return toolResult{
+				ToolCallID: tc.ID,
+				Name:       tc.Name,
+				Content:    `{"status":"cancelled","error":"interrupted"}`,
+				IsError:    true,
+			}
+		}
+
+		// execOne runs a single tool call end-to-end and reports whether the
+		// context was cancelled during execution.
+		execOne := func(tc backend.ToolCall) (toolResult, bool) {
 			if tc.Name == "" {
-				results = append(results, toolResult{
-					ToolCallID: tc.ID,
-					Name:       tc.Name,
-					Content:    "error: empty tool name",
-					IsError:    true,
-				})
-				continue
+				return toolResult{ToolCallID: tc.ID, Name: tc.Name, Content: "error: empty tool name", IsError: true}, false
 			}
-
-			// Check for cancellation before executing.
 			if ctx.Err() != nil {
-				// Fill synthetic results for this and all remaining tool calls.
-				for _, remaining := range toolCalls[i:] {
-					results = append(results, toolResult{
-						ToolCallID: remaining.ID,
-						Name:       remaining.Name,
-						Content:    `{"status":"cancelled","error":"interrupted"}`,
-						IsError:    true,
-					})
-				}
-				interrupted = true
-				break
+				return cancelledResult(tc), true
 			}
-
 			emit(cfg, Event{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
-
 			if cfg.PreTool != nil {
 				hr := cfg.PreTool(ctx, tc.Name, tc.Arguments)
 				if hr.Blocked {
-					msg := hr.Context
-					if msg == "" {
-						msg = fmt.Sprintf("tool %q blocked by hook", tc.Name)
+					blocked := hr.Context
+					if blocked == "" {
+						blocked = fmt.Sprintf("tool %q blocked by hook", tc.Name)
 					}
-					results = append(results, toolResult{
-						ToolCallID: tc.ID,
-						Name:       tc.Name,
-						Content:    msg,
-						IsError:    true,
-					})
-					emit(cfg, Event{Role: "tool", Name: tc.Name, Content: msg})
-					continue
+					emit(cfg, Event{Role: "tool", Name: tc.Name, Content: blocked})
+					return toolResult{ToolCallID: tc.ID, Name: tc.Name, Content: blocked, IsError: true}, false
 				}
 			}
-
 			var result string
 			var isErr bool
 			if cfg.Exec != nil {
@@ -216,29 +202,14 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 				if err != nil {
 					result = fmt.Sprintf("error: %v", err)
 					isErr = true
-					// If cancelled during execution, fill remaining and break.
 					if ctx.Err() != nil {
 						if cfg.PopInject != nil {
 							if injected := cfg.PopInject(); injected != "" {
 								result += "\n\n<system-user-interruption>\n" + injected + "\n</system-user-interruption>"
 							}
 						}
-						results = append(results, toolResult{
-							ToolCallID: tc.ID,
-							Name:       tc.Name,
-							Content:    result,
-							IsError:    true,
-						})
-						for _, remaining := range toolCalls[i+1:] {
-							results = append(results, toolResult{
-								ToolCallID: remaining.ID,
-								Name:       remaining.Name,
-								Content:    `{"status":"cancelled","error":"interrupted"}`,
-								IsError:    true,
-							})
-						}
-						interrupted = true
-						break
+						emit(cfg, Event{Role: "tool", Name: tc.Name, Content: result})
+						return toolResult{ToolCallID: tc.ID, Name: tc.Name, Content: result, IsError: true}, true
 					}
 				} else {
 					result = out
@@ -247,29 +218,79 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 				result = "error: no tool executor configured"
 				isErr = true
 			}
-
-			if !interrupted {
-				if cfg.PostTool != nil {
-					hr := cfg.PostTool(ctx, tc.Name, tc.Arguments, result)
-					if hr.Blocked {
-						result = hr.Context
-					} else if hr.Context != "" {
-						result += "\n" + hr.Context
-					}
+			if cfg.PostTool != nil {
+				hr := cfg.PostTool(ctx, tc.Name, tc.Arguments, result)
+				if hr.Blocked {
+					result = hr.Context
+				} else if hr.Context != "" {
+					result += "\n" + hr.Context
 				}
-				if cfg.PopInject != nil {
-					if injected := cfg.PopInject(); injected != "" {
-						result += "\n\n<system-user-interruption>\n" + injected + "\n</system-user-interruption>"
-					}
-				}
-				results = append(results, toolResult{
-					ToolCallID: tc.ID,
-					Name:       tc.Name,
-					Content:    result,
-					IsError:    isErr,
-				})
-				emit(cfg, Event{Role: "tool", Name: tc.Name, Content: result})
 			}
+			if cfg.PopInject != nil {
+				if injected := cfg.PopInject(); injected != "" {
+					result += "\n\n<system-user-interruption>\n" + injected + "\n</system-user-interruption>"
+				}
+			}
+			emit(cfg, Event{Role: "tool", Name: tc.Name, Content: result})
+			return toolResult{ToolCallID: tc.ID, Name: tc.Name, Content: result, IsError: isErr}, false
+		}
+
+		isParallelSafe := func(name string) bool {
+			return name != "" && cfg.ClassifyTool != nil && cfg.ClassifyTool(name)
+		}
+
+		for i := 0; i < len(toolCalls) && !interrupted; {
+			if ctx.Err() != nil {
+				for _, remaining := range toolCalls[i:] {
+					results = append(results, cancelledResult(remaining))
+				}
+				interrupted = true
+				break
+			}
+
+			// Collect a run of consecutive parallel-safe calls.
+			j := i + 1
+			if isParallelSafe(toolCalls[i].Name) {
+				for j < len(toolCalls) && isParallelSafe(toolCalls[j].Name) {
+					j++
+				}
+			}
+			batch := toolCalls[i:j]
+
+			if len(batch) == 1 {
+				tr, wasInt := execOne(batch[0])
+				results = append(results, tr)
+				if wasInt {
+					for _, remaining := range toolCalls[j:] {
+						results = append(results, cancelledResult(remaining))
+					}
+					interrupted = true
+				}
+			} else {
+				// Fan out the batch concurrently; preserve submission order in results.
+				batchResults := make([]toolResult, len(batch))
+				batchInt := make([]bool, len(batch))
+				var wg sync.WaitGroup
+				for k, tc := range batch {
+					wg.Add(1)
+					go func(k int, tc backend.ToolCall) {
+						defer wg.Done()
+						batchResults[k], batchInt[k] = execOne(tc)
+					}(k, tc)
+				}
+				wg.Wait()
+				for k, tr := range batchResults {
+					results = append(results, tr)
+					if batchInt[k] {
+						for _, remaining := range toolCalls[j:] {
+							results = append(results, cancelledResult(remaining))
+						}
+						interrupted = true
+						break
+					}
+				}
+			}
+			i = j
 		}
 
 		state.update(msg, results)

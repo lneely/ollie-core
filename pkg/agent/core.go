@@ -24,13 +24,18 @@ import (
 	"ollie/pkg/tools"
 )
 
+// toolClassifier reports whether a named tool is safe to run concurrently
+// with other read-class tools. nil means treat all tools as serial.
+type toolClassifier func(name string) bool
+
 // AgentEnv holds the runtime state derived from an agent config file.
 type AgentEnv struct {
 	dispatcher   tools.Dispatcher
 	tools        []backend.Tool
 	exec         toolExecutor
+	classifyTool toolClassifier
 	Hooks        Hooks
-	preamble string
+	preamble     string
 	genParams    backend.GenerationParams
 	Messages     []string
 }
@@ -95,12 +100,20 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 		return text, nil
 	}
 
+	var classify toolClassifier
+	if srv, ok := d.GetServer("execute"); ok {
+		if pc, ok := srv.(tools.ParallelClassifier); ok {
+			classify = pc.IsParallelRead
+		}
+	}
+
 	return AgentEnv{
-		dispatcher:  d,
-		tools:       allTools,
-		exec:        exec,
-		Hooks:       hooks,
-		preamble:    preamble,
+		dispatcher:   d,
+		tools:        allTools,
+		exec:         exec,
+		classifyTool: classify,
+		Hooks:        hooks,
+		preamble:     preamble,
 		genParams:    genParams,
 		Messages:     messages,
 	}
@@ -261,9 +274,10 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 	}
 	run := agentConfig{
 		Backend:          cfg.Backend,
-		preamble:     cfg.Env.preamble,
+		preamble:         cfg.Env.preamble,
 		Tools:            cfg.Env.tools,
 		Exec:             cfg.Env.exec,
+		ClassifyTool:     cfg.Env.classifyTool,
 		GenerationParams: cfg.Env.genParams,
 	}
 	if cfg.SessionID != "" {
