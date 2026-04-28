@@ -33,6 +33,10 @@ type agentConfig struct {
 
 func run(ctx context.Context, cfg agentConfig, state state) error {
 	var step int
+	// resultCache stores outputs of read-safe tool calls keyed by name+args.
+	// Only tools classified as parallel-safe (immutable reads) are cached.
+	// sync.Map is required because execOne may run in concurrent goroutines.
+	var resultCache sync.Map
 
 	for {
 		history := state.history()
@@ -197,6 +201,15 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 					return toolResult{ToolCallID: tc.ID, Name: tc.Name, Content: blocked, IsError: true}, false
 				}
 			}
+			readSafe := cfg.ClassifyTool != nil && cfg.ClassifyTool(tc.Name)
+			if readSafe {
+				key := tc.Name + "\x00" + string(tc.Arguments)
+				if v, ok := resultCache.Load(key); ok {
+					cached := v.(string)
+					emit(cfg, Event{Role: "tool", Name: tc.Name, Content: cached})
+					return toolResult{ToolCallID: tc.ID, Name: tc.Name, Content: cached}, false
+				}
+			}
 			var result string
 			var isErr bool
 			if cfg.Exec != nil {
@@ -215,6 +228,9 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 					}
 				} else {
 					result = out
+					if readSafe {
+						resultCache.Store(tc.Name+"\x00"+string(tc.Arguments), result)
+					}
 				}
 			} else {
 				result = "error: no tool executor configured"
