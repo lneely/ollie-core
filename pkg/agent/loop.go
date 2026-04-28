@@ -17,18 +17,19 @@ const maxTransientRetries = 3
 type toolExecutor func(ctx context.Context, name string, args json.RawMessage) (string, error)
 
 type agentConfig struct {
-	Backend          backend.Backend
-	Tools            []backend.Tool
-	Exec             toolExecutor
-	ClassifyTool     func(name string) bool // nil=treat all as serial; true=parallel-read-safe
-	Output           EventHandler
-	preamble         string // compiled system+agent prompt sent as the system role
-	GenerationParams backend.GenerationParams
-	PopInject        func() string                                                                         // returns and clears pending inject, or ""
-	AutoCompact      func(ctx context.Context)                                                             // called after each tool round; may compact in-place
-	SaveSession      func()                                                                                // called after each state.update(); persists mid-turn progress
-	PreTool          func(ctx context.Context, name string, args json.RawMessage) HookResult              // called before each tool; exit 2 blocks execution
-	PostTool         func(ctx context.Context, name string, args json.RawMessage, result string) HookResult // called after each tool; exit 0 appends, exit 2 replaces result
+	Backend              backend.Backend
+	Tools                []backend.Tool
+	Exec                 toolExecutor
+	ClassifyTool         func(name string) bool // nil=treat all as serial; true=parallel-read-safe
+	ToolResultMaxBytes   int                    // 0=unlimited; truncate tool results beyond this size
+	Output               EventHandler
+	preamble             string // compiled system+agent prompt sent as the system role
+	GenerationParams     backend.GenerationParams
+	PopInject            func() string                                                                         // returns and clears pending inject, or ""
+	AutoCompact          func(ctx context.Context)                                                             // called after each tool round; may compact in-place
+	SaveSession          func()                                                                                // called after each state.update(); persists mid-turn progress
+	PreTool              func(ctx context.Context, name string, args json.RawMessage) HookResult              // called before each tool; exit 2 blocks execution
+	PostTool             func(ctx context.Context, name string, args json.RawMessage, result string) HookResult // called after each tool; exit 0 appends, exit 2 replaces result
 }
 
 func run(ctx context.Context, cfg agentConfig, state state) error {
@@ -39,7 +40,7 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 	var resultCache sync.Map
 
 	for {
-		history := state.history()
+		history := pruneStaleReads(state.history())
 		if cfg.preamble != "" {
 			history = append([]backend.Message{{Role: "system", Content: cfg.preamble}}, history...)
 		}
@@ -228,9 +229,6 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 					}
 				} else {
 					result = out
-					if readSafe {
-						resultCache.Store(tc.Name+"\x00"+string(tc.Arguments), result)
-					}
 				}
 			} else {
 				result = "error: no tool executor configured"
@@ -248,6 +246,15 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 				if injected := cfg.PopInject(); injected != "" {
 					result += "\n\n<system-user-interruption>\n" + injected + "\n</system-user-interruption>"
 				}
+			}
+			if !isErr && cfg.ToolResultMaxBytes > 0 && len(result) > cfg.ToolResultMaxBytes {
+				orig := len(result)
+				result = result[:cfg.ToolResultMaxBytes]
+				result += fmt.Sprintf("\n\n[result truncated: first %d of %d bytes shown; reissue with offset=%d to read more]",
+					cfg.ToolResultMaxBytes, orig, cfg.ToolResultMaxBytes)
+			}
+			if readSafe && !isErr {
+				resultCache.Store(tc.Name+"\x00"+string(tc.Arguments), result)
 			}
 			emit(cfg, Event{Role: "tool", Name: tc.Name, Content: result})
 			return toolResult{ToolCallID: tc.ID, Name: tc.Name, Content: result, IsError: isErr}, false

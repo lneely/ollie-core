@@ -273,12 +273,13 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		cfg.NewBackend = backend.NewWithName
 	}
 	run := agentConfig{
-		Backend:          cfg.Backend,
-		preamble:         cfg.Env.preamble,
-		Tools:            cfg.Env.tools,
-		Exec:             cfg.Env.exec,
-		ClassifyTool:     cfg.Env.classifyTool,
-		GenerationParams: cfg.Env.genParams,
+		Backend:            cfg.Backend,
+		preamble:           cfg.Env.preamble,
+		Tools:              cfg.Env.tools,
+		Exec:               cfg.Env.exec,
+		ClassifyTool:       cfg.Env.classifyTool,
+		ToolResultMaxBytes: defaultToolResultMaxBytes,
+		GenerationParams:   cfg.Env.genParams,
 	}
 	if cfg.SessionID != "" {
 		os.MkdirAll(filepath.Join(ollieTmpDir(), cfg.SessionID), 0700) //nolint:errcheck
@@ -468,6 +469,7 @@ func (s *agent) SetSessionID(newID string) error {
 // actual context window (e.g. CodeWhisperer). 128k tokens is a safe default
 // for modern models.
 const defaultContextLength = 128000
+const defaultToolResultMaxBytes = 8192
 
 // autoCompactLimit returns the token threshold for auto-compaction (75%).
 func (s *agent) autoCompactLimit(ctx context.Context) int {
