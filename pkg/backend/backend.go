@@ -159,7 +159,7 @@ func streamRequest(client *http.Client, req *http.Request, label string, parseFn
 		if resp.StatusCode == http.StatusBadRequest && isContextOverflow(msg) {
 			return nil, &ContextOverflowError{Message: fmt.Sprintf("%s HTTP %d: %s", label, resp.StatusCode, msg)}
 		}
-		if (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity) && isToolUnsupported(msg) {
+		if (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity || resp.StatusCode == http.StatusNotFound) && isToolUnsupported(msg) {
 			return nil, &ToolUnsupportedError{Message: fmt.Sprintf("%s HTTP %d: %s", label, resp.StatusCode, msg)}
 		}
 		return nil, fmt.Errorf("%s HTTP %d: %s", label, resp.StatusCode, msg)
@@ -184,6 +184,7 @@ func isToolUnsupported(body string) bool {
 		"does not support function",
 		"tool_use is not enabled",
 		"not support tool",
+		"no endpoints found that support tool",
 	}
 	lower := strings.ToLower(body)
 	for _, m := range markers {

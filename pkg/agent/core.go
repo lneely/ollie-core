@@ -987,6 +987,10 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 			s.session.messages = snapMessages
 		}
 		handler(Event{Role: "error", Content: err.Error()})
+		// Drain one FIFO item — the turnError hook may have queued a recovery prompt.
+		if next, ok := s.fifo.Pop(); ok {
+			return next
+		}
 		return ""
 	}
 
