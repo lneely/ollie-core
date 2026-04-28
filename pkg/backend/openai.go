@@ -111,11 +111,34 @@ func (b *OpenAIBackend) DefaultModel() string {
 
 // -- wire types --
 
+type openAIContentBlock struct {
+	Type         string              `json:"type"`
+	Text         string              `json:"text"`
+	CacheControl *anthropicCacheCtrl `json:"cache_control,omitempty"`
+}
+
 type openAIMessage struct {
-	Role       string           `json:"role"`
-	Content    *string          `json:"content"`
-	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Role          string               `json:"role"`
+	Content       *string              `json:"content"`
+	ContentBlocks []openAIContentBlock `json:"-"` // non-nil overrides Content during marshaling
+	ToolCalls     []openAIToolCall     `json:"tool_calls,omitempty"`
+	ToolCallID    string               `json:"tool_call_id,omitempty"`
+}
+
+// MarshalJSON encodes content as an array of blocks when ContentBlocks is set
+// (used for provider-specific cache_control extensions), otherwise falls back
+// to the standard *string Content field.
+func (m openAIMessage) MarshalJSON() ([]byte, error) {
+	if len(m.ContentBlocks) > 0 {
+		return json.Marshal(struct {
+			Role       string               `json:"role"`
+			Content    []openAIContentBlock `json:"content"`
+			ToolCalls  []openAIToolCall     `json:"tool_calls,omitempty"`
+			ToolCallID string               `json:"tool_call_id,omitempty"`
+		}{m.Role, m.ContentBlocks, m.ToolCalls, m.ToolCallID})
+	}
+	type plain openAIMessage
+	return json.Marshal(plain(m))
 }
 
 type openAIToolCall struct {
@@ -420,9 +443,22 @@ func streamOpenAISSE(r io.Reader, ch chan<- StreamEvent) {
 // -- implementation --
 
 func (b *OpenAIBackend) ChatStream(ctx context.Context, messages []Message, tools []Tool, params GenerationParams) (<-chan StreamEvent, error) {
+	wireMessages := encodeOpenAIMessages(messages)
+	if b.name == "openrouter" && strings.Contains(strings.ToLower(b.model), "claude-") {
+		for i := range wireMessages {
+			if wireMessages[i].Role == "system" && wireMessages[i].Content != nil {
+				wireMessages[i].ContentBlocks = []openAIContentBlock{{
+					Type:         "text",
+					Text:         *wireMessages[i].Content,
+					CacheControl: &anthropicCacheCtrl{Type: "ephemeral"},
+				}}
+				wireMessages[i].Content = nil
+			}
+		}
+	}
 	req := openAIChatRequest{
 		Model:            b.model,
-		Messages:         encodeOpenAIMessages(messages),
+		Messages:         wireMessages,
 		Tools:            encodeOpenAITools(tools),
 		Stream:           true,
 		StreamOptions:    &openAIStreamOptions{IncludeUsage: true},

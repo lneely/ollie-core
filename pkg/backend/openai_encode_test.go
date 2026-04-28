@@ -2,6 +2,7 @@ package backend
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -193,6 +194,39 @@ func TestEncodeMessages_JSONRoundTrip(t *testing.T) {
 		t.Errorf("arguments = %q", parsed.ToolCalls[0].Function.Arguments)
 	}
 }
+
+func TestEncodeMessages_OpenRouterClaudeCacheControl(t *testing.T) {
+	// When an openrouter+claude request is built, the system message content
+	// must be encoded as an array with cache_control, not a plain string.
+	msgs := []openAIMessage{{Role: "system", Content: strPtr("be helpful")}}
+	// Simulate the patch applied in ChatStream.
+	for i := range msgs {
+		if msgs[i].Role == "system" && msgs[i].Content != nil {
+			msgs[i].ContentBlocks = []openAIContentBlock{{
+				Type:         "text",
+				Text:         *msgs[i].Content,
+				CacheControl: &anthropicCacheCtrl{Type: "ephemeral"},
+			}}
+			msgs[i].Content = nil
+		}
+	}
+	data, err := json.Marshal(msgs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	json.Unmarshal(data, &raw) //nolint:errcheck
+	// content must be an array, not a string
+	if raw["content"][0] != '[' {
+		t.Errorf("content should be array, got: %s", raw["content"])
+	}
+	// must contain cache_control
+	if !strings.Contains(string(raw["content"]), "cache_control") {
+		t.Errorf("cache_control missing from content: %s", raw["content"])
+	}
+}
+
+func strPtr(s string) *string { return &s }
 
 func TestEncodeRequest_ToolsOmittedWhenEmpty(t *testing.T) {
 	req := openAIChatRequest{
