@@ -33,6 +33,7 @@ var SessionFileList = []struct {
 	{"systemprompt", 0444},
 	{"env", 0444},
 	{"tail", 0555},
+	{"prompt.prev", 0444},
 }
 
 // SessionFileStore is a RunFileStore for a session directory.
@@ -74,6 +75,14 @@ func (h *sessionHelper) fileSpec(name string, mode os.FileMode) FileSpec {
 			n := len(h.sess.plan)
 			h.sess.mu.RUnlock()
 			return int64(n)
+		}
+	case "prompt.prev":
+		fs.Read = func() ([]byte, error) {
+			h.sess.mu.RLock()
+			data := make([]byte, len(h.sess.prevPrompt))
+			copy(data, h.sess.prevPrompt)
+			h.sess.mu.RUnlock()
+			return data, nil
 		}
 	case "chat":
 		fs.Read = func() ([]byte, error) {
@@ -127,6 +136,9 @@ func (h *sessionHelper) fileSpec(name string, mode os.FileMode) FileSpec {
 			if input == "" {
 				return nil
 			}
+			h.sess.mu.Lock()
+			h.sess.prevPrompt = []byte(input)
+			h.sess.mu.Unlock()
 			pub := h.makePublish()
 			go func() {
 				h.sess.Core.Submit(h.sess.Ctx, input, pub)

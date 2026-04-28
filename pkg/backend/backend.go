@@ -94,6 +94,14 @@ type ContextOverflowError struct {
 
 func (e *ContextOverflowError) Error() string { return e.Message }
 
+// ToolUnsupportedError is returned when the model or backend does not support
+// tool/function calling. The request should not be retried with the same model.
+type ToolUnsupportedError struct {
+	Message string
+}
+
+func (e *ToolUnsupportedError) Error() string { return e.Message }
+
 // GenerationParams controls sampling behaviour for a single ChatStream call.
 // Zero values mean "use the API default".
 type GenerationParams struct {
@@ -151,6 +159,9 @@ func streamRequest(client *http.Client, req *http.Request, label string, parseFn
 		if resp.StatusCode == http.StatusBadRequest && isContextOverflow(msg) {
 			return nil, &ContextOverflowError{Message: fmt.Sprintf("%s HTTP %d: %s", label, resp.StatusCode, msg)}
 		}
+		if (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity) && isToolUnsupported(msg) {
+			return nil, &ToolUnsupportedError{Message: fmt.Sprintf("%s HTTP %d: %s", label, resp.StatusCode, msg)}
+		}
 		return nil, fmt.Errorf("%s HTTP %d: %s", label, resp.StatusCode, msg)
 	}
 	ch := make(chan StreamEvent, 8)
@@ -160,6 +171,27 @@ func streamRequest(client *http.Client, req *http.Request, label string, parseFn
 		parseFn(resp.Body, ch)
 	}()
 	return ch, nil
+}
+
+// isToolUnsupported returns true when a 400/422 response body indicates the
+// model does not support tool/function calling.
+func isToolUnsupported(body string) bool {
+	markers := []string{
+		"tool use is not supported",
+		"tools is not supported",
+		"function calling is not supported",
+		"does not support tools",
+		"does not support function",
+		"tool_use is not enabled",
+		"not support tool",
+	}
+	lower := strings.ToLower(body)
+	for _, m := range markers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // isContextOverflow returns true when a 400 response body indicates the request

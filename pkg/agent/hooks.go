@@ -23,6 +23,7 @@ const (
 	HookPostTool    = "postTool"
 	HookPreCompact  = "preCompact"
 	HookPostCompact = "postCompact"
+	HookTurnError   = "turnError"
 )
 
 const defaultHookTimeout = 60
@@ -92,6 +93,18 @@ func runHookCmd(ctx context.Context, name, cmdStr string, payloadJSON []byte, cw
 	cmd.Stdin = bytes.NewReader(payloadJSON)
 	if cwd != "" {
 		cmd.Dir = paths.ExpandHome(cwd)
+	}
+
+	// Inject payload map keys as OLLIE_* environment variables so hook
+	// commands can use $OLLIE_SESSION_ID, $OLLIE_MODEL, etc. without
+	// parsing the JSON payload on stdin.
+	var payloadMap map[string]string
+	if err := json.Unmarshal(payloadJSON, &payloadMap); err == nil {
+		env := cmd.Environ()
+		for k, v := range payloadMap {
+			env = append(env, "OLLIE_"+strings.ToUpper(k)+"="+v)
+		}
+		cmd.Env = env
 	}
 
 	var stdout, stderr bytes.Buffer

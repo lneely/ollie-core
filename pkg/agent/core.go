@@ -310,6 +310,15 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 	a.changeCond = sync.NewCond(&a.changeMu)
 	a.pushSessionEnv()
 	a.pushLockDir()
+	a.cfg.TurnError = func(ctx context.Context, errType, errMsg string) HookResult {
+		return a.hooks.Run(ctx, HookTurnError, map[string]string{
+			"session_id": a.sessionID,
+			"cwd":        a.CWD(),
+			"model":      a.cfg.Backend.Model(),
+			"error_type": errType,
+			"error":      errMsg,
+		}, a.log)
+	}
 	return a
 }
 
@@ -497,6 +506,7 @@ func (s *agent) spawnContext(ctx context.Context, handler EventHandler) string {
 		"session_id": s.sessionID,
 		"agent":      s.agentName,
 		"cwd":        s.CWD(),
+		"model":      s.cfg.Backend.Model(),
 	}, s.log)
 	if result.Warning != "" {
 		handler(infoEvent(result.Warning))
@@ -807,6 +817,8 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 		case "tool":
 			s.setState("thinking")
 			s.auditLog.Debug("result: %s %s", ev.Name, auditTruncate(ev.Content))
+		case "limitretry":
+			s.setState("limitretry")
 		case "error":
 			s.auditLog.Debug("error: %s", ev.Content)
 		}

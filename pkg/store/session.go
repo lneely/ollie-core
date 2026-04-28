@@ -28,6 +28,7 @@ type Session struct {
 	logVers    uint32
 	ChatOffset int
 	plan       []byte
+	prevPrompt []byte // last submitted prompt; overwritten on each new submission
 }
 
 func NewSession(id string, core agent.Core, ctx context.Context, cancel context.CancelFunc) *Session {

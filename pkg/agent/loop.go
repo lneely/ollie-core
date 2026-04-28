@@ -30,6 +30,7 @@ type agentConfig struct {
 	SaveSession          func()                                                                                // called after each state.update(); persists mid-turn progress
 	PreTool              func(ctx context.Context, name string, args json.RawMessage) HookResult              // called before each tool; exit 2 blocks execution
 	PostTool             func(ctx context.Context, name string, args json.RawMessage, result string) HookResult // called after each tool; exit 0 appends, exit 2 replaces result
+	TurnError            func(ctx context.Context, errType, errMsg string) HookResult                          // called on first backend error; if ran, skips retries
 }
 
 func run(ctx context.Context, cfg agentConfig, state state) error {
@@ -60,9 +61,22 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
+				// On the first error, fire the turnError hook. If it handles
+				// the error (exit 0), return immediately — the hook is
+				// responsible for recovery (e.g. switching model and resubmitting).
+				if attempt == 0 && cfg.TurnError != nil {
+					errType := classifyError(err)
+					if r := cfg.TurnError(ctx, errType, err.Error()); r.Ran {
+						return fmt.Errorf("step %d: %w", step, err)
+					}
+				}
 				wait, retryable := transientWait(err, attempt)
 				if !retryable || attempt >= maxTransientRetries {
 					return fmt.Errorf("step %d: %w", step, err)
+				}
+				var rlErr *backend.RateLimitError
+				if errors.As(err, &rlErr) {
+					emit(cfg, Event{Role: "limitretry"})
 				}
 				if err := retryCountdown(ctx, cfg, wait); err != nil {
 					return fmt.Errorf("step %d: %w", step, err)
@@ -353,6 +367,28 @@ func emit(cfg agentConfig, msg Event) {
 	if cfg.Output != nil {
 		cfg.Output(msg)
 	}
+}
+
+// classifyError returns a short string identifying the error type for the
+// turnError hook payload.
+func classifyError(err error) string {
+	var rlErr *backend.RateLimitError
+	if errors.As(err, &rlErr) {
+		return "rate_limit"
+	}
+	var tuErr *backend.ToolUnsupportedError
+	if errors.As(err, &tuErr) {
+		return "tool_unsupported"
+	}
+	var coErr *backend.ContextOverflowError
+	if errors.As(err, &coErr) {
+		return "context_overflow"
+	}
+	var tErr *backend.TransientError
+	if errors.As(err, &tErr) {
+		return "transient"
+	}
+	return "unknown"
 }
 
 // transientWait returns the retry wait for a retryable error and whether it is
