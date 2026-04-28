@@ -168,3 +168,86 @@ func TestExtractExecCodePaths_Basic(t *testing.T) {
 		t.Errorf("writes = %v; want [/b.go /c.go]", writes)
 	}
 }
+
+// TestPruneStaleReads_ReadWriteReadCycle is the primary correctness invariant:
+// read before a write is pruned; read after the same write is kept.
+func TestPruneStaleReads_ReadWriteReadCycle(t *testing.T) {
+	history := []backend.Message{
+		{Role: "user", Content: "update foo"},
+		makeExecCodeMsg("c1", []map[string]any{{"tool": "file_read", "args": []string{"/foo.go"}}}),
+		makeToolResult("c1", "old content"),
+		makeExecCodeMsg("c2", []map[string]any{{"tool": "file_write", "args": []string{"/foo.go", "new content"}}}),
+		makeToolResult("c2", "ok"),
+		makeExecCodeMsg("c3", []map[string]any{{"tool": "file_read", "args": []string{"/foo.go"}}}),
+		makeToolResult("c3", "new content"),
+	}
+
+	out := pruneStaleReads(history)
+
+	// c1 (pre-write read) must be gone; c3 (post-write read) must remain.
+	for _, m := range out {
+		if m.Role == "tool" && m.ToolCallID == "c1" {
+			t.Error("pre-write read result c1 should have been pruned")
+		}
+	}
+	found := false
+	for _, m := range out {
+		if m.Role == "tool" && m.ToolCallID == "c3" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("post-write read result c3 should be kept")
+	}
+	if len(out) != len(history)-1 {
+		t.Errorf("len(out) = %d; want %d", len(out), len(history)-1)
+	}
+}
+
+// TestPruneStaleReads_AssistantMessagesUnaffected verifies that the assistant
+// messages that issued the tool calls are never removed — only the tool result
+// messages (role:"tool") for stale reads are dropped.
+func TestPruneStaleReads_AssistantMessagesUnaffected(t *testing.T) {
+	history := []backend.Message{
+		{Role: "user", Content: "go"},
+		makeExecCodeMsg("c1", []map[string]any{{"tool": "file_read", "args": []string{"/foo.go"}}}),
+		makeToolResult("c1", "old"),
+		makeExecCodeMsg("c2", []map[string]any{{"tool": "file_write", "args": []string{"/foo.go", "new"}}}),
+		makeToolResult("c2", "ok"),
+	}
+
+	out := pruneStaleReads(history)
+
+	var assistantCount int
+	for _, m := range out {
+		if m.Role == "assistant" {
+			assistantCount++
+		}
+	}
+	if assistantCount != 2 {
+		t.Errorf("assistant messages = %d; want 2 (pruning must not remove assistant messages)", assistantCount)
+	}
+}
+
+// TestPruneStaleReads_NonExecuteCodeUnaffected verifies that tool calls with
+// names other than "execute_code" are ignored by the path tracker and never
+// cause unrelated tool results to be pruned.
+func TestPruneStaleReads_NonExecuteCodeUnaffected(t *testing.T) {
+	history := []backend.Message{
+		{Role: "user", Content: "go"},
+		// A non-execute_code call that happens to reference a path.
+		{Role: "assistant", ToolCalls: []backend.ToolCall{
+			{ID: "c1", Name: "some_other_tool", Arguments: json.RawMessage(`{"path":"/foo.go"}`)},
+		}},
+		makeToolResult("c1", "other tool result"),
+		// execute_code write — should not prune the unrelated result above.
+		makeExecCodeMsg("c2", []map[string]any{{"tool": "file_write", "args": []string{"/foo.go", "new"}}}),
+		makeToolResult("c2", "ok"),
+	}
+
+	out := pruneStaleReads(history)
+
+	if len(out) != len(history) {
+		t.Errorf("len(out) = %d; want %d (non-execute_code results must not be pruned)", len(out), len(history))
+	}
+}

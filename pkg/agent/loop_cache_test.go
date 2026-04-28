@@ -143,6 +143,43 @@ func TestResultCache_ErrorNotCached(t *testing.T) {
 	}
 }
 
+// TestResultCache_IdenticalParallelReads verifies that two identical read-safe
+// tool calls issued in the same parallel batch (both goroutines miss the cache
+// simultaneously) both complete without error and return consistent results.
+func TestResultCache_IdenticalParallelReads(t *testing.T) {
+	var execCount int32
+	be := defaultBE()
+	be.respond = toolsStream([]backend.ToolCall{
+		{ID: "1", Name: "file_read", Arguments: json.RawMessage(`{"path":"a.txt"}`)},
+		{ID: "2", Name: "file_read", Arguments: json.RawMessage(`{"path":"a.txt"}`)},
+	})
+
+	c := newCore(t, be, nil)
+	c.cfg.ClassifyTool = func(string) bool { return true } // both parallel-safe → same batch
+	c.cfg.Exec = func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
+		atomic.AddInt32(&execCount, 1)
+		return "file contents", nil
+	}
+
+	evs := collectEvents(context.Background(), c, "identical parallel")
+
+	toolEvs := byRole(evs, "tool")
+	if len(toolEvs) != 2 {
+		t.Fatalf("tool events = %d; want 2", len(toolEvs))
+	}
+	for i, ev := range toolEvs {
+		if ev != "file contents" {
+			t.Errorf("tool event[%d] = %q; want %q", i, ev, "file contents")
+		}
+	}
+	// Both may have executed (cache miss race) or one may have hit cache —
+	// either is correct. What must not happen: panic, empty result, or wrong value.
+	n := atomic.LoadInt32(&execCount)
+	if n < 1 || n > 2 {
+		t.Errorf("Exec called %d times; want 1 or 2", n)
+	}
+}
+
 type mockErr struct{ msg string }
 
 func (e *mockErr) Error() string { return e.msg }

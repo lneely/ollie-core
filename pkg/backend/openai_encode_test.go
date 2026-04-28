@@ -1,7 +1,12 @@
 package backend
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -227,6 +232,135 @@ func TestEncodeMessages_OpenRouterClaudeCacheControl(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// --- OpenRouter cache injection: positive and negative cases ---
+
+// captureRawRequest spins up an httptest server that captures the raw request
+// body JSON, calls the backend, and drains the stream.
+func captureRawRequest(t *testing.T, name, model string, msgs []Message, tools []Tool) map[string]json.RawMessage {
+	t.Helper()
+	var rawBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	b, err := NewOpenAI(name, srv.URL, "key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.SetModel(model)
+	ch, err := b.ChatStream(context.Background(), msgs, tools, GenerationParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range ch {
+	}
+
+	var top map[string]json.RawMessage
+	json.Unmarshal(rawBody, &top) //nolint:errcheck
+	return top
+}
+
+// TestOpenRouterClaude_SystemCacheControl verifies that when the backend is
+// "openrouter" and the model contains "claude-", the system message content is
+// encoded as a JSON array with a cache_control:ephemeral block.
+func TestOpenRouterClaude_SystemCacheControl(t *testing.T) {
+	top := captureRawRequest(t, "openrouter", "claude-sonnet-4-5",
+		[]Message{{Role: "system", Content: "be helpful"}, {Role: "user", Content: "hi"}},
+		nil,
+	)
+
+	var messages []map[string]json.RawMessage
+	json.Unmarshal(top["messages"], &messages) //nolint:errcheck
+	if len(messages) == 0 {
+		t.Fatal("no messages in captured request")
+	}
+	sys := messages[0]
+
+	// content must be an array (first byte '['), not a plain string.
+	content := sys["content"]
+	if len(content) == 0 || content[0] != '[' {
+		t.Errorf("system content should be array; got %s", content)
+	}
+	if !strings.Contains(string(content), "cache_control") {
+		t.Errorf("system content missing cache_control: %s", content)
+	}
+	if !strings.Contains(string(content), "ephemeral") {
+		t.Errorf("system content missing ephemeral: %s", content)
+	}
+}
+
+// TestOpenRouterClaude_LastToolCacheControl verifies that the last tool in the
+// array gets cache_control:ephemeral on openrouter+claude requests.
+func TestOpenRouterClaude_LastToolCacheControl(t *testing.T) {
+	top := captureRawRequest(t, "openrouter", "claude-sonnet-4-5",
+		[]Message{{Role: "user", Content: "hi"}},
+		[]Tool{
+			{Name: "alpha", Parameters: json.RawMessage(`{}`)},
+			{Name: "beta", Parameters: json.RawMessage(`{}`)},
+		},
+	)
+
+	var tools []map[string]json.RawMessage
+	json.Unmarshal(top["tools"], &tools) //nolint:errcheck
+	if len(tools) != 2 {
+		t.Fatalf("tools len = %d; want 2", len(tools))
+	}
+	if strings.Contains(string(tools[0]["cache_control"]), "ephemeral") {
+		t.Errorf("first tool should not have cache_control:ephemeral")
+	}
+	if !strings.Contains(string(tools[1]["cache_control"]), "ephemeral") {
+		t.Errorf("last tool missing cache_control:ephemeral; got %s", tools[1]["cache_control"])
+	}
+}
+
+// TestOpenRouterNonClaude_NoCacheControl verifies that a non-Claude model on
+// openrouter does NOT get cache_control injected into system messages or tools.
+func TestOpenRouterNonClaude_NoCacheControl(t *testing.T) {
+	top := captureRawRequest(t, "openrouter", "mistral-7b",
+		[]Message{{Role: "system", Content: "be helpful"}, {Role: "user", Content: "hi"}},
+		[]Tool{{Name: "run", Parameters: json.RawMessage(`{}`)}},
+	)
+
+	var messages []map[string]json.RawMessage
+	json.Unmarshal(top["messages"], &messages) //nolint:errcheck
+	content := messages[0]["content"]
+	// Must be a plain JSON string, not an array.
+	if len(content) == 0 || content[0] != '"' {
+		t.Errorf("non-claude system content should be plain string; got %s", content)
+	}
+	if strings.Contains(string(content), "cache_control") {
+		t.Errorf("non-claude system content must not contain cache_control: %s", content)
+	}
+
+	var tools []map[string]json.RawMessage
+	json.Unmarshal(top["tools"], &tools) //nolint:errcheck
+	if len(tools) > 0 && strings.Contains(string(tools[0]["cache_control"]), "ephemeral") {
+		t.Errorf("non-claude tool should not have cache_control:ephemeral")
+	}
+}
+
+// TestOpenAI_NoCacheControl verifies that a plain "openai" backend (not
+// openrouter) never injects cache_control, even for a claude-named model.
+func TestOpenAI_NoCacheControl(t *testing.T) {
+	top := captureRawRequest(t, "openai", "claude-sonnet-4-5",
+		[]Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "hi"}},
+		[]Tool{{Name: "run", Parameters: json.RawMessage(`{}`)}},
+	)
+
+	var messages []map[string]json.RawMessage
+	json.Unmarshal(top["messages"], &messages) //nolint:errcheck
+	content := messages[0]["content"]
+	if len(content) == 0 || content[0] != '"' {
+		t.Errorf("openai system content should be plain string; got %s", content)
+	}
+	if strings.Contains(string(content), "cache_control") {
+		t.Errorf("openai backend must not inject cache_control: %s", content)
+	}
+}
 
 func TestEncodeRequest_ToolsOmittedWhenEmpty(t *testing.T) {
 	req := openAIChatRequest{
