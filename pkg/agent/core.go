@@ -961,7 +961,9 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 
 	if s.session != nil {
 		s.session.recordTurnCost(s.cfg.Backend.Model())
-		handler(Event{Role: "info", Content: fmt.Sprintf("costLast=$%.4f\n", s.session.LastTurnCostUSD)})
+		if s.session.LastTurnCostUSD > 0 {
+			handler(Event{Role: "info", Content: fmt.Sprintf("costLast=$%.4f\n", s.session.LastTurnCostUSD)})
+		}
 		s.auditLog.Debug("turn: end reply=%s cost=$%.4f session_total=$%.4f session=%s",
 			auditTruncate(s.reply), s.session.LastTurnCostUSD, s.session.SessionCostUSD, s.sessionID)
 		s.notifyChange()
