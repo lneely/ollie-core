@@ -35,7 +35,10 @@ func pruneStaleReads(history []backend.Message) []backend.Message {
 			// recording new reads (a write within the same call supersedes
 			// prior-call reads, not reads within this same call).
 			for _, p := range writePaths {
-				for _, id := range reads[p] {
+				ids := reads[p]
+				// Keep the last (most recent) read as the base state;
+				// prune all earlier reads of this path.
+				for _, id := range ids[:max(0, len(ids)-1)] {
 					stale[id] = true
 				}
 				delete(reads, p)
