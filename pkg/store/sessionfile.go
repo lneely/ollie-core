@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -34,6 +35,7 @@ var SessionFileList = []struct {
 	{"env", 0444},
 	{"tail", 0555},
 	{"prompt.prev", 0444},
+	{"context", 0444},
 }
 
 // SessionFileStore is a RunFileStore for a session directory.
@@ -214,6 +216,14 @@ func (h *sessionHelper) content(name string) string {
 		return h.envContent()
 	case "tail":
 		return "#!/bin/sh\nexec tail -f \"$(dirname \"$0\")/chat\"\n"
+	case "context":
+		var sb strings.Builder
+		enc := json.NewEncoder(&sb)
+		enc.SetEscapeHTML(false)
+		for _, m := range h.sess.Core.Context() {
+			enc.Encode(m)
+		}
+		return sb.String()
 	}
 	return ""
 }

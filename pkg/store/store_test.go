@@ -77,6 +77,7 @@ func (c *stubCore) ListModels() string                                          
 func (c *stubCore) CWD() string                                                 { return c.cwd }
 func (c *stubCore) SetCWD(dir string) error                                     { c.cwd = dir; return nil }
 func (c *stubCore) SetSessionID(string) error                                   { return c.setSessionIDErr }
+func (c *stubCore) Context() []backend.Message                                 { return nil }
 func (c *stubCore) SystemPrompt() string                                        { return c.sysprompt }
 func (c *stubCore) GenerationParams() backend.GenerationParams                  { return c.params }
 func (c *stubCore) SetGenerationParams(p backend.GenerationParams) error        { c.params = p; return nil }

@@ -97,6 +97,11 @@ type Core interface {
 	// persisted files on disk, and propagates to the execute server env.
 	SetSessionID(newID string) error
 
+	// Context returns the current message history as it would be sent to the
+	// backend: system prompt prepended, stale reads pruned. Does not include
+	// tool definitions (see Tools) or generation params (see GenerationParams).
+	Context() []backend.Message
+
 	// SystemPrompt returns the fully rendered system prompt for this session.
 	SystemPrompt() string
 

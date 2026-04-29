@@ -663,6 +663,19 @@ func (s *agent) Usage() string {
 	return str
 }
 
+func (s *agent) Context() []backend.Message {
+	s.mu.RLock()
+	var msgs []backend.Message
+	if s.session != nil {
+		msgs = pruneStaleReads(slices.Clone(s.session.history()))
+	}
+	s.mu.RUnlock()
+	if s.cfg.preamble != "" {
+		msgs = append([]backend.Message{{Role: "system", Content: s.cfg.preamble}}, msgs...)
+	}
+	return msgs
+}
+
 func (s *agent) SystemPrompt() string {
 	s.log.Debug("SystemPrompt() len=%d", len(s.cfg.preamble))
 	return s.cfg.preamble
