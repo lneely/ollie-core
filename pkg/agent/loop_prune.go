@@ -50,11 +50,29 @@ func pruneStaleReads(history []backend.Message) []backend.Message {
 		return history
 	}
 
-	// Phase 2: rebuild history, dropping tool result messages for stale IDs.
+	// Phase 2: rebuild history, dropping stale tool results AND their
+	// corresponding tool calls from assistant messages.
 	out := make([]backend.Message, 0, len(history))
 	for _, m := range history {
 		if m.Role == "tool" && stale[m.ToolCallID] {
 			continue
+		}
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			// Filter out stale tool calls.
+			var kept []backend.ToolCall
+			for _, tc := range m.ToolCalls {
+				if !stale[tc.ID] {
+					kept = append(kept, tc)
+				}
+			}
+			if len(kept) == 0 && m.Content == "" {
+				// Assistant message had only stale tool calls and no text; drop it.
+				continue
+			}
+			if len(kept) != len(m.ToolCalls) {
+				// Some calls were pruned; create a modified copy.
+				m = backend.Message{Role: m.Role, Content: m.Content, ToolCalls: kept}
+			}
 		}
 		out = append(out, m)
 	}

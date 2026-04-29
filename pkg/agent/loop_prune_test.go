@@ -24,7 +24,8 @@ func makeToolResult(callID, content string) backend.Message {
 }
 
 // TestPruneStaleReads_BasicWriteInvalidatesRead verifies that a file_read result
-// is removed from history after a subsequent file_write to the same path.
+// AND its corresponding assistant tool call are removed after a subsequent
+// file_write to the same path.
 func TestPruneStaleReads_BasicWriteInvalidatesRead(t *testing.T) {
 	history := []backend.Message{
 		{Role: "user", Content: "edit foo"},
@@ -36,14 +37,22 @@ func TestPruneStaleReads_BasicWriteInvalidatesRead(t *testing.T) {
 
 	out := pruneStaleReads(history)
 
-	// The file_read result (c1) should be gone; everything else stays.
+	// The file_read result (c1) and its assistant message should be gone.
 	for _, m := range out {
 		if m.Role == "tool" && m.ToolCallID == "c1" {
 			t.Error("stale file_read result was not pruned")
 		}
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == "c1" {
+					t.Error("stale tool call c1 was not pruned from assistant message")
+				}
+			}
+		}
 	}
-	if len(out) != len(history)-1 {
-		t.Errorf("len(out) = %d; want %d", len(out), len(history)-1)
+	// user + assistant(c2) + tool(c2) = 3 messages
+	if len(out) != 3 {
+		t.Errorf("len(out) = %d; want 3", len(out))
 	}
 }
 
@@ -170,7 +179,7 @@ func TestExtractExecCodePaths_Basic(t *testing.T) {
 }
 
 // TestPruneStaleReads_ReadWriteReadCycle is the primary correctness invariant:
-// read before a write is pruned; read after the same write is kept.
+// read before a write is pruned (both result and call); read after the same write is kept.
 func TestPruneStaleReads_ReadWriteReadCycle(t *testing.T) {
 	history := []backend.Message{
 		{Role: "user", Content: "update foo"},
@@ -189,6 +198,13 @@ func TestPruneStaleReads_ReadWriteReadCycle(t *testing.T) {
 		if m.Role == "tool" && m.ToolCallID == "c1" {
 			t.Error("pre-write read result c1 should have been pruned")
 		}
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == "c1" {
+					t.Error("pre-write tool call c1 should have been pruned from assistant")
+				}
+			}
+		}
 	}
 	found := false
 	for _, m := range out {
@@ -199,18 +215,22 @@ func TestPruneStaleReads_ReadWriteReadCycle(t *testing.T) {
 	if !found {
 		t.Error("post-write read result c3 should be kept")
 	}
-	if len(out) != len(history)-1 {
-		t.Errorf("len(out) = %d; want %d", len(out), len(history)-1)
+	// user + assistant(c2) + tool(c2) + assistant(c3) + tool(c3) = 5 messages
+	if len(out) != 5 {
+		t.Errorf("len(out) = %d; want 5", len(out))
 	}
 }
 
-// TestPruneStaleReads_AssistantMessagesUnaffected verifies that the assistant
-// messages that issued the tool calls are never removed — only the tool result
-// messages (role:"tool") for stale reads are dropped.
-func TestPruneStaleReads_AssistantMessagesUnaffected(t *testing.T) {
+// TestPruneStaleReads_AssistantWithTextContentKept verifies that an assistant
+// message with text content is kept even when its tool calls are pruned.
+func TestPruneStaleReads_AssistantWithTextContentKept(t *testing.T) {
+	// Build an assistant message with both text content and a tool call.
+	args, _ := json.Marshal(map[string]any{"steps": []map[string]any{{"tool": "file_read", "args": []string{"/foo.go"}}}})
 	history := []backend.Message{
 		{Role: "user", Content: "go"},
-		makeExecCodeMsg("c1", []map[string]any{{"tool": "file_read", "args": []string{"/foo.go"}}}),
+		{Role: "assistant", Content: "Let me read that file.", ToolCalls: []backend.ToolCall{
+			{ID: "c1", Name: "execute_code", Arguments: json.RawMessage(args)},
+		}},
 		makeToolResult("c1", "old"),
 		makeExecCodeMsg("c2", []map[string]any{{"tool": "file_write", "args": []string{"/foo.go", "new"}}}),
 		makeToolResult("c2", "ok"),
@@ -218,14 +238,18 @@ func TestPruneStaleReads_AssistantMessagesUnaffected(t *testing.T) {
 
 	out := pruneStaleReads(history)
 
-	var assistantCount int
+	// The assistant message with text should be kept (with tool calls removed).
+	var foundTextAssistant bool
 	for _, m := range out {
-		if m.Role == "assistant" {
-			assistantCount++
+		if m.Role == "assistant" && m.Content == "Let me read that file." {
+			foundTextAssistant = true
+			if len(m.ToolCalls) != 0 {
+				t.Error("stale tool call should have been removed from assistant message")
+			}
 		}
 	}
-	if assistantCount != 2 {
-		t.Errorf("assistant messages = %d; want 2 (pruning must not remove assistant messages)", assistantCount)
+	if !foundTextAssistant {
+		t.Error("assistant message with text content should be kept")
 	}
 }
 
