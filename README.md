@@ -14,7 +14,7 @@ The reference frontend is [ollie-tui](https://github.com/lneely/ollie-tui), a te
 
 **`agent.AgentEnv`** — wires together a backend, tool dispatcher, config, and hooks into the environment passed to `NewAgentCore`. Built via `BuildAgentEnv`.
 
-**`agent.Hooks`** — lifecycle callbacks (`agentSpawn`, `preTurn`, `postTurn`, `preCompact`, `postCompact`) executed as shell commands with a JSON payload. Run via `Hooks.Run`.
+**`agent.Hooks`** — lifecycle callbacks (`agentSpawn`, `preTurn`, `postTurn`, `preCompact`, `postCompact`, `turnError`) executed as shell commands with a JSON payload. Run via `Hooks.Run`.
 
 **`backend.Backend`** — the LLM interface: `ChatStream`, `Models`, `ContextLength`, `Name`, `Model`/`SetModel`, `DefaultModel`. Implementations: Ollama, OpenAI-compatible, Anthropic, Copilot, Kiro.
 
@@ -86,7 +86,7 @@ One built-in tool via `execute.Server`:
 
 `NewAgentCore` creates `/tmp/ollie/{sessionID}` when a session starts. `Core.Close()` removes it. Callers must call `Close()` when tearing down a session — olliesrv does this in `killSession` and on server shutdown.
 
-Additional capabilities (file I/O, memory, reasoning, task planning, sub-agents) are implemented as tool scripts in `OLLIE_TOOLS_PATH`, invoked via `execute_code` `{tool}` steps.
+Additional capabilities (file I/O, memory, reasoning, task management, sub-agents, browser automation) are implemented as tool scripts in `OLLIE_TOOLS_PATH`, invoked via `execute_code` `{tool}` steps. Default tools: `file_read`, `file_write`, `file_edit`, `file_glob`, `file_grep`, `memory_remember`, `memory_recall`, `reasoning_think`, `task_add`, `task_check`, `task_clear`, `denote_view`, `browser_screencap`, `subagent_spawn`.
 
 Each tool server exports a `Decl` function that returns a `func() tools.Server` factory. `execute.Decl(cwd)` accepts a working directory used as `cmd.Dir` for sandboxed commands and for `{CWD}` expansion in the sandbox config; pass `""` to fall back to `os.Getwd()`. Frontends register servers by passing Decl results to `tools.NewDispatcherFunc`. Adding a new tool means implementing `tools.Server`, exporting a `Decl` function, and registering it — no frontend changes required.
 
