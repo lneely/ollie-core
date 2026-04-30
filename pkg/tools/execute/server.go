@@ -346,6 +346,7 @@ func (e *Server) executeWithStdin(ctx context.Context, code, language string, ti
 
 	e.envMu.RLock()
 	cmd.Env = prependOlliePath(os.Environ())
+	cmd.Env = append(cmd.Env, "OLLIE_TOOLS_PATH="+ToolsPath())
 	for k, v := range e.envExtra {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
