@@ -14,6 +14,13 @@ import (
 
 const maxTransientRetries = 3
 
+// Consecutive tool-error thresholds. At the soft limit the model is nudged
+// to try a different approach; at the hard limit the loop aborts.
+const (
+	consecutiveErrorSoftLimit = 5
+	consecutiveErrorHardLimit = 10
+)
+
 type toolExecutor func(ctx context.Context, name string, args json.RawMessage) (string, error)
 
 type agentConfig struct {
@@ -35,6 +42,7 @@ type agentConfig struct {
 
 func run(ctx context.Context, cfg agentConfig, state state) error {
 	var step int
+	var consecutiveErrors int // rounds where every tool call returned an error
 	// resultCache stores outputs of read-safe tool calls keyed by name+args.
 	// Only tools classified as parallel-safe (immutable reads) are cached.
 	// sync.Map is required because execOne may run in concurrent goroutines.
@@ -361,6 +369,31 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 
 		if len(toolCalls) == 0 {
 			break
+		}
+
+		// Track consecutive rounds where every tool call errored.
+		allErrors := len(results) > 0
+		for _, r := range results {
+			if !r.IsError {
+				allErrors = false
+				break
+			}
+		}
+		if allErrors {
+			consecutiveErrors++
+		} else {
+			consecutiveErrors = 0
+		}
+		if consecutiveErrors >= consecutiveErrorHardLimit {
+			emit(cfg, Event{Role: "error", Content: fmt.Sprintf("%d consecutive tool errors — aborting", consecutiveErrors)})
+			return fmt.Errorf("step %d: %d consecutive tool errors", step, consecutiveErrors)
+		}
+		if consecutiveErrors == consecutiveErrorSoftLimit {
+			// Nudge the model by injecting a system hint into the conversation.
+			state.update(backend.Message{
+				Role:    "user",
+				Content: "[system: your last several tool calls all failed. Try a different approach, or ask the user for help.]",
+			}, nil)
 		}
 
 		if cfg.AutoCompact != nil {

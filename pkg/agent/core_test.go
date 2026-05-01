@@ -111,8 +111,13 @@ func newCore(t *testing.T, be backend.Backend, hooks Hooks) *agent {
 
 // collectEvents runs Submit synchronously and returns all emitted events.
 func collectEvents(ctx context.Context, c Core, input string) []Event {
+	var mu sync.Mutex
 	var evs []Event
-	c.Submit(ctx, input, func(ev Event) { evs = append(evs, ev) })
+	c.Submit(ctx, input, func(ev Event) {
+		mu.Lock()
+		evs = append(evs, ev)
+		mu.Unlock()
+	})
 	return evs
 }
 
