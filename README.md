@@ -4,8 +4,6 @@ A Go library for building agentic systems. Provides a sandboxed `execute_code` t
 
 Works well with [anvillm](https://github.com/lneely/anvillm), which provides a skill system, tool scripts, and multi-agent infrastructure.
 
-The reference frontend is [ollie-tui](https://github.com/lneely/ollie-tui), a terminal UI built on top of this library.
-
 ## Primitives
 
 **`agent.Core`** — the central interface for a running agent session. Exposes `Submit` (send a prompt, stream events back), `Interrupt`, `Inject`, `Queue`/`PopQueue` (buffered prompt delivery), `State`, `Reply`, `SystemPrompt`, `Usage`, `CtxSz`, `ListModels`, `CWD`/`SetCWD`, `SetSessionID`, `IsRunning`, and `Close`.
