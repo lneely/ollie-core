@@ -329,7 +329,7 @@ func (e *Server) executeWithStdin(ctx context.Context, code, language string, ti
 		interpreter = []string{"expect", "-"}
 		codeStdin = code
 	case "bc":
-		interpreter = []string{"bc", "-ql"}
+		interpreter = []string{"bc", "-l"}
 		codeStdin = code
 	default:
 		return "", fmt.Errorf("unsupported language: %s (supported: bash, python3, perl, awk, sed, ed, jq, expect, bc, lua)", language)
