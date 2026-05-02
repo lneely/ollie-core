@@ -26,9 +26,6 @@ Be concise, structured, and focused on helping the next LLM seamlessly continue 
 
 Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:`
 
-	// compactionUserTokenBudget is the approximate token budget for preserving
-	// recent user messages in the compacted history.
-	compactionUserTokenBudget = 20000
 )
 
 // PersistedSession is the on-disk format for a saved session.
@@ -193,49 +190,16 @@ func (s *Session) compact(ctx context.Context, b backend.Backend) (int, string, 
 
 	// Rebuild: system messages + preserved user messages + summary.
 	beforeCount := len(s.messages)
-	s.messages = buildCompactedHistory(s.messages, summaryText)
+	s.messages = buildCompactedHistory(summaryText)
 	return beforeCount - len(s.messages), summaryText, nil
 }
 
-// buildCompactedHistory constructs the post-compaction message list:
-// system messages + recent user messages (within token budget) + summary.
-func buildCompactedHistory(history []backend.Message, summary string) []backend.Message {
-	var result []backend.Message
-	for _, m := range history {
-		if m.Role == "system" {
-			result = append(result, m)
-		}
-	}
-	result = append(result, selectUserMessages(history, compactionUserTokenBudget)...)
-	result = append(result, backend.Message{
+// buildCompactedHistory constructs the post-compaction message list.
+func buildCompactedHistory(summary string) []backend.Message {
+	return []backend.Message{{
 		Role:    "user",
 		Content: compactionSummaryPrefix + "\n" + strings.TrimSpace(summary),
-	})
-	return result
-}
-
-// selectUserMessages picks recent user messages (newest first) up to a token budget.
-func selectUserMessages(history []backend.Message, tokenBudget int) []backend.Message {
-	var selected []backend.Message
-	remaining := tokenBudget
-	for i := len(history) - 1; i >= 0; i-- {
-		m := history[i]
-		if m.Role != "user" {
-			continue
-		}
-		text := strings.TrimSpace(m.Content)
-		if text == "" || strings.HasPrefix(text, compactionSummaryPrefix) {
-			continue
-		}
-		tokens := (len(text) + 3) / 4
-		if tokens > remaining {
-			break
-		}
-		remaining -= tokens
-		selected = append(selected, backend.Message{Role: "user", Content: text})
-	}
-	slices.Reverse(selected)
-	return selected
+	}}
 }
 
 // flattenToolMessages converts tool call/result sequences into plain text
