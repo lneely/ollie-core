@@ -667,7 +667,7 @@ func (s *agent) Context() []backend.Message {
 	s.mu.RLock()
 	var msgs []backend.Message
 	if s.session != nil {
-		msgs = pruneStaleReads(slices.Clone(s.session.history()))
+		msgs = slices.Clone(s.session.history())
 	}
 	s.mu.RUnlock()
 	if s.cfg.preamble != "" {

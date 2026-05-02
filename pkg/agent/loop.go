@@ -49,7 +49,7 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 	var resultCache sync.Map
 
 	for {
-		history := pruneStaleReads(state.history())
+		history := state.history()
 		if cfg.preamble != "" {
 			history = append([]backend.Message{{Role: "system", Content: cfg.preamble}}, history...)
 		}
