@@ -2356,6 +2356,20 @@ func TestBuildAgentEnv_PromptOnly(t *testing.T) {
 	}
 }
 
+func TestBuildAgentEnv_ExecPromptLiteralStrings(t *testing.T) {
+	setupCfgDir(t)
+	d := tools.NewDispatcher()
+	cfg := &config.Config{Prompt: config.Prompt{
+		Value:  []string{"echo hello", "You are a security auditor.\nFocus on auth bypass.", "echo world"},
+		IsExec: true,
+	}}
+	env := BuildAgentEnv(cfg, d, t.TempDir())
+	want := "hello\nYou are a security auditor.\nFocus on auth bypass.\nworld"
+	if env.preamble != want {
+		t.Errorf("preamble = %q; want %q", env.preamble, want)
+	}
+}
+
 func TestBuildAgentEnv_ExecDispatchSuccess(t *testing.T) {
 	setupCfgDir(t)
 	d := &mockDispatcher{

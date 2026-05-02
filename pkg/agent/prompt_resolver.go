@@ -41,6 +41,11 @@ func resolveExecPrompt(cmds []string, cwd string) (string, error) {
 		if cmdStr == "" {
 			continue
 		}
+		// Entries containing a newline are literal text, not commands.
+		if strings.Contains(cmdStr, "\n") {
+			parts = append(parts, cmdStr)
+			continue
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
 		if cwd != "" {

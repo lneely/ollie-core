@@ -75,7 +75,7 @@ Each stage is one of:
 - {parallel: [{code/tool}...]}— concurrent fan-out; outputs concatenated in submission order
 
 Supported inline languages: bash, python3, perl, lua, awk, sed, jq, ed, expect, bc.
-Timeout applies per stage (default: 30s). A failed stage aborts the pipeline.
+Timeout is a top-level parameter (not per-step) applied to each stage (default: 30s). A failed stage aborts the pipeline.
 
 Examples:
 - Single step:        steps=[{code: "ls -la"}]
@@ -115,7 +115,7 @@ Examples:
 							}
 						}
 					},
-					"timeout": {"type": "integer", "description": "Timeout in seconds per stage (default: 30)."},
+					"timeout": {"type": "integer", "description": "Timeout in seconds applied to each stage (default: 30). Top-level parameter, not per-step."},
 					"sandbox": {"type": "string",  "description": "Sandbox name (default: default)."}
 				}
 			}`),
