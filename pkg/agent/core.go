@@ -792,8 +792,6 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 		input += "\n" + hookResult.Context
 	}
 
-	s.setState("thinking")
-
 	// Snapshot session state before this turn modifies it. Restored on failure
 	// so the session is clean for the next attempt.
 	snapSession := s.session
@@ -820,6 +818,7 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 	actCtx, actCancel := context.WithCancelCause(ctx)
 	handle := &actionHandle{cancel: actCancel}
 	s.currentAction.Store(handle)
+	s.setState("thinking")
 
 	s.auditLog.Debug("turn: start input=%s session=%s", auditTruncate(input), s.sessionID)
 
