@@ -334,7 +334,10 @@ func (e *Server) executeWithStdin(ctx context.Context, code, language string, ti
 	default:
 		return "", fmt.Errorf("unsupported language: %s (supported: bash, python3, perl, awk, sed, ed, jq, expect, bc, lua)", language)
 	}
-	wrapped := sandbox.WrapCommand(cfg, interpreter, workDir)
+	wrapped, wrapErr := sandbox.WrapCommand(cfg, interpreter, workDir)
+	if wrapErr != nil {
+		return "", wrapErr
+	}
 	cmd = exec.CommandContext(ctx, wrapped[0], wrapped[1:]...)
 	cmd.Dir = workDir
 	switch {

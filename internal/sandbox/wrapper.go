@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -20,11 +21,14 @@ var (
 	isSuperpowerdRunningFn = isSuperpowerdRunning
 )
 
+// ErrNotAvailable is returned when landrun is not found on the system.
+var ErrNotAvailable = fmt.Errorf("SANDBOX FAILURE: landrun is not installed or not in PATH — execute_code CANNOT run without it")
+
 // WrapCommand wraps a command with landrun based on the configuration.
-// Returns the wrapped command args, or the original command if landrun is unavailable.
-func WrapCommand(cfg *Config, originalCmd []string, cwd string) []string {
+// Returns an error if landrun is not available.
+func WrapCommand(cfg *Config, originalCmd []string, cwd string) ([]string, error) {
 	if !isAvailableFn() {
-		return originalCmd
+		return nil, ErrNotAvailable
 	}
 
 	args := []string{"landrun"}
@@ -108,7 +112,7 @@ func WrapCommand(cfg *Config, originalCmd []string, cwd string) []string {
 		}
 	}
 
-	return args
+	return args, nil
 }
 
 // isSuperpowerdRunning checks if superpowerd is running by testing socket connectivity

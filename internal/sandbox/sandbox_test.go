@@ -115,7 +115,7 @@ func TestWrapCommand(t *testing.T) {
 
 	t.Run("starts with landrun", func(t *testing.T) {
 		cfg := &Config{General: GeneralConfig{}, Advanced: AdvancedConfig{}, Network: NetworkConfig{}}
-		got := WrapCommand(cfg, []string{"echo", "hi"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"echo", "hi"}, tmpDir)
 		if len(got) == 0 || got[0] != "landrun" {
 			t.Errorf("expected landrun as first arg, got %v", got)
 		}
@@ -123,7 +123,7 @@ func TestWrapCommand(t *testing.T) {
 
 	t.Run("separator before original command", func(t *testing.T) {
 		cfg := &Config{General: GeneralConfig{}, Advanced: AdvancedConfig{}, Network: NetworkConfig{}}
-		got := WrapCommand(cfg, []string{"echo", "test"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"echo", "test"}, tmpDir)
 		sepIdx := indexOf(got, "--")
 		if sepIdx == -1 {
 			t.Fatal("missing -- separator")
@@ -135,37 +135,37 @@ func TestWrapCommand(t *testing.T) {
 
 	t.Run("log level flag", func(t *testing.T) {
 		cfg := &Config{General: GeneralConfig{LogLevel: "debug"}, Advanced: AdvancedConfig{}, Network: NetworkConfig{}}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		assertFlagValue(t, got, "--log-level", "debug")
 	})
 
 	t.Run("no log level when empty", func(t *testing.T) {
 		cfg := &Config{General: GeneralConfig{LogLevel: ""}, Advanced: AdvancedConfig{}, Network: NetworkConfig{}}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		assertDoesNotContain(t, got, "--log-level")
 	})
 
 	t.Run("best effort flag", func(t *testing.T) {
 		cfg := &Config{General: GeneralConfig{BestEffort: true}, Advanced: AdvancedConfig{}, Network: NetworkConfig{}}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		assertContains(t, got, "--best-effort")
 	})
 
 	t.Run("no best effort when false", func(t *testing.T) {
 		cfg := &Config{General: GeneralConfig{BestEffort: false}, Advanced: AdvancedConfig{}, Network: NetworkConfig{}}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		assertDoesNotContain(t, got, "--best-effort")
 	})
 
 	t.Run("ldd flag", func(t *testing.T) {
 		cfg := &Config{General: GeneralConfig{}, Advanced: AdvancedConfig{LDD: true}, Network: NetworkConfig{}}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		assertContains(t, got, "--ldd")
 	})
 
 	t.Run("add-exec flag", func(t *testing.T) {
 		cfg := &Config{General: GeneralConfig{}, Advanced: AdvancedConfig{AddExec: true}, Network: NetworkConfig{}}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		assertContains(t, got, "--add-exec")
 	})
 
@@ -176,7 +176,7 @@ func TestWrapCommand(t *testing.T) {
 			Filesystem: FilesystemConfig{RW: []string{rwDir}},
 			Network:    NetworkConfig{},
 		}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		assertFlagValue(t, got, "--rw", rwDir)
 	})
 
@@ -187,7 +187,7 @@ func TestWrapCommand(t *testing.T) {
 			Filesystem: FilesystemConfig{RO: []string{roDir}},
 			Network:    NetworkConfig{},
 		}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		assertFlagValue(t, got, "--ro", roDir)
 	})
 
@@ -198,7 +198,7 @@ func TestWrapCommand(t *testing.T) {
 			Filesystem: FilesystemConfig{RW: []string{"/nonexistent/path/that/does/not/exist/xyz"}},
 			Network:    NetworkConfig{},
 		}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		assertDoesNotContain(t, got, "--rw")
 	})
 
@@ -209,7 +209,7 @@ func TestWrapCommand(t *testing.T) {
 			Filesystem: FilesystemConfig{RW: []string{"{CWD}"}},
 			Network:    NetworkConfig{},
 		}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		assertFlagValue(t, got, "--rw", tmpDir)
 	})
 
@@ -219,7 +219,7 @@ func TestWrapCommand(t *testing.T) {
 			Advanced: AdvancedConfig{},
 			Network:  NetworkConfig{Enabled: true, Unrestricted: true},
 		}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		assertContains(t, got, "--unrestricted-network")
 		assertDoesNotContain(t, got, "--connect-tcp")
 		assertDoesNotContain(t, got, "--bind-tcp")
@@ -235,7 +235,7 @@ func TestWrapCommand(t *testing.T) {
 				BindTCP:    []string{"8080"},
 			},
 		}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		assertFlagValue(t, got, "--connect-tcp", "443")
 		assertFlagValue(t, got, "--connect-tcp", "80")
 		assertFlagValue(t, got, "--bind-tcp", "8080")
@@ -248,7 +248,7 @@ func TestWrapCommand(t *testing.T) {
 			Advanced: AdvancedConfig{},
 			Network:  NetworkConfig{Enabled: false, ConnectTCP: []string{"443"}},
 		}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		assertDoesNotContain(t, got, "--connect-tcp")
 		assertDoesNotContain(t, got, "--unrestricted-network")
 	})
@@ -260,7 +260,7 @@ func TestWrapCommand(t *testing.T) {
 			Network:  NetworkConfig{},
 			Env:      []string{"HOME", "PATH"},
 		}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		assertFlagValue(t, got, "--env", "HOME")
 		assertFlagValue(t, got, "--env", "PATH")
 	})
@@ -277,7 +277,7 @@ func TestWrapCommand(t *testing.T) {
 			Filesystem: FilesystemConfig{RW: []string{child, parent}}, // child listed first
 			Network:    NetworkConfig{},
 		}
-		got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+		got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 		parentIdx := indexOf(got, parent)
 		childIdx := indexOf(got, child)
 		if parentIdx == -1 || childIdx == -1 {
@@ -581,9 +581,12 @@ func TestWrapCommand_LandrunUnavailable(t *testing.T) {
 	defer func() { isAvailableFn = old }()
 
 	cfg := &Config{}
-	got := WrapCommand(cfg, []string{"echo", "hi"}, "/tmp")
-	if len(got) != 2 || got[0] != "echo" {
-		t.Errorf("should return original cmd when landrun unavailable; got %v", got)
+	_, err := WrapCommand(cfg, []string{"echo", "hi"}, "/tmp")
+	if err == nil {
+		t.Fatal("expected error when landrun unavailable")
+	}
+	if err != ErrNotAvailable {
+		t.Errorf("expected ErrNotAvailable, got %v", err)
 	}
 }
 
@@ -600,7 +603,7 @@ func TestWrapCommand_ROX_RWX(t *testing.T) {
 			RWX: []string{rwxDir},
 		},
 	}
-	got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+	got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 	assertFlagValue(t, got, "--rox", roxDir)
 	assertFlagValue(t, got, "--rwx", rwxDir)
 }
@@ -616,7 +619,7 @@ func TestWrapCommand_SortTiebreaker(t *testing.T) {
 	cfg := &Config{
 		Filesystem: FilesystemConfig{RW: []string{dirB, dirA}},
 	}
-	got := WrapCommand(cfg, []string{"sh"}, tmpDir)
+	got := mustWrapCommand(t, cfg, []string{"sh"}, tmpDir)
 	idxA := indexOf(got, dirA)
 	idxB := indexOf(got, dirB)
 	if idxA == -1 || idxB == -1 {
@@ -639,7 +642,7 @@ func TestWrapCommand_Superpowerd(t *testing.T) {
 	defer func() { isSuperpowerdRunningFn = old }()
 
 	cfg := &Config{}
-	got := WrapCommand(cfg, []string{"echo"}, "/tmp")
+	got := mustWrapCommand(t, cfg, []string{"echo"}, "/tmp")
 	if got[0] != fakeSP {
 		t.Errorf("expected superpowers as first arg; got %v", got)
 	}
@@ -690,6 +693,15 @@ func TestIsSuperpowerdRunning_SocketExists(t *testing.T) {
 }
 
 // ---- helpers ----
+
+func mustWrapCommand(t *testing.T, cfg *Config, cmd []string, cwd string) []string {
+	t.Helper()
+	got, err := WrapCommand(cfg, cmd, cwd)
+	if err != nil {
+		t.Fatalf("WrapCommand failed: %v", err)
+	}
+	return got
+}
 
 func assertContains(t *testing.T, args []string, s string) {
 	t.Helper()
