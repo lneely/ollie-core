@@ -249,9 +249,9 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 			if cfg.Exec != nil {
 				out, err := cfg.Exec(ctx, tc.Name, tc.Arguments)
 				if err != nil {
-					result = fmt.Sprintf("error: %v", err)
 					isErr = true
 					if ctx.Err() != nil {
+						result = "error: tool execution interrupted by user"
 						if cfg.PopInject != nil {
 							if injected := cfg.PopInject(); injected != "" {
 								result += "\n\n<system-user-interruption>\n" + injected + "\n</system-user-interruption>"
@@ -260,6 +260,7 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 						emit(cfg, Event{Role: "tool", Name: tc.Name, Content: result})
 						return toolResult{ToolCallID: tc.ID, Name: tc.Name, Content: result, IsError: true}, true
 					}
+					result = fmt.Sprintf("error: %v", err)
 				} else {
 					result = out
 				}

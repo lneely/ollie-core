@@ -990,17 +990,17 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 	s.setState("idle")
 
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, ErrInterrupted) {
-			// Interrupted: mid-turn state was already saved to disk by SaveSession.
-			// Keep in-memory session as-is so it matches the on-disk state.
-			s.auditLog.Debug("turn: interrupted session=%s", s.sessionID)
-			return ""
-		}
-		// Real error: restore pre-turn snapshot.
+		// Both interrupts and real errors roll back to the pre-turn snapshot
+		// so that cancelled/partial tool results don't poison the context.
 		if snapSession == nil {
 			s.session = nil
 		} else {
 			s.session.messages = snapMessages
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, ErrInterrupted) {
+			s.auditLog.Debug("turn: interrupted session=%s", s.sessionID)
+			s.saveSession()
+			return ""
 		}
 		handler(Event{Role: "error", Content: err.Error()})
 		// Drain one FIFO item — the turnError hook may have queued a recovery prompt.
