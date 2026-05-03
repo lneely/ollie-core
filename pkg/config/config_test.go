@@ -121,3 +121,21 @@ func TestLoadAllFields(t *testing.T) {
 		t.Errorf("PresencePenalty = %v", cfg.PresencePenalty)
 	}
 }
+
+func TestToolsEnabled(t *testing.T) {
+	// Omitted: defaults to true.
+	cfg, _ := Load(strings.NewReader(`{}`))
+	if !cfg.ToolsEnabled() {
+		t.Error("expected ToolsEnabled()=true when omitted")
+	}
+	// Explicit false.
+	cfg, _ = Load(strings.NewReader(`{"tools": false}`))
+	if cfg.ToolsEnabled() {
+		t.Error("expected ToolsEnabled()=false")
+	}
+	// Explicit true.
+	cfg, _ = Load(strings.NewReader(`{"tools": true}`))
+	if !cfg.ToolsEnabled() {
+		t.Error("expected ToolsEnabled()=true")
+	}
+}

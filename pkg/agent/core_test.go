@@ -2335,6 +2335,19 @@ func TestBuildAgentEnv_ToolsPopulated(t *testing.T) {
 	}
 }
 
+func TestBuildAgentEnv_ToolsDisabled(t *testing.T) {
+	setupCfgDir(t)
+	d := &mockDispatcher{
+		tools: []tools.ToolInfo{{Server: "s1", Name: "mytool", Description: "desc", InputSchema: json.RawMessage(`{}`)}},
+	}
+	f := false
+	cfg := &config.Config{Tools: &f}
+	env := BuildAgentEnv(cfg, d, t.TempDir())
+	if len(env.tools) != 0 {
+		t.Errorf("expected no tools when disabled; got %+v", env.tools)
+	}
+}
+
 func TestBuildAgentEnv_TrustedTools(t *testing.T) {
 	setupCfgDir(t)
 	setter := &mockTrustedSetter{}

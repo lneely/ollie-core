@@ -61,6 +61,7 @@ func (p Prompt) MarshalJSON() ([]byte, error) {
 type Config struct {
 	Hooks            map[string]HookCmds     `json:"hooks,omitempty"`
 	Prompt           Prompt                  `json:"prompt,omitempty"`
+	Tools            *bool                   `json:"tools,omitempty"`
 	TrustedTools     []string                `json:"trustedTools,omitempty"`
 	MaxTokens        int                     `json:"maxTokens,omitempty"`
 	Temperature      *float64                `json:"temperature,omitempty"`
@@ -75,4 +76,10 @@ func Load(r io.Reader) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// ToolsEnabled reports whether tool use is enabled. Defaults to true when
+// the field is omitted from the config.
+func (c *Config) ToolsEnabled() bool {
+	return c.Tools == nil || *c.Tools
 }

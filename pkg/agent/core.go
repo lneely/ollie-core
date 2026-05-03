@@ -47,17 +47,21 @@ type AgentEnv struct {
 func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv {
 	var messages []string
 
-	allToolInfos, listErr := d.ListTools()
-	if listErr != nil {
-		messages = append(messages, fmt.Sprintf("list tools: %v", listErr))
-	}
+	var allToolInfos []tools.ToolInfo
+	var allTools []backend.Tool
+	serverOf := make(map[string]string)
 
-	serverOf := make(map[string]string, len(allToolInfos))
-	for _, t := range allToolInfos {
-		serverOf[t.Name] = t.Server
+	if cfg == nil || cfg.ToolsEnabled() {
+		var listErr error
+		allToolInfos, listErr = d.ListTools()
+		if listErr != nil {
+			messages = append(messages, fmt.Sprintf("list tools: %v", listErr))
+		}
+		for _, t := range allToolInfos {
+			serverOf[t.Name] = t.Server
+		}
+		allTools = toolInfosToBackend(allToolInfos)
 	}
-
-	allTools := toolInfosToBackend(allToolInfos)
 
 	hooks := Hooks{}
 	var preamble string
