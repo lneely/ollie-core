@@ -335,17 +335,51 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 				}
 			} else {
 				// Fan out the batch concurrently; preserve submission order in results.
+				// Deduplicate identical calls so only one executes per unique key.
+				type inflightResult struct {
+					tr     toolResult
+					wasInt bool
+				}
+				inflight := make(map[string]int) // key -> index of first occurrence
 				batchResults := make([]toolResult, len(batch))
 				batchInt := make([]bool, len(batch))
 				var wg sync.WaitGroup
+				uniqueResults := make([]inflightResult, len(batch))
 				for k, tc := range batch {
+					key := tc.Name + "\x00" + string(tc.Arguments)
+					if first, dup := inflight[key]; dup {
+						// Will copy result from first occurrence after wg.Wait.
+						batchResults[k] = toolResult{} // placeholder
+						_ = first                      // used below
+						continue
+					}
+					inflight[key] = k
 					wg.Add(1)
 					go func(k int, tc backend.ToolCall) {
 						defer wg.Done()
-						batchResults[k], batchInt[k] = execOne(tc)
+						uniqueResults[k].tr, uniqueResults[k].wasInt = execOne(tc)
 					}(k, tc)
 				}
 				wg.Wait()
+				// Fill results: unique calls get their own result, duplicates copy from first.
+				for k, tc := range batch {
+					key := tc.Name + "\x00" + string(tc.Arguments)
+					first := inflight[key]
+					if k == first {
+						batchResults[k] = uniqueResults[k].tr
+						batchInt[k] = uniqueResults[k].wasInt
+					} else {
+						batchResults[k] = toolResult{
+							ToolCallID: tc.ID,
+							Name:       tc.Name,
+							Content:    uniqueResults[first].tr.Content,
+							IsError:    uniqueResults[first].tr.IsError,
+						}
+						batchInt[k] = uniqueResults[first].wasInt
+						emit(cfg, Event{Role: "call", Name: tc.Name, Content: string(tc.Arguments)})
+						emit(cfg, Event{Role: "tool", Name: tc.Name, Content: batchResults[k].Content})
+					}
+				}
 				// Add all batch results — model needs a result for every tool call.
 				results = append(results, batchResults...)
 				for _, wasInt := range batchInt {
