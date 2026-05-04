@@ -801,7 +801,7 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 	snapSession := s.session
 	var snapMessages []backend.Message
 	if s.session != nil {
-		snapMessages = slices.Clone(s.session.messages)
+		snapMessages = cloneMessages(s.session.messages)
 	}
 
 	if s.session == nil {
@@ -990,12 +990,10 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 	s.setState("idle")
 
 	if err != nil {
-		// Both interrupts and real errors roll back to the pre-turn snapshot
-		// so that cancelled/partial tool results don't poison the context.
-		if snapSession == nil {
-			s.session = nil
-		} else {
-			s.session.messages = snapMessages
+		// Keep completed work — only remove cancelled tool results.
+		// Error results are valuable feedback for the agent.
+		if s.session != nil {
+			s.session.removeCancelledToolResults()
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, ErrInterrupted) {
 			s.auditLog.Debug("turn: interrupted session=%s", s.sessionID)

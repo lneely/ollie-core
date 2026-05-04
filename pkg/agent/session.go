@@ -146,6 +146,25 @@ func (s *Session) update(assistant backend.Message, results []toolResult) {
 	}
 }
 
+// removeCancelledToolResults filters out tool results that were cancelled due
+// to interrupt, keeping completed work (user messages, assistant, successful
+// and errored tool results).
+func (s *Session) removeCancelledToolResults() {
+	filtered := s.messages[:0]
+	for _, m := range s.messages {
+		if m.Role == "tool" && isCancelledToolResult(m.Content) {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	s.messages = filtered
+}
+
+func isCancelledToolResult(content string) bool {
+	return strings.Contains(content, `"status":"cancelled"`) ||
+		strings.Contains(content, "tool execution interrupted by user")
+}
+
 // PreCompactionSnapshot returns a copy of the current messages for persistence
 // before compaction. Call this before compact().
 func (s *Session) PreCompactionSnapshot() []backend.Message {
@@ -237,6 +256,29 @@ func flattenToolMessages(messages []backend.Message) []backend.Message {
 
 func (s *Session) appendUserMessage(content string) {
 	s.messages = append(s.messages, backend.Message{Role: "user", Content: content})
+}
+
+// cloneMessages returns a deep copy of the message slice.
+func cloneMessages(msgs []backend.Message) []backend.Message {
+	out := make([]backend.Message, len(msgs))
+	for i, m := range msgs {
+		out[i] = backend.Message{
+			Role:       m.Role,
+			Content:    m.Content,
+			ToolCallID: m.ToolCallID,
+		}
+		if len(m.ToolCalls) > 0 {
+			out[i].ToolCalls = make([]backend.ToolCall, len(m.ToolCalls))
+			for j, tc := range m.ToolCalls {
+				out[i].ToolCalls[j] = backend.ToolCall{
+					ID:        tc.ID,
+					Name:      tc.Name,
+					Arguments: append(json.RawMessage(nil), tc.Arguments...),
+				}
+			}
+		}
+	}
+	return out
 }
 
 // estimateTokens returns a rough token count (~4 chars per token).
