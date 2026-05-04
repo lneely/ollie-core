@@ -147,13 +147,39 @@ func (s *Session) update(assistant backend.Message, results []toolResult) {
 }
 
 // removeCancelledToolResults filters out tool results that were cancelled due
-// to interrupt, keeping completed work (user messages, assistant, successful
-// and errored tool results).
+// to interrupt, keeping completed work. Also removes the corresponding tool
+// calls from assistant messages to maintain a valid message sequence.
 func (s *Session) removeCancelledToolResults() {
-	filtered := s.messages[:0]
+	// First pass: collect cancelled tool call IDs
+	cancelled := make(map[string]bool)
 	for _, m := range s.messages {
 		if m.Role == "tool" && isCancelledToolResult(m.Content) {
+			cancelled[m.ToolCallID] = true
+		}
+	}
+	if len(cancelled) == 0 {
+		return
+	}
+
+	// Second pass: filter messages and prune tool calls from assistant messages
+	filtered := s.messages[:0]
+	for _, m := range s.messages {
+		if m.Role == "tool" && cancelled[m.ToolCallID] {
 			continue
+		}
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			// Remove cancelled tool calls from this assistant message
+			kept := m.ToolCalls[:0]
+			for _, tc := range m.ToolCalls {
+				if !cancelled[tc.ID] {
+					kept = append(kept, tc)
+				}
+			}
+			if len(kept) == 0 && m.Content == "" {
+				// All tool calls cancelled and no text content - skip message
+				continue
+			}
+			m.ToolCalls = kept
 		}
 		filtered = append(filtered, m)
 	}
