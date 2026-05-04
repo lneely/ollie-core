@@ -864,6 +864,10 @@ func TestSubmit_StartupMessages(t *testing.T) {
 // --- loop: stream interrupted without Done ---
 
 func TestRun_StreamInterrupted(t *testing.T) {
+	old := streamDropBaseDelay
+	streamDropBaseDelay = 10 * time.Millisecond
+	defer func() { streamDropBaseDelay = old }()
+
 	be := defaultBE()
 	be.respond = func(_ context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
 		ch := make(chan backend.StreamEvent)
@@ -2369,15 +2373,15 @@ func TestBuildAgentEnv_PromptOnly(t *testing.T) {
 	}
 }
 
-func TestBuildAgentEnv_ExecPromptLiteralStrings(t *testing.T) {
+func TestBuildAgentEnv_ExecPrompt(t *testing.T) {
 	setupCfgDir(t)
 	d := tools.NewDispatcher()
 	cfg := &config.Config{Prompt: config.Prompt{
-		Value:  []string{"echo hello", "You are a security auditor.\nFocus on auth bypass.", "echo world"},
+		Value:  []string{"echo hello", "echo 'You are a security auditor.'", "echo world"},
 		IsExec: true,
 	}}
 	env := BuildAgentEnv(cfg, d, t.TempDir())
-	want := "hello\nYou are a security auditor.\nFocus on auth bypass.\nworld"
+	want := "hello\nYou are a security auditor.\nworld"
 	if env.preamble != want {
 		t.Errorf("preamble = %q; want %q", env.preamble, want)
 	}

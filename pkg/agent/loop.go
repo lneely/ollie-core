@@ -14,6 +14,13 @@ import (
 
 const maxTransientRetries = 3
 
+// retryBaseDelay is the base delay for rate-limit retries (5<<attempt seconds).
+// Tests can override this to speed up retry tests.
+var retryBaseDelay = 5 * time.Second
+
+// streamDropBaseDelay is the base delay for stream-drop retries (2<<attempt seconds).
+var streamDropBaseDelay = 2 * time.Second
+
 // Consecutive tool-error thresholds. At the soft limit the model is nudged
 // to try a different approach; at the hard limit the loop aborts.
 const (
@@ -174,7 +181,7 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 			if hadReasoning {
 				emit(cfg, Event{Role: "reasoning", Content: "\n</think>\n"})
 			}
-			wait := time.Duration(2<<attempt) * time.Second
+			wait := streamDropBaseDelay << attempt
 			if err := retryCountdown(ctx, cfg, wait); err != nil {
 				return fmt.Errorf("step %d: %w", step, err)
 			}
@@ -489,7 +496,7 @@ func transientWait(err error, attempt int) (time.Duration, bool) {
 	if errors.As(err, &rlErr) {
 		wait := rlErr.RetryAfter
 		if wait == 0 {
-			wait = time.Duration(5<<attempt) * time.Second
+			wait = retryBaseDelay << attempt
 		}
 		return wait, true
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	olog "ollie/pkg/log"
@@ -96,6 +97,7 @@ func (h Hooks) Run(ctx context.Context, name string, payload any, log *olog.Logg
 
 func runHookCmd(ctx context.Context, name, cmdStr string, payloadJSON []byte, cwd string, log *olog.Logger) HookResult {
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdin = bytes.NewReader(payloadJSON)
 	if cwd != "" {
 		cmd.Dir = paths.ExpandHome(cwd)
@@ -151,12 +153,12 @@ func runHookCmd(ctx context.Context, name, cmdStr string, payloadJSON []byte, cw
 			return HookResult{Ran: false, Warning: fmt.Sprintf("hook %s: exit %d", name, exitCode)}
 		}
 	case <-ctx.Done():
-		cmd.Process.Kill() //nolint:errcheck
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) //nolint:errcheck
 		<-done
 		log.Debug("hook %s: cancelled (context done)", name)
 		return HookResult{}
 	case <-timeout:
-		cmd.Process.Kill() //nolint:errcheck
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) //nolint:errcheck
 		<-done
 		log.Debug("hook %s: timed out after %ds", name, hookTimeout)
 		return HookResult{Ran: true, Warning: fmt.Sprintf("hook %s: timed out after %ds", name, hookTimeout)}

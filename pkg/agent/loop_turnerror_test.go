@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"ollie/pkg/backend"
 )
@@ -79,6 +80,10 @@ func TestTurnError_HookInterceptsToolUnsupported(t *testing.T) {
 // TestTurnError_NoHookFallsThrough verifies that when no turnError hook is
 // configured, normal retry behaviour proceeds for retryable errors.
 func TestTurnError_NoHookFallsThrough(t *testing.T) {
+	old := retryBaseDelay
+	retryBaseDelay = 10 * time.Millisecond
+	defer func() { retryBaseDelay = old }()
+
 	var attempts int32
 	be := defaultBE()
 	be.respond = func(_ context.Context, _ []backend.Message, _ []backend.Tool, _ backend.GenerationParams) (<-chan backend.StreamEvent, error) {
