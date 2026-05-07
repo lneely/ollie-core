@@ -187,6 +187,12 @@ func dispatchExecuteCode(ctx context.Context, e *Server, args json.RawMessage) (
 		return "", fmt.Errorf("execute_code: at least one step is required")
 	}
 
+	if e.Strict {
+		if err := enforceStrict(stages); err != nil {
+			return "", err
+		}
+	}
+
 	label := buildExecLabel(stages)
 	if !e.allowed("execute_code", label) {
 		return "", fmt.Errorf("execute_code: denied by user")
@@ -266,6 +272,22 @@ func buildExecLabel(stages []CodeStep) string {
 		fmt.Fprintf(&sb, "\n  [%d]: %s", i, stageLabel(s))
 	}
 	return sb.String()
+}
+
+// enforceStrict rejects any step that uses inline code rather than a named tool.
+func enforceStrict(stages []CodeStep) error {
+	for i, s := range stages {
+		if len(s.Parallel) > 0 {
+			if err := enforceStrict(s.Parallel); err != nil {
+				return err
+			}
+			continue
+		}
+		if s.Tool == "" {
+			return fmt.Errorf("execute_code: step %d rejected: inline code not allowed in strict mode", i)
+		}
+	}
+	return nil
 }
 
 func execCodeArgs(args json.RawMessage) (steps []CodeStep, timeout int, sandboxName string, err error) {

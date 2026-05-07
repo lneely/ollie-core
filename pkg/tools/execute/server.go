@@ -43,6 +43,12 @@ type Server struct {
 	// step dispatch. Set once at session init via SetLockDir; empty disables locking.
 	lockDir string
 
+	// Strict rejects inline {code} steps; only {tool} steps are allowed.
+	Strict bool
+
+	// Yolo skips the landrun sandbox for all execution.
+	Yolo bool
+
 	// rate limiting state (per-Server)
 	rateLimitMu        sync.Mutex
 	validationFailures int
@@ -50,10 +56,23 @@ type Server struct {
 	blockedUntil       time.Time
 }
 
+// Option configures a Server.
+type Option func(*Server)
+
+// WithStrict rejects inline {code} steps; only {tool} steps are allowed.
+func WithStrict() Option { return func(s *Server) { s.Strict = true } }
+
+// WithYolo skips the landrun sandbox.
+func WithYolo() Option { return func(s *Server) { s.Yolo = true } }
+
 // Decl returns a factory for an execute Server with the given working directory.
-func Decl(cwd string) func() tools.Server {
+func Decl(cwd string, opts ...Option) func() tools.Server {
 	return func() tools.Server {
-		return New(cwd)
+		s := New(cwd)
+		for _, o := range opts {
+			o(s)
+		}
+		return s
 	}
 }
 
@@ -334,11 +353,15 @@ func (e *Server) executeWithStdin(ctx context.Context, code, language string, ti
 	default:
 		return "", fmt.Errorf("unsupported language: %s (supported: bash, python3, perl, awk, sed, ed, jq, expect, bc, lua)", language)
 	}
-	wrapped, wrapErr := sandbox.WrapCommand(cfg, interpreter, workDir)
-	if wrapErr != nil {
-		return "", wrapErr
+	if e.Yolo {
+		cmd = exec.CommandContext(ctx, interpreter[0], interpreter[1:]...)
+	} else {
+		wrapped, wrapErr := sandbox.WrapCommand(cfg, interpreter, workDir)
+		if wrapErr != nil {
+			return "", wrapErr
+		}
+		cmd = exec.CommandContext(ctx, wrapped[0], wrapped[1:]...)
 	}
-	cmd = exec.CommandContext(ctx, wrapped[0], wrapped[1:]...)
 	cmd.Dir = workDir
 	switch {
 	case codeStdin != "":
