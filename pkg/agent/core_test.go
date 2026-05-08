@@ -1196,6 +1196,7 @@ func TestCommand_Agent_NotFound(t *testing.T) {
 
 func TestCommand_Agents_Empty(t *testing.T) {
 	c := newCore(t, nil, nil) // agentsDir is a fresh temp dir
+	t.Setenv("OLLIE_AGENTS_PATH", c.agentsDir)
 	evs := collectEvents(context.Background(), c, "/agents")
 	found := false
 	for _, s := range byRole(evs, "info") {
