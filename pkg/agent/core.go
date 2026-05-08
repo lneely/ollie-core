@@ -129,6 +129,14 @@ func DefaultPromptsDir() string {
 	return paths.CfgDir() + "/prompts"
 }
 
+// PromptsDirs returns all prompt directories from OLLIE_PROMPTS_PATH (colon-separated).
+func PromptsDirs() []string {
+	if p := os.Getenv("OLLIE_PROMPTS_PATH"); p != "" {
+		return strings.Split(p, ":")
+	}
+	return []string{DefaultPromptsDir()}
+}
+
 
 // AgentConfigPath resolves the config file path for a named agent.
 func AgentConfigPath(agentsDir, name string) string {

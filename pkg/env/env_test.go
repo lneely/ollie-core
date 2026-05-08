@@ -13,7 +13,7 @@ func TestEnsureDefaults(t *testing.T) {
 		os.Unsetenv(k)
 	}
 	EnsureDefaults()
-	for _, k := range []string{"OLLIE", "OLLIE_TOOLS_PATH", "OLLIE_SKILLS_PATH", "OLLIE_MEMORY_PATH", "OLLIE_TMP_PATH", "OLLIE_TRANSCRIPT_PATH"} {
+	for _, k := range []string{"OLLIE", "OLLIE_TOOLS_PATH", "OLLIE_SKILLS_PATH", "OLLIE_PROMPTS_PATH", "OLLIE_MEMORY_PATH", "OLLIE_TMP_PATH", "OLLIE_TRANSCRIPT_PATH"} {
 		if v := os.Getenv(k); v == "" {
 			t.Errorf("%s not set after EnsureDefaults", k)
 		}
