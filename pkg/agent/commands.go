@@ -131,26 +131,32 @@ func (s *agent) handleCommand(ctx context.Context, input string, handler EventHa
 		},
 
 		"/agents": func(args []string) {
-			entries, err := os.ReadDir(s.agentsDir)
-			if err != nil {
-				handler(infoEvent(fmt.Sprintf("agents: %v", err)))
-				return
-			}
+			seen := make(map[string]bool)
 			found := false
-			for _, e := range entries {
-				if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			for _, dir := range AgentsDirs() {
+				entries, err := os.ReadDir(dir)
+				if err != nil {
 					continue
 				}
-				name := strings.TrimSuffix(e.Name(), ".json")
-				marker := "  "
-				if name == s.agentName {
-					marker = "* "
+				for _, e := range entries {
+					if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+						continue
+					}
+					name := strings.TrimSuffix(e.Name(), ".json")
+					if seen[name] {
+						continue
+					}
+					seen[name] = true
+					marker := "  "
+					if name == s.agentName {
+						marker = "* "
+					}
+					handler(infoEvent(marker + name))
+					found = true
 				}
-				handler(infoEvent(marker + name))
-				found = true
 			}
 			if !found {
-				handler(infoEvent("no agents found in " + s.agentsDir))
+				handler(infoEvent("no agents found"))
 			}
 		},
 

@@ -137,9 +137,24 @@ func PromptsDirs() []string {
 	return []string{DefaultPromptsDir()}
 }
 
+// AgentsDirs returns all agent directories from OLLIE_AGENTS_PATH (colon-separated).
+func AgentsDirs() []string {
+	if p := os.Getenv("OLLIE_AGENTS_PATH"); p != "" {
+		return strings.Split(p, ":")
+	}
+	return []string{paths.CfgDir() + "/agents"}
+}
+
 
 // AgentConfigPath resolves the config file path for a named agent.
+// It searches all directories in OLLIE_AGENTS_PATH, falling back to agentsDir.
 func AgentConfigPath(agentsDir, name string) string {
+	for _, dir := range AgentsDirs() {
+		p := dir + "/" + name + ".json"
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
 	return agentsDir + "/" + name + ".json"
 }
 

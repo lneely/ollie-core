@@ -1405,6 +1405,7 @@ func TestCommand_SP(t *testing.T) {
 
 func TestCommand_Agents_List(t *testing.T) {
 	c := newCore(t, nil, nil)
+	t.Setenv("OLLIE_AGENTS_PATH", c.agentsDir)
 	if err := os.WriteFile(c.agentsDir+"/myagent.json", []byte(`{}`), 0600); err != nil {
 		t.Fatal(err)
 	}

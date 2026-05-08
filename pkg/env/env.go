@@ -14,6 +14,7 @@ import (
 var managed = []string{
 	"OLLIE",
 	"OLLIE_TOOLS_PATH",
+	"OLLIE_AGENTS_PATH",
 	"OLLIE_SKILLS_PATH",
 	"OLLIE_PROMPTS_PATH",
 	"OLLIE_MEMORY_PATH",
@@ -35,6 +36,7 @@ func EnsureDefaults() {
 	defaults := map[string]string{
 		"OLLIE":                  filepath.Join(home, "mnt", "ollie"),
 		"OLLIE_TOOLS_PATH":       filepath.Join(home, ".config", "ollie", "tools"),
+		"OLLIE_AGENTS_PATH":      filepath.Join(home, ".config", "ollie", "agents"),
 		"OLLIE_SKILLS_PATH":      filepath.Join(home, ".config", "ollie", "skills"),
 		"OLLIE_PROMPTS_PATH":     filepath.Join(home, ".config", "ollie", "prompts"),
 		"OLLIE_MEMORY_PATH":      filepath.Join(home, ".config", "ollie", "memory"),
