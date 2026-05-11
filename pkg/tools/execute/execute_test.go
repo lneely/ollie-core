@@ -1050,3 +1050,46 @@ func TestSetLockDir(t *testing.T) {
 		t.Errorf("lockDir = %q; want %q", s.lockDir, dir)
 	}
 }
+
+func TestRunReadBatch_Single(t *testing.T) {
+	s := newServer(t)
+	ctx := context.Background()
+	stages := []CodeStep{{Code: "echo batch", Tool: ""}}
+	out, err := s.runReadBatch(ctx, 0, stages, 10, "default", "")
+	if err != nil {
+		t.Fatalf("runReadBatch: %v", err)
+	}
+	if !strings.Contains(out, "batch") {
+		t.Errorf("output = %q; want 'batch'", out)
+	}
+}
+
+func TestRunReadBatch_Multi(t *testing.T) {
+	s := newServer(t)
+	ctx := context.Background()
+	stages := []CodeStep{
+		{Code: "echo one"},
+		{Code: "echo two"},
+	}
+	out, err := s.runReadBatch(ctx, 0, stages, 10, "default", "")
+	if err != nil {
+		t.Fatalf("runReadBatch multi: %v", err)
+	}
+	if !strings.Contains(out, "one") || !strings.Contains(out, "two") {
+		t.Errorf("output = %q; want 'one' and 'two'", out)
+	}
+}
+
+func TestRunReadBatch_WithLockDir(t *testing.T) {
+	s := newServer(t)
+	s.SetLockDir(t.TempDir())
+	ctx := context.Background()
+	stages := []CodeStep{{Code: "echo locked"}}
+	out, err := s.runReadBatch(ctx, 0, stages, 10, "default", "")
+	if err != nil {
+		t.Fatalf("runReadBatch with lockdir: %v", err)
+	}
+	if !strings.Contains(out, "locked") {
+		t.Errorf("output = %q; want 'locked'", out)
+	}
+}
