@@ -70,7 +70,9 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 		for k, v := range cfg.Hooks {
 			hooks[k] = []string(v)
 		}
-		if resolved, err := resolvePrompt(cfg.Prompt, cwd); err == nil {
+		if resolved, err := resolvePrompt(cfg.Prompt, cwd); err != nil {
+			fmt.Fprintf(os.Stderr, "resolve prompt: %v\n", err)
+		} else {
 			preamble = resolved
 		}
 		genParams = backend.GenerationParams{
