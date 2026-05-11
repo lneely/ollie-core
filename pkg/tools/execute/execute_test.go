@@ -962,6 +962,10 @@ func TestDetectParallelClass(t *testing.T) {
 		{"#!/bin/sh\n# ollie:parallel write extra\n", lockClassWrite},
 		{"#!/bin/sh\nno annotation\n", lockClassGlobal},
 		{"", lockClassGlobal},
+		// lua-style comment
+		{"#!/usr/bin/env lua\n-- ollie:parallel read\n", lockClassRead},
+		// C-style comment
+		{"// ollie:parallel read\n", lockClassRead},
 		// annotation after line 10 is ignored
 		{strings.Repeat("# filler\n", 10) + "# ollie:parallel read\n", lockClassGlobal},
 	}

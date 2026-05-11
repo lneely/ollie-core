@@ -33,10 +33,9 @@ func classifyStep(step CodeStep) lockClass {
 }
 
 // detectParallelClass scans the first 10 lines of a tool script for an
-// ollie:parallel annotation:
-//
-//	# ollie:parallel read   → lockClassRead  (safe to run concurrently with other reads)
-//	# ollie:parallel write  → lockClassWrite (needs exclusive access to the file it writes)
+// ollie:parallel annotation. The annotation is comment-syntax-agnostic:
+// it matches "ollie:parallel read" or "ollie:parallel write" anywhere in
+// the line, so it works with # (bash/python), -- (lua), // (go), etc.
 //
 // Absence of the annotation → lockClassGlobal (serialize).
 func detectParallelClass(code string) lockClass {
@@ -45,11 +44,11 @@ func detectParallelClass(code string) lockClass {
 		lines = lines[:10]
 	}
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "# ollie:parallel") {
+		idx := strings.Index(line, "ollie:parallel")
+		if idx < 0 {
 			continue
 		}
-		rest := strings.TrimSpace(strings.TrimPrefix(line, "# ollie:parallel"))
+		rest := strings.TrimSpace(line[idx+len("ollie:parallel"):])
 		switch {
 		case rest == "read" || strings.HasPrefix(rest, "read "):
 			return lockClassRead
@@ -88,7 +87,7 @@ func acquireFlock(dir, name string, exclusive bool) (*os.File, error) {
 }
 
 // IsParallelRead implements tools.ParallelClassifier. Returns true when the
-// named tool script carries a "# ollie:parallel read" annotation.
+// named tool script carries an "ollie:parallel read" annotation.
 func (e *Server) IsParallelRead(name string) bool {
 	code, err := ReadTool(name)
 	if err != nil {
