@@ -179,72 +179,107 @@ func (lw *limitedWriter) Write(p []byte) (n int, err error) {
 }
 
 func dispatchExecuteCode(ctx context.Context, e *Server, args json.RawMessage) (string, error) {
-	stages, timeout, sandboxName, err := execCodeArgs(args)
+	steps, pipe, timeout, sandboxName, err := execCodeArgs(args)
 	if err != nil {
 		return "", fmt.Errorf("execute_code: bad args: %w", err)
 	}
-	if len(stages) == 0 {
-		return "", fmt.Errorf("execute_code: at least one step is required")
+	if len(steps) == 0 && len(pipe) == 0 {
+		return "", fmt.Errorf("execute_code: steps or pipe is required")
+	}
+	if len(steps) > 0 && len(pipe) > 0 {
+		return "", fmt.Errorf("execute_code: steps and pipe are mutually exclusive")
 	}
 
+	// Determine which mode we're in.
+	if len(pipe) > 0 {
+		return e.dispatchPipe(ctx, pipe, timeout, sandboxName)
+	}
+	return e.dispatchSteps(ctx, steps, timeout, sandboxName)
+}
+
+// dispatchSteps runs steps in parallel when safe (annotation-based), serially otherwise.
+func (e *Server) dispatchSteps(ctx context.Context, steps []CodeStep, timeout int, sandboxName string) (string, error) {
 	if e.Strict {
-		if err := enforceStrict(stages); err != nil {
+		if err := enforceStrict(steps); err != nil {
 			return "", err
 		}
 	}
 
-	label := buildExecLabel(stages)
+	label := buildExecLabel(steps)
 	if !e.allowed("execute_code", label) {
 		return "", fmt.Errorf("execute_code: denied by user")
 	}
 
-	// Degenerate case: single simple stage, return raw output.
-	if len(stages) == 1 && len(stages[0].Parallel) == 0 {
-		if stages[0].Elevated {
+	// Single step: run directly.
+	if len(steps) == 1 && len(steps[0].Parallel) == 0 {
+		if steps[0].Elevated {
 			e.wdMu.RLock()
 			dir := e.cwd
 			e.wdMu.RUnlock()
-			return e.executeElevated(ctx, stages[0].Code, dir, timeout)
+			return e.executeElevated(ctx, steps[0].Code, dir, timeout)
 		}
-		code, lang, trusted, err := resolveCodeStep(stages[0])
+		code, lang, trusted, err := resolveCodeStep(steps[0])
 		if err != nil {
 			return "", err
 		}
 		return e.executeWithStdin(ctx, code, lang, timeout, sandboxName, trusted, "")
 	}
 
-	// Pipeline: run stages sequentially, auto-batching consecutive read-safe
-	// tool steps into parallel groups. Write/global steps serialize.
-	var input string
-	for i := 0; i < len(stages); {
-		if classifyStep(stages[i]) == lockClassRead {
-			// Collect run of consecutive read-safe stages.
+	// Multiple steps: auto-batch consecutive read-safe steps in parallel;
+	// write/global steps run serially between batches.
+	var output string
+	for i := 0; i < len(steps); {
+		if classifyStep(steps[i]) == lockClassRead {
 			j := i + 1
-			for j < len(stages) && classifyStep(stages[j]) == lockClassRead {
+			for j < len(steps) && classifyStep(steps[j]) == lockClassRead {
 				j++
 			}
-			out, err := e.runReadBatch(ctx, i, stages[i:j], timeout, sandboxName, input)
+			out, err := e.runReadBatch(ctx, i, steps[i:j], timeout, sandboxName, "")
 			if err != nil {
 				return out, err
 			}
-			input = out
+			output += out
 			i = j
 		} else {
-			// Write or global: acquire exclusive lock, run single stage.
 			lf, err := acquireFlock(e.lockDir, "rw", true)
 			if err != nil {
 				return "", fmt.Errorf("step %d: lock: %w", i, err)
 			}
-			out, runErr := e.runStage(ctx, i, stages[i], timeout, sandboxName, input)
+			out, runErr := e.runStage(ctx, i, steps[i], timeout, sandboxName, "")
 			if lf != nil {
 				lf.Close()
 			}
 			if runErr != nil {
-				return out, fmt.Errorf("step %d: %w", i, runErr)
+				return output + out, fmt.Errorf("step %d: %w", i, runErr)
 			}
-			input = out
+			output += out
 			i++
 		}
+	}
+	return output, nil
+}
+
+// dispatchPipe runs stages as an explicit pipeline: sequential, stdout of each
+// stage feeds stdin of the next.
+func (e *Server) dispatchPipe(ctx context.Context, pipe []CodeStep, timeout int, sandboxName string) (string, error) {
+	if e.Strict {
+		if err := enforceStrict(pipe); err != nil {
+			return "", err
+		}
+	}
+
+	label := buildExecLabel(pipe)
+	if !e.allowed("execute_code", label) {
+		return "", fmt.Errorf("execute_code: denied by user")
+	}
+
+	var input string
+	for i, stage := range pipe {
+		out, err := e.runStage(ctx, i, stage, timeout, sandboxName, input)
+		if err != nil {
+			return out, fmt.Errorf("pipe stage %d: %w", i, err)
+		}
+		input = out
 	}
 	return input, nil
 }
@@ -290,9 +325,10 @@ func enforceStrict(stages []CodeStep) error {
 	return nil
 }
 
-func execCodeArgs(args json.RawMessage) (steps []CodeStep, timeout int, sandboxName string, err error) {
+func execCodeArgs(args json.RawMessage) (steps []CodeStep, pipe []CodeStep, timeout int, sandboxName string, err error) {
 	var a struct {
 		Steps   []CodeStep `json:"steps"`
+		Pipe    []CodeStep `json:"pipe"`
 		Timeout int        `json:"timeout"`
 		Sandbox string     `json:"sandbox"`
 	}
@@ -300,6 +336,7 @@ func execCodeArgs(args json.RawMessage) (steps []CodeStep, timeout int, sandboxN
 		return
 	}
 	steps = a.Steps
+	pipe = a.Pipe
 	timeout = a.Timeout
 	if timeout <= 0 {
 		timeout = 30

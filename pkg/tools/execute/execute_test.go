@@ -41,6 +41,13 @@ func callCode(t *testing.T, s *Server, steps []map[string]any, extra ...map[stri
 	return s.Dispatch(context.Background(), "execute_code", raw)
 }
 
+
+func callPipe(t *testing.T, s *Server, pipe []map[string]any) (string, error) {
+	t.Helper()
+	payload := map[string]any{"pipe": pipe}
+	raw, _ := json.Marshal(payload)
+	return s.Dispatch(context.Background(), "execute_code", raw)
+}
 // ---- detectLanguage ----
 
 func TestDetectLanguage(t *testing.T) {
@@ -261,8 +268,8 @@ func TestDispatchUnknownTool(t *testing.T) {
 func TestDispatchNoSteps(t *testing.T) {
 	s := newServer(t)
 	_, err := callCode(t, s, []map[string]any{})
-	if err == nil || !strings.Contains(err.Error(), "at least one step") {
-		t.Errorf("expected 'at least one step' error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "steps or pipe is required") {
+		t.Errorf("expected 'steps or pipe is required' error, got %v", err)
 	}
 }
 
@@ -287,7 +294,7 @@ func TestDispatchSingleStep(t *testing.T) {
 
 func TestDispatchPipeline(t *testing.T) {
 	s := newServer(t)
-	out, err := callCode(t, s, []map[string]any{
+	out, err := callPipe(t, s, []map[string]any{
 		{"code": "printf 'a\\nb\\nc'"},
 		{"code": "grep b"},
 	})
@@ -610,7 +617,7 @@ func TestDispatchBadArgs(t *testing.T) {
 
 func TestDispatchPipelineError(t *testing.T) {
 	s := newServer(t)
-	args := `{"steps":[{"code":"echo hello"},{"code":"exit 1"}]}`
+	args := `{"pipe":[{"code":"echo hello"},{"code":"exit 1"}]}`
 	_, err := s.Dispatch(context.Background(), "execute_code", json.RawMessage(args))
 	if err == nil {
 		t.Error("expected error from pipeline with failing step")
@@ -835,7 +842,7 @@ func TestExecuteLua(t *testing.T) {
 
 func TestDispatchPipelineMidError(t *testing.T) {
 	s := newServer(t)
-	args := `{"steps":[{"code":"echo hello"},{"code":"exit 1"},{"code":"cat"}]}`
+	args := `{"pipe":[{"code":"echo hello"},{"code":"exit 1"},{"code":"cat"}]}`
 	result, err := s.Dispatch(context.Background(), "execute_code", json.RawMessage(args))
 	// The error should be wrapped with step index
 	_ = result
