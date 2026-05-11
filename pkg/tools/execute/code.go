@@ -213,38 +213,14 @@ func dispatchExecuteCode(ctx context.Context, e *Server, args json.RawMessage) (
 		return e.executeWithStdin(ctx, code, lang, timeout, sandboxName, trusted, "")
 	}
 
-	// Pipeline: run stages sequentially, auto-batching consecutive read-safe
-	// tool steps into parallel groups. Write/global steps serialize.
+	// Pipeline: stages run sequentially, stdout piped to next stdin.
 	var input string
-	for i := 0; i < len(stages); {
-		if classifyStep(stages[i]) == lockClassRead {
-			// Collect run of consecutive read-safe stages.
-			j := i + 1
-			for j < len(stages) && classifyStep(stages[j]) == lockClassRead {
-				j++
-			}
-			out, err := e.runReadBatch(ctx, i, stages[i:j], timeout, sandboxName, input)
-			if err != nil {
-				return out, err
-			}
-			input = out
-			i = j
-		} else {
-			// Write or global: acquire exclusive lock, run single stage.
-			lf, err := acquireFlock(e.lockDir, "rw", true)
-			if err != nil {
-				return "", fmt.Errorf("step %d: lock: %w", i, err)
-			}
-			out, runErr := e.runStage(ctx, i, stages[i], timeout, sandboxName, input)
-			if lf != nil {
-				lf.Close()
-			}
-			if runErr != nil {
-				return out, fmt.Errorf("step %d: %w", i, runErr)
-			}
-			input = out
-			i++
+	for i, stage := range stages {
+		out, err := e.runStage(ctx, i, stage, timeout, sandboxName, input)
+		if err != nil {
+			return out, fmt.Errorf("step %d: %w", i, err)
 		}
+		input = out
 	}
 	return input, nil
 }
