@@ -76,47 +76,43 @@ func Decl(cwd string, opts ...Option) func() tools.Server {
 	}
 }
 
-// ListTools implements tools.Server, returning the ToolInfo definitions for the execute_* built-in tools.
+// ListTools implements tools.Server, returning ToolInfo for execute_code,
+// call_tool, and pipe.
 func (e *Server) ListTools() ([]tools.ToolInfo, error) {
 	return []tools.ToolInfo{
 		{
 			Name: "execute_code",
-			Description: `Run one or more steps or a pipeline in a sandboxed environment.
+			Description: `Run one or more inline code steps in a sandboxed environment.
 
-Two modes (mutually exclusive):
-- steps: independent steps, run in parallel when safe (ollie:parallel annotation).
-  Outputs concatenated in submission order. No stdout chaining between steps.
-- pipe:  explicit pipeline. Stages run sequentially; each stage's stdout feeds
-  the next stage's stdin.
+Steps run in parallel when consecutive steps carry an ollie:parallel annotation;
+otherwise they run serially. Outputs are concatenated in submission order.
+No stdout chaining between steps — use pipe for that.
 
-Each step/stage is one of:
-- {code, language}            — inline code (default language: bash)
-- {tool, args}                — named script from OLLIE_TOOLS_PATH (language from shebang)
-- {parallel: [{code/tool}...]}— concurrent fan-out; outputs concatenated in submission order
+Each step is one of:
+- {code, language}              — inline code (default language: bash)
+- {elevated: true, code}        — run outside sandbox via elevation backend (bash only)
+- {parallel: [{code/language}...]} — concurrent fan-out; outputs concatenated in submission order
 
-Supported inline languages: bash, python3, perl, lua, awk, sed, jq, ed, expect, bc.
-Timeout is a top-level parameter (not per-step) applied to each stage (default: 30s). A failed step/stage aborts execution.
+Supported languages: bash, python3, perl, lua, awk, sed, jq, ed, expect, bc.
+timeout applies to each step independently (default: 30s). A failed step aborts.
 
 Examples:
-- Single step:        steps=[{code: "ls -la"}]
-- Parallel reads:     steps=[{tool: "file_read", args: ["a.txt"]}, {tool: "file_read", args: ["b.txt"]}]
-- Explicit pipeline:  pipe=[{code: "grep error app.log"}, {code: "wc -l"}]
-- Mixed pipeline:     pipe=[{tool: "fetch.sh", args: ["--last=1h"]}, {code: "jq .result"}]
-- Fan-out in pipe:    pipe=[{parallel: [{code: "cat a.txt"}, {code: "cat b.txt"}]}, {code: "sort"}]`,
+- Single step:   steps=[{code: "date"}]
+- Two steps:     steps=[{code: "echo hello"}, {code: "echo world"}]
+- Fan-out:       steps=[{parallel: [{code: "cat a.txt"}, {code: "cat b.txt"}]}]`,
 			InputSchema: json.RawMessage(`{
 				"type": "object",
+				"required": ["steps"],
 				"properties": {
 					"steps": {
 						"type": "array",
-						"description": "Independent steps. Run in parallel when safe (ollie:parallel annotation), serially otherwise. Outputs concatenated in order. No stdout chaining. Mutually exclusive with pipe.",
+						"description": "Inline code steps. Run in parallel when safe (ollie:parallel annotation), serially otherwise.",
 						"items": {
 							"type": "object",
 							"properties": {
 								"code":     {"type": "string", "description": "Inline code to execute."},
-								"language": {"type": "string", "description": "Language interpreter (default: bash). Ignored when tool or parallel is set."},
-								"tool":     {"type": "string", "description": "Named tool script from the tools directory. Discover available tools: grep -iA2 'keyword' $OLLIE/t/idx"},
-								"args":     {"type": "array", "items": {"type": "string"}, "description": "Arguments for the tool script."},
-								"elevated": {"type": "boolean", "description": "Run this step outside the sandbox via the elevation backend. Only bash code is supported. Omit or false for normal sandboxed execution."},
+								"language": {"type": "string", "description": "Language interpreter (default: bash)."},
+								"elevated": {"type": "boolean", "description": "Run outside the sandbox via the elevation backend. Only bash is supported."},
 								"parallel": {
 									"type": "array",
 									"description": "Fan-out: steps run concurrently, outputs concatenated in submission order.",
@@ -125,6 +121,57 @@ Examples:
 										"properties": {
 											"code":     {"type": "string"},
 											"language": {"type": "string"},
+											"elevated": {"type": "boolean"}
+										}
+									}
+								}
+							}
+						}
+					},
+					"timeout": {"type": "integer", "description": "Timeout in seconds per step (default: 30)."},
+					"sandbox": {"type": "string",  "description": "Sandbox name (default: default)."}
+				}
+			}`),
+		},
+		{
+			Name: "call_tool",
+			Description: `Run one or more named scripts from $OLLIE/t (the tools directory).
+
+Tool names and their arguments are discoverable via:
+  grep -iA2 'keyword' $OLLIE/t/idx
+
+call_tool fans out in parallel when consecutive calls carry an ollie:parallel read
+annotation in their script header; write-annotated or unannotated tools run serially.
+Outputs are concatenated in submission order.
+No stdout chaining between calls — use pipe for that.
+
+Each call is one of:
+- {tool, args}                   — named script with arguments
+- {tool, args, elevated: true}   — run outside sandbox (bash tools only)
+- {parallel: [{tool, args}...]}  — explicit concurrent fan-out
+
+Examples:
+- Single call:    calls=[{tool: "file_read", args: ["README.md"]}]
+- Parallel reads: calls=[{tool: "file_read", args: ["a.txt"]}, {tool: "file_read", args: ["b.txt"]}]`,
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"required": ["calls"],
+				"properties": {
+					"calls": {
+						"type": "array",
+						"description": "Tool calls. Fanned out in parallel when safe (ollie:parallel annotation), serially otherwise.",
+						"items": {
+							"type": "object",
+							"properties": {
+								"tool":     {"type": "string", "description": "Named tool script from the tools directory."},
+								"args":     {"type": "array", "items": {"type": "string"}, "description": "Arguments for the tool script."},
+								"elevated": {"type": "boolean", "description": "Run outside the sandbox via the elevation backend."},
+								"parallel": {
+									"type": "array",
+									"description": "Explicit fan-out: calls run concurrently, outputs concatenated in submission order.",
+									"items": {
+										"type": "object",
+										"properties": {
 											"tool":     {"type": "string"},
 											"args":     {"type": "array", "items": {"type": "string"}},
 											"elevated": {"type": "boolean"}
@@ -134,9 +181,38 @@ Examples:
 							}
 						}
 					},
-					"pipe": {
+					"timeout": {"type": "integer", "description": "Timeout in seconds per call (default: 30)."},
+					"sandbox": {"type": "string",  "description": "Sandbox name (default: default)."}
+				}
+			}`),
+		},
+		{
+			Name: "pipe",
+			Description: `Compose execute_code and call_tool steps into a sequential pipeline.
+
+Stages run in order; each stage's stdout becomes the next stage's stdin.
+Use this when you need to chain heterogeneous code and tool steps together.
+
+Each stage is one of:
+- {code, language}              — inline code (default: bash)
+- {tool, args}                  — named script from $OLLIE/t
+- {elevated: true, code/tool}   — run outside sandbox
+- {parallel: [{code/tool}...]}  — fan-out within a stage; outputs concatenated, fed to next stage
+
+Supported inline languages: bash, python3, perl, lua, awk, sed, jq, ed, expect, bc.
+timeout applies to each stage independently (default: 30s). A failed stage aborts.
+
+Examples:
+- Code → code:    stages=[{code: "grep error app.log"}, {code: "wc -l"}]
+- Tool → code:    stages=[{tool: "fetch.sh", args: ["--last=1h"]}, {code: "jq .result"}]
+- Fan-out → code: stages=[{parallel: [{code: "cat a.txt"}, {code: "cat b.txt"}]}, {code: "sort"}]`,
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"required": ["stages"],
+				"properties": {
+					"stages": {
 						"type": "array",
-						"description": "Explicit pipeline. Stages run sequentially; each stage's stdout feeds the next stage's stdin. For composing heterogeneous tool+code executions. Mutually exclusive with steps.",
+						"description": "Pipeline stages. Each stage's stdout feeds the next stage's stdin.",
 						"items": {
 							"type": "object",
 							"properties": {
@@ -144,10 +220,10 @@ Examples:
 								"language": {"type": "string", "description": "Language interpreter (default: bash). Ignored when tool or parallel is set."},
 								"tool":     {"type": "string", "description": "Named tool script from the tools directory."},
 								"args":     {"type": "array", "items": {"type": "string"}, "description": "Arguments for the tool script."},
-								"elevated": {"type": "boolean", "description": "Run this step outside the sandbox via the elevation backend."},
+								"elevated": {"type": "boolean", "description": "Run outside the sandbox via the elevation backend."},
 								"parallel": {
 									"type": "array",
-									"description": "Fan-out within a pipe stage: steps run concurrently, outputs concatenated, then fed to next stage.",
+									"description": "Fan-out within a stage: steps run concurrently, outputs concatenated, then fed to next stage.",
 									"items": {
 										"type": "object",
 										"properties": {
@@ -162,7 +238,7 @@ Examples:
 							}
 						}
 					},
-					"timeout": {"type": "integer", "description": "Timeout in seconds applied to each step/stage (default: 30). Top-level parameter."},
+					"timeout": {"type": "integer", "description": "Timeout in seconds per stage (default: 30)."},
 					"sandbox": {"type": "string",  "description": "Sandbox name (default: default)."}
 				}
 			}`),
@@ -273,12 +349,6 @@ func (e *Server) executeElevated(ctx context.Context, cmd, dir string, timeout i
 }
 
 var whitespacePattern = regexp.MustCompile(`\s+`)
-
-const (
-	maxFailures   = 5
-	blockDuration = 30 * time.Second
-	failureWindow = 60 * time.Second
-)
 
 func (e *Server) checkRateLimit() error {
 	e.rateLimitMu.Lock()
