@@ -45,6 +45,10 @@ type agentConfig struct {
 	PreTool              func(ctx context.Context, name string, args json.RawMessage) HookResult              // called before each tool; exit 2 blocks execution
 	PostTool             func(ctx context.Context, name string, args json.RawMessage, result string) HookResult // called after each tool; exit 0 appends, exit 2 replaces result
 	TurnError            func(ctx context.Context, errType, errMsg string) HookResult                          // called on first backend error; if ran, skips retries
+	// MaxSteps is the maximum number of tool-call rounds per turn.
+	// When reached, a soft nudge is injected and the loop exits cleanly.
+	// 0 means unlimited.
+	MaxSteps int
 }
 
 func run(ctx context.Context, cfg agentConfig, state state) error {
@@ -436,6 +440,19 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 				Role:    "user",
 				Content: "[system: your last several tool calls all failed. Try a different approach, or ask the user for help.]",
 			}, nil)
+		}
+
+		// Soft step-budget guardrail: when MaxSteps is set and the budget is
+		// exhausted, nudge the model to wrap up and exit cleanly. This is not
+		// a hard abort — the model gets one final turn without tools to emit
+		// a summary or hand-off message.
+		if cfg.MaxSteps > 0 && step >= cfg.MaxSteps-1 {
+			emit(cfg, Event{Role: "maxsteps", Content: fmt.Sprintf("%d", step+1)})
+			state.update(backend.Message{
+				Role:    "user",
+				Content: fmt.Sprintf("[system: step budget exhausted (%d/%d steps used). Stop calling tools. Summarize what you have done and what remains, then stop.]", step+1, cfg.MaxSteps),
+			}, nil)
+			break
 		}
 
 		if cfg.AutoCompact != nil {
