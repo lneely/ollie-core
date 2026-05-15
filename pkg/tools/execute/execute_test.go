@@ -20,11 +20,13 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// newServer returns a Server with Confirm always returning true.
+// newServer returns a Server with Confirm always returning true and Yolo=true
+// so tests run without landrun installed in CI.
 func newServer(t *testing.T) *Server {
 	t.Helper()
 	s := New(t.TempDir())
 	s.Confirm = func(string) bool { return true }
+	s.Yolo = true // skip landrun in unit tests
 	return s
 }
 
@@ -482,9 +484,9 @@ func TestStrictModeAllowsTool(t *testing.T) {
 // ---- classifyStep ----
 
 func TestClassifyStep(t *testing.T) {
-	// read-safe inline code
-	if got := classifyStep(CodeStep{Code: "echo hi"}); got != lockClassRead {
-		t.Errorf("inline echo: got %v; want read", got)
+	// inline code is unclassifiable without scanning → global
+	if got := classifyStep(CodeStep{Code: "echo hi"}); got != lockClassGlobal {
+		t.Errorf("inline echo: got %v; want global", got)
 	}
 	// elevated → global
 	if got := classifyStep(CodeStep{Elevated: true}); got != lockClassGlobal {
