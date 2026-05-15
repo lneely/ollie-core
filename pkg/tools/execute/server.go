@@ -20,6 +20,12 @@ import (
 	"ollie/pkg/tools"
 )
 
+const (
+	failureWindow = 1 * time.Minute
+	maxFailures   = 5
+	blockDuration = 5 * time.Minute
+)
+
 // Server runs code in a sandboxed environment.
 type Server struct {
 	// Confirm is an optional function called before executing sensitive operations.

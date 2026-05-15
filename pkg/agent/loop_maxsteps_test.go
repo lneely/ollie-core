@@ -3,6 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"ollie/pkg/backend"
@@ -13,11 +17,11 @@ import (
 func TestMaxStepsZeroUnlimited(t *testing.T) {
 	var steps int
 	mb := &mockBackend{
-		responses: []mockResponse{
+		respond: sequentialStream([]mockResponse{
 			{toolCalls: []backend.ToolCall{{ID: "1", Name: "tool", Arguments: json.RawMessage(`{}`)}}, stopReason: "tool_calls"},
 			{toolCalls: []backend.ToolCall{{ID: "2", Name: "tool", Arguments: json.RawMessage(`{}`)}}, stopReason: "tool_calls"},
 			{content: "done", stopReason: "stop"},
-		},
+		}),
 	}
 	cfg := agentConfig{
 		Backend:  mb,
@@ -45,11 +49,11 @@ func TestMaxStepsSoftNudge(t *testing.T) {
 
 	// Backend: two tool-calling rounds, then a final text turn.
 	mb := &mockBackend{
-		responses: []mockResponse{
+		respond: sequentialStream([]mockResponse{
 			{toolCalls: []backend.ToolCall{{ID: "1", Name: "tool", Arguments: json.RawMessage(`{}`)}}, stopReason: "tool_calls"},
 			{toolCalls: []backend.ToolCall{{ID: "2", Name: "tool", Arguments: json.RawMessage(`{}`)}}, stopReason: "tool_calls"},
 			{content: "wrapping up", stopReason: "stop"},
-		},
+		}),
 	}
 
 	// MaxSteps=1 means the guardrail fires after completing step 0 (the first
@@ -83,11 +87,9 @@ func TestMaxStepsSoftNudge(t *testing.T) {
 
 	// Confirm the nudge message is present in conversation history.
 	for _, m := range s.history() {
-		if m.Role == "user" && len(m.Content) > 0 {
-			if contains(m.Content, "step budget exhausted") {
-				nudgeSeen = true
-				break
-			}
+		if m.Role == "user" && strings.Contains(m.Content, "step budget exhausted") {
+			nudgeSeen = true
+			break
 		}
 	}
 	if !nudgeSeen {
@@ -112,7 +114,7 @@ func TestMaxStepsExactBoundary(t *testing.T) {
 	}
 	responses = append(responses, mockResponse{content: "done", stopReason: "stop"})
 
-	mb := &mockBackend{responses: responses}
+	mb := &mockBackend{respond: sequentialStream(responses)}
 	cfg := agentConfig{
 		Backend:  mb,
 		Tools:    []backend.Tool{{Name: "tool"}},
@@ -130,14 +132,50 @@ func TestMaxStepsExactBoundary(t *testing.T) {
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(func() bool {
-			for i := 0; i <= len(s)-len(substr); i++ {
-				if s[i:i+len(substr)] == substr {
-					return true
-				}
-			}
-			return false
-		})())
+// TestPlanReinjection verifies that the plan file contents are re-surfaced
+// into the conversation every planReinjectInterval tool rounds.
+func TestPlanReinjection(t *testing.T) {
+	// Write a plan file to a temp location.
+	planPath := filepath.Join(t.TempDir(), "plan")
+	os.WriteFile(planPath, []byte("- [ ] step one\n- [ ] step two\n"), 0644)
+
+	// We need planReinjectInterval+1 tool rounds so the re-injection fires
+	// at step == planReinjectInterval (0-indexed, checked after increment).
+	// The check is: step > 0 && step%planReinjectInterval == 0, and step is
+	// incremented at the end of the loop, so it fires after the 10th round.
+	n := planReinjectInterval + 1
+	var responses []mockResponse
+	for i := range n {
+		responses = append(responses, mockResponse{
+			toolCalls:  []backend.ToolCall{{ID: fmt.Sprintf("%d", i+1), Name: "tool", Arguments: json.RawMessage(`{}`)}},
+			stopReason: "tool_calls",
+		})
+	}
+	responses = append(responses, mockResponse{content: "done", stopReason: "stop"})
+
+	mb := &mockBackend{respond: sequentialStream(responses)}
+	cfg := agentConfig{
+		Backend:  mb,
+		Tools:    []backend.Tool{{Name: "tool"}},
+		PlanFile: planPath,
+		Exec: func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
+			return "ok", nil
+		},
+	}
+
+	s := newState()
+	if err := run(context.Background(), cfg, s); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var planSeen bool
+	for _, m := range s.history() {
+		if m.Role == "user" && strings.Contains(m.Content, "step one") && strings.Contains(m.Content, "your current plan") {
+			planSeen = true
+			break
+		}
+	}
+	if !planSeen {
+		t.Error("expected plan re-injection message in conversation history")
+	}
 }

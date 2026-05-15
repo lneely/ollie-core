@@ -317,6 +317,9 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 	}
 	if cfg.SessionID != "" {
 		os.MkdirAll(filepath.Join(ollieTmpDir(), cfg.SessionID), 0700) //nolint:errcheck
+		if mount := os.Getenv("OLLIE"); mount != "" {
+			run.PlanFile = filepath.Join(mount, "s", cfg.SessionID, "plan")
+		}
 	}
 
 	log := cfg.Log
