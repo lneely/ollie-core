@@ -121,6 +121,14 @@ type Core interface {
 	// Supported fields: WatchState, WatchUsage, WatchCtxSz, WatchCWD.
 	WaitChange(ctx context.Context, field, current string) (string, bool)
 
+	// ToolCallCount returns the total number of tool calls executed in this
+	// session since the agent was created. The counter is monotonically
+	// increasing and never resets. Blocked calls (pre-tool hook exit 2) are
+	// not counted. Timed-out or erroring calls are counted because execution
+	// was attempted. Use modulo arithmetic in hooks to fire every N calls:
+	//   [ $(($(cat tcct) % 10)) -eq 0 ] && ...
+	ToolCallCount() int64
+
 	// Close releases resources associated with the session, including its
 	// temporary directory under /tmp/ollie/.
 	Close()

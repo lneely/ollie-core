@@ -217,6 +217,7 @@ type agent struct {
 	cwd             string
 	startupMessages  []string
 	currentAction   atomic.Pointer[actionHandle]
+	toolCallCount   atomic.Int64
 	fifo            PromptFIFO
 	pendingInject   atomic.Pointer[string]
 	mu              sync.RWMutex
@@ -229,6 +230,13 @@ type agent struct {
 	submitMu        sync.Mutex // serializes Submit calls (commands + turns)
 	warnedContext   bool       // true after a context-usage warning; cleared on compaction
 	auditLog        *olog.Logger
+}
+
+// ToolCallCount returns the total number of tool calls executed in this
+// session. The counter is monotonically increasing and never resets.
+// Blocked calls (pre-tool hook exit 2) are not counted.
+func (s *agent) ToolCallCount() int64 {
+	return s.toolCallCount.Load()
 }
 
 // SetEnv stores a session-scoped variable and propagates it to the execute server.
@@ -915,6 +923,9 @@ func (s *agent) executeTurn(ctx context.Context, input string, handler EventHand
 			"args":       string(args),
 			"result":     result,
 		}, s.log)
+	}
+	s.cfg.IncrToolCallCount = func() int64 {
+		return s.toolCallCount.Add(1)
 	}
 	s.cfg.SaveSession = func() { s.saveSession() }
 	s.cfg.AutoCompact = func(ctx context.Context) {
