@@ -37,6 +37,7 @@ type AgentEnv struct {
 	Hooks        Hooks
 	preamble     string
 	genParams    backend.GenerationParams
+	maxSteps     int
 	Messages     []string
 }
 
@@ -66,6 +67,7 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 	hooks := Hooks{}
 	var preamble string
 	var genParams backend.GenerationParams
+	var maxSteps int
 	if cfg != nil {
 		for k, v := range cfg.Hooks {
 			hooks[k] = []string(v)
@@ -81,6 +83,7 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 			FrequencyPenalty: cfg.FrequencyPenalty,
 			PresencePenalty:  cfg.PresencePenalty,
 		}
+		maxSteps = cfg.MaxSteps
 		if len(cfg.TrustedTools) > 0 {
 			if srv, ok := d.GetServer("execute"); ok {
 				if ts, ok := srv.(tools.TrustedToolsSetter); ok {
@@ -121,6 +124,7 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 		Hooks:        hooks,
 		preamble:     preamble,
 		genParams:    genParams,
+		maxSteps:     maxSteps,
 		Messages:     messages,
 	}
 }
@@ -309,6 +313,7 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		ClassifyTool:       cfg.Env.classifyTool,
 		ToolResultMaxBytes: defaultToolResultMaxBytes,
 		GenerationParams:   cfg.Env.genParams,
+		MaxSteps:           cfg.Env.maxSteps,
 	}
 	if cfg.SessionID != "" {
 		os.MkdirAll(filepath.Join(ollieTmpDir(), cfg.SessionID), 0700) //nolint:errcheck
@@ -1106,4 +1111,3 @@ func extractToolResult(raw json.RawMessage) (text string, isError bool) {
 	}
 	return strings.Join(parts, "\n"), result.IsError
 }
-
