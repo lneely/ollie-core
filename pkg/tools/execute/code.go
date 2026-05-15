@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-// CodeStep is one stage in an execute_code pipeline.
+// CodeStep is one stage in an execution pipeline.
 // Set Code/Language for inline code, Tool/Args for a named script, or Parallel for concurrent fan-out.
 // Set Elevated to run the step outside the sandbox via the configured elevation backend.
 type CodeStep struct {
@@ -54,9 +54,6 @@ func resolveCodeStep(s CodeStep) (code, language string, trusted bool, err error
 	return s.Code, language, false, nil
 }
 
-// execute_code is implemented directly by Executor.Execute with trusted=false.
-// See executor.go for the implementation.
-
 // universalPatterns apply to all general-purpose languages.
 var universalPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bmkfs\b`),
@@ -71,7 +68,7 @@ var bashPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`rm\s+(-[a-z]*f[a-z]*\s+)*-[a-z]*r[a-z]*\s*/(home|var|usr|etc|boot|root|bin|sbin|lib|opt|srv)?`),
 	regexp.MustCompile(`rm\s+.*--recursive.*--force`),
 	regexp.MustCompile(`rm\s+.*--force.*--recursive`),
-	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s+\.\.?(/|$)`),
+	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s+\.\.[/]`),
 	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s+~`),
 	regexp.MustCompile(`rm\s+(-[a-z]*r[a-z]*\s+)*-[a-z]*f[a-z]*\s+\*`),
 	regexp.MustCompile(`:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&`), // fork bomb
@@ -81,7 +78,7 @@ var bashPatterns = []*regexp.Regexp{
 
 // pythonPatterns apply to python3/python.
 var pythonPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`shutil\.rmtree\s*\(\s*['"]/`),
+	regexp.MustCompile(`shutil\.rmtree\s*\(\s*['"/]`),
 	regexp.MustCompile(`(os\.system|subprocess\.(call|run|popen))\s*\(.*\brm\s+-[a-z]*r[a-z]*f`),
 	regexp.MustCompile(`os\.(remove|unlink)\s*\(\s*['"]/(etc|usr|bin|sbin|lib|boot)`),
 }
@@ -108,12 +105,16 @@ var languagePatterns = map[string][]*regexp.Regexp{
 	"lua":     luaPatterns,
 }
 
-// Dispatch routes a named execute tool call. Called by tools.BuiltinServer.
+// Dispatch routes a named execute tool call.
 func (e *Server) Dispatch(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	switch name {
 	case "execute_code":
 		return dispatchExecuteCode(ctx, e, args)
-default:
+	case "call_tool":
+		return dispatchCallTool(ctx, e, args)
+	case "pipe":
+		return dispatchPipeCall(ctx, e, args)
+	default:
 		return "", fmt.Errorf("unknown execute tool: %s", name)
 	}
 }
@@ -178,23 +179,56 @@ func (lw *limitedWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+// dispatchExecuteCode handles the execute_code tool: inline code steps only.
+// The legacy "pipe" field is no longer accepted here; use the pipe tool instead.
 func dispatchExecuteCode(ctx context.Context, e *Server, args json.RawMessage) (string, error) {
-	steps, pipe, timeout, sandboxName, err := execCodeArgs(args)
+	steps, timeout, sandboxName, err := execCodeOnlyArgs(args)
 	if err != nil {
 		return "", fmt.Errorf("execute_code: bad args: %w", err)
 	}
-	if len(steps) == 0 && len(pipe) == 0 {
-		return "", fmt.Errorf("execute_code: steps or pipe is required")
-	}
-	if len(steps) > 0 && len(pipe) > 0 {
-		return "", fmt.Errorf("execute_code: steps and pipe are mutually exclusive")
-	}
-
-	// Determine which mode we're in.
-	if len(pipe) > 0 {
-		return e.dispatchPipe(ctx, pipe, timeout, sandboxName)
+	if len(steps) == 0 {
+		return "", fmt.Errorf("execute_code: steps is required")
 	}
 	return e.dispatchSteps(ctx, steps, timeout, sandboxName)
+}
+
+// dispatchCallTool handles the call_tool tool: named tool scripts only.
+// Inline code fields are rejected. Fan-out behaviour is preserved.
+func dispatchCallTool(ctx context.Context, e *Server, args json.RawMessage) (string, error) {
+	calls, timeout, sandboxName, err := execCallToolArgs(args)
+	if err != nil {
+		return "", fmt.Errorf("call_tool: bad args: %w", err)
+	}
+	if len(calls) == 0 {
+		return "", fmt.Errorf("call_tool: calls is required")
+	}
+	// Validate: every top-level call must name a tool (or be a parallel group of tools).
+	for i, c := range calls {
+		if len(c.Parallel) > 0 {
+			for j, p := range c.Parallel {
+				if p.Tool == "" {
+					return "", fmt.Errorf("call_tool: calls[%d].parallel[%d]: tool name is required", i, j)
+				}
+			}
+			continue
+		}
+		if c.Tool == "" {
+			return "", fmt.Errorf("call_tool: calls[%d]: tool name is required", i)
+		}
+	}
+	return e.dispatchSteps(ctx, calls, timeout, sandboxName)
+}
+
+// dispatchPipeCall handles the pipe tool: sequential pipeline of code and/or tool stages.
+func dispatchPipeCall(ctx context.Context, e *Server, args json.RawMessage) (string, error) {
+	stages, timeout, sandboxName, err := execPipeArgs(args)
+	if err != nil {
+		return "", fmt.Errorf("pipe: bad args: %w", err)
+	}
+	if len(stages) == 0 {
+		return "", fmt.Errorf("pipe: stages is required")
+	}
+	return e.dispatchPipe(ctx, stages, timeout, sandboxName)
 }
 
 // dispatchSteps runs steps in parallel when safe (annotation-based), serially otherwise.
@@ -325,10 +359,10 @@ func enforceStrict(stages []CodeStep) error {
 	return nil
 }
 
-func execCodeArgs(args json.RawMessage) (steps []CodeStep, pipe []CodeStep, timeout int, sandboxName string, err error) {
+// execCodeOnlyArgs parses args for the execute_code tool (steps only).
+func execCodeOnlyArgs(args json.RawMessage) (steps []CodeStep, timeout int, sandboxName string, err error) {
 	var a struct {
 		Steps   []CodeStep `json:"steps"`
-		Pipe    []CodeStep `json:"pipe"`
 		Timeout int        `json:"timeout"`
 		Sandbox string     `json:"sandbox"`
 	}
@@ -336,7 +370,50 @@ func execCodeArgs(args json.RawMessage) (steps []CodeStep, pipe []CodeStep, time
 		return
 	}
 	steps = a.Steps
-	pipe = a.Pipe
+	timeout = a.Timeout
+	if timeout <= 0 {
+		timeout = 30
+	}
+	sandboxName = a.Sandbox
+	if sandboxName == "" {
+		sandboxName = "default"
+	}
+	return
+}
+
+// execCallToolArgs parses args for the call_tool tool (calls array).
+func execCallToolArgs(args json.RawMessage) (calls []CodeStep, timeout int, sandboxName string, err error) {
+	var a struct {
+		Calls   []CodeStep `json:"calls"`
+		Timeout int        `json:"timeout"`
+		Sandbox string     `json:"sandbox"`
+	}
+	if err = json.Unmarshal(args, &a); err != nil {
+		return
+	}
+	calls = a.Calls
+	timeout = a.Timeout
+	if timeout <= 0 {
+		timeout = 30
+	}
+	sandboxName = a.Sandbox
+	if sandboxName == "" {
+		sandboxName = "default"
+	}
+	return
+}
+
+// execPipeArgs parses args for the pipe tool (stages array).
+func execPipeArgs(args json.RawMessage) (stages []CodeStep, timeout int, sandboxName string, err error) {
+	var a struct {
+		Stages  []CodeStep `json:"stages"`
+		Timeout int        `json:"timeout"`
+		Sandbox string     `json:"sandbox"`
+	}
+	if err = json.Unmarshal(args, &a); err != nil {
+		return
+	}
+	stages = a.Stages
 	timeout = a.Timeout
 	if timeout <= 0 {
 		timeout = 30
