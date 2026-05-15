@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +30,11 @@ const (
 	consecutiveErrorHardLimit = 10
 )
 
+// planReinjectInterval is the number of tool-call rounds between periodic
+// plan re-injection. Every N steps the current contents of the plan file
+// are surfaced back into the conversation to keep the model on track.
+const planReinjectInterval = 10
+
 type toolExecutor func(ctx context.Context, name string, args json.RawMessage) (string, error)
 
 type agentConfig struct {
@@ -49,6 +56,23 @@ type agentConfig struct {
 	// When reached, a soft nudge is injected and the loop exits cleanly.
 	// 0 means unlimited.
 	MaxSteps int
+	// PlanFile is the path to the session plan file (e.g. s/<id>/plan).
+	// When set, the loop re-surfaces its contents every planReinjectInterval
+	// tool-call rounds. Empty string disables plan re-injection.
+	PlanFile string
+}
+
+// readPlanFile returns the contents of the plan file, or empty string if
+// the file does not exist, is empty, or cannot be read.
+func readPlanFile(path string) string {
+	if path == "" {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || len(bytes.TrimSpace(b)) == 0 {
+		return ""
+	}
+	return string(b)
 }
 
 func run(ctx context.Context, cfg agentConfig, state state) error {
@@ -435,10 +459,10 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 			return fmt.Errorf("step %d: %d consecutive tool errors", step, consecutiveErrors)
 		}
 		if consecutiveErrors == consecutiveErrorSoftLimit {
-			// Nudge the model by injecting a system hint into the conversation.
+			// Nudge the model to try a different approach and keep the plan current.
 			state.update(backend.Message{
 				Role:    "user",
-				Content: "[system: your last several tool calls all failed. Try a different approach, or ask the user for help.]",
+				Content: "[system: your last several tool calls all failed. Try a different approach, or ask the user for help. Keep your plan current — update s/$OLLIE_SESSION_ID/plan to reflect where you are and what remains.]",
 			}, nil)
 		}
 
@@ -453,6 +477,21 @@ func run(ctx context.Context, cfg agentConfig, state state) error {
 				Content: fmt.Sprintf("[system: step budget exhausted (%d/%d steps used). Stop calling tools. Summarize what you have done and what remains, then stop.]", step+1, cfg.MaxSteps),
 			}, nil)
 			break
+		}
+
+		// Periodically re-surface the plan file so it stays visible as tool
+		// results accumulate in the context. Only fires when PlanFile is set
+		// and the file has content.
+		if cfg.PlanFile != "" && step > 0 && step%planReinjectInterval == 0 {
+			if plan := readPlanFile(cfg.PlanFile); plan != "" {
+				state.update(backend.Message{
+					Role: "user",
+					Content: fmt.Sprintf(
+						"[system: your current plan:\n\n%s\n\nKeep this plan current — mark completed steps and revise if your approach has changed. Continue.]",
+						plan,
+					),
+				}, nil)
+			}
 		}
 
 		if cfg.AutoCompact != nil {
