@@ -59,14 +59,16 @@ func (p Prompt) MarshalJSON() ([]byte, error) {
 }
 
 type Config struct {
-	Hooks            map[string]HookCmds     `json:"hooks,omitempty"`
-	Prompt           Prompt                  `json:"prompt,omitempty"`
-	Tools            *bool                   `json:"tools,omitempty"`
-	TrustedTools     []string                `json:"trustedTools,omitempty"`
-	MaxTokens        int                     `json:"maxTokens,omitempty"`
-	Temperature      *float64                `json:"temperature,omitempty"`
-	FrequencyPenalty *float64                `json:"frequencyPenalty,omitempty"`
-	PresencePenalty  *float64                `json:"presencePenalty,omitempty"`
+	Hooks            map[string]HookCmds `json:"hooks,omitempty"`
+	Prompt           Prompt              `json:"prompt,omitempty"`
+	Tools            *bool               `json:"tools,omitempty"`
+	TrustedTools     []string            `json:"trustedTools,omitempty"`
+	MaxTokens        int                 `json:"maxTokens,omitempty"`
+	// MaxSteps caps the number of tool-call rounds per turn. 0 means unlimited.
+	MaxSteps         int                 `json:"maxSteps,omitempty"`
+	Temperature      *float64            `json:"temperature,omitempty"`
+	FrequencyPenalty *float64            `json:"frequencyPenalty,omitempty"`
+	PresencePenalty  *float64            `json:"presencePenalty,omitempty"`
 }
 
 // Load parses a Config from r.
