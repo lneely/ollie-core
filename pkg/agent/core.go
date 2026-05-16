@@ -38,6 +38,8 @@ type AgentEnv struct {
 	preamble     string
 	genParams    backend.GenerationParams
 	maxSteps     int
+	Backend      string // from config; empty means no override
+	Model        string // from config; empty means no override
 	Messages     []string
 }
 
@@ -136,6 +138,12 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 		}
 	}
 
+	var backendName, modelName string
+	if cfg != nil {
+		backendName = cfg.Backend
+		modelName = cfg.Model
+	}
+
 	return AgentEnv{
 		dispatcher:   d,
 		tools:        allTools,
@@ -145,6 +153,8 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 		preamble:     preamble,
 		genParams:    genParams,
 		maxSteps:     maxSteps,
+		Backend:      backendName,
+		Model:        modelName,
 		Messages:     messages,
 	}
 }

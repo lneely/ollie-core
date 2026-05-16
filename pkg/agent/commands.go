@@ -207,6 +207,19 @@ func (s *agent) handleCommand(ctx context.Context, input string, handler EventHa
 			}
 			d := s.newDispatcher()
 			env := BuildAgentEnv(cfg, d, s.cwd)
+			if env.Backend != "" {
+				newBe, err := s.newBackend(env.Backend)
+				if err != nil {
+					handler(infoEvent(fmt.Sprintf("error: backend %q: %v", env.Backend, err)))
+					return
+				}
+				if env.Model != "" {
+					newBe.SetModel(env.Model)
+				}
+				s.cfg.Backend = newBe
+			} else if env.Model != "" {
+				s.cfg.Backend.SetModel(env.Model)
+			}
 			s.dispatcher = env.dispatcher
 			s.hooks = env.Hooks
 			s.cfg.preamble = env.preamble
