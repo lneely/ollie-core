@@ -105,11 +105,22 @@ func (e *ToolUnsupportedError) Error() string { return e.Message }
 // GenerationParams controls sampling behaviour for a single ChatStream call.
 // Zero values mean "use the API default".
 type GenerationParams struct {
-	MaxTokens        int      // 0 = no limit
-	Temperature      *float64 // nil = API default
-	FrequencyPenalty *float64 // nil = API default
-	PresencePenalty  *float64 // nil = API default
-	ThinkingBudget   int      // Anthropic extended thinking token budget; 0 = disabled
+	MaxTokens           int      // 0 = no limit
+	MaxCompletionTokens int      // OpenAI o-series; 0 = use MaxTokens
+	Temperature         *float64 // nil = API default
+	TopP                *float64 // nil = API default
+	TopK                *int     // nil = API default (Anthropic, Ollama)
+	MinP                *float64 // nil = API default (Ollama)
+	TopA                *float64 // nil = API default (Ollama)
+	FrequencyPenalty    *float64 // nil = API default
+	PresencePenalty     *float64 // nil = API default
+	RepetitionPenalty   *float64 // nil = API default (Ollama)
+	ThinkingBudget      int      // Anthropic extended thinking token budget; 0 = disabled
+	ReasoningEffort     string   // OpenAI o-series: "low", "medium", "high"
+	IncludeReasoning    *bool    // include reasoning in response (OpenRouter)
+	ResponseFormat      string   // "json_object", "text", etc.
+	Stop                []string // stop sequences
+	Verbosity           string   // internal: controls output detail level
 }
 
 // Backend is the interface all LLM providers must implement.
