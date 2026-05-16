@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 
 	"ollie/pkg/config"
@@ -130,6 +131,28 @@ func (s *agent) handleCommand(ctx context.Context, input string, handler EventHa
 			handler(infoEvent("switched model to: " + args[0]))
 		},
 
+		"/maxsteps": func(args []string) {
+			if len(args) == 0 {
+				if s.cfg.MaxSteps == 0 {
+					handler(infoEvent("maxsteps: unlimited"))
+				} else {
+					handler(infoEvent(fmt.Sprintf("maxsteps: %d", s.cfg.MaxSteps)))
+				}
+				return
+			}
+			n, err := strconv.Atoi(args[0])
+			if err != nil || n < 0 {
+				handler(infoEvent("error: maxsteps requires a non-negative integer (0 = unlimited)"))
+				return
+			}
+			s.cfg.MaxSteps = n
+			if n == 0 {
+				handler(infoEvent("maxsteps: unlimited"))
+			} else {
+				handler(infoEvent(fmt.Sprintf("maxsteps: %d", n)))
+			}
+		},
+
 		"/agents": func(args []string) {
 			seen := make(map[string]bool)
 			found := false
@@ -190,6 +213,7 @@ func (s *agent) handleCommand(ctx context.Context, input string, handler EventHa
 			s.cfg.Tools = env.tools
 			s.cfg.Exec = env.exec
 			s.cfg.GenerationParams = env.genParams
+			s.cfg.MaxSteps = env.maxSteps
 			s.agentName = name
 			s.session = nil
 			s.sessionID = NewSessionID()
@@ -374,6 +398,7 @@ func (s *agent) handleCommand(ctx context.Context, input string, handler EventHa
 				"  /backend [type]  - show current backend, or switch to <type>",
 				"  /model [name]    - show current model, or switch to <name>",
 				"  /models          - list available models",
+				"  /maxsteps [n]    - show or set max tool-call steps (0 = unlimited)",
 				"  /skills          - list available skills",
 				"  /tools           - list available tools",
 				"  /cwd [path]      - show or change working directory",
