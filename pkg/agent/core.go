@@ -198,6 +198,9 @@ type AgentCoreConfig struct {
 	NewDispatcher func() tools.Dispatcher
 	NewBackend    func(string) (backend.Backend, error) // if nil, defaults to backend.NewWithName
 	Log           *olog.Logger                     // if nil, logging is disabled
+	// MaxSteps overrides the agent JSON maxSteps when non-zero.
+	// 0 means use the value from the agent config (or unlimited if absent).
+	MaxSteps      int
 }
 
 // agent is the Core implementation. It owns all agent and session state
@@ -322,6 +325,12 @@ func NewAgentCore(cfg AgentCoreConfig) Core {
 		ToolResultMaxBytes: defaultToolResultMaxBytes,
 		GenerationParams:   cfg.Env.genParams,
 		MaxSteps:           cfg.Env.maxSteps,
+	}
+	// A non-zero MaxSteps in AgentCoreConfig takes precedence over the
+	// value loaded from the agent JSON, allowing callers to impose a
+	// per-session limit at construction time (e.g. via a CLI flag).
+	if cfg.MaxSteps > 0 {
+		run.MaxSteps = cfg.MaxSteps
 	}
 	if cfg.SessionID != "" {
 		os.MkdirAll(filepath.Join(ollieTmpDir(), cfg.SessionID), 0700) //nolint:errcheck
