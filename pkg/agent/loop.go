@@ -60,6 +60,8 @@ type agentConfig struct {
 	// When set, the loop re-surfaces its contents every planReinjectInterval
 	// tool-call rounds. Empty string disables plan re-injection.
 	PlanFile string
+	// IncrToolCallCount increments and returns the session-wide tool call counter.
+	IncrToolCallCount func() int64
 }
 
 // readPlanFile returns the contents of the plan file, or empty string if

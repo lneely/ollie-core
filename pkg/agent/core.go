@@ -103,6 +103,14 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 				}
 			}
 		}
+		if len(cfg.AllowExecutors) > 0 || len(cfg.AllowTools) > 0 {
+			if srv, ok := d.GetServer("execute"); ok {
+				if rs, ok := srv.(tools.ToolRestrictionSetter); ok {
+					rs.SetAllowExecutors(cfg.AllowExecutors)
+					rs.SetAllowTools(cfg.AllowTools)
+				}
+			}
+		}
 	}
 
 	exec := func(ctx context.Context, name string, args json.RawMessage) (string, error) {

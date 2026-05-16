@@ -340,6 +340,30 @@ func (e *Server) SetTrustedTools(tools []string) {
 	e.trustedMu.Unlock()
 }
 
+// SetAllowExecutors restricts which executors are available.
+func (e *Server) SetAllowExecutors(names []string) {
+	if len(names) > 0 {
+		e.allowExecutors = make(map[string]bool, len(names))
+		for _, n := range names {
+			e.allowExecutors[n] = true
+		}
+	} else {
+		e.allowExecutors = nil
+	}
+}
+
+// SetAllowTools restricts which tool scripts can be invoked.
+func (e *Server) SetAllowTools(names []string) {
+	if len(names) > 0 {
+		e.allowTools = make(map[string]bool, len(names))
+		for _, n := range names {
+			e.allowTools[n] = true
+		}
+	} else {
+		e.allowTools = nil
+	}
+}
+
 // allowed returns true if the tool call should proceed.
 // Trusted tools are always allowed. Untrusted tools are passed to Confirm;
 // if Confirm is nil, untrusted tools are denied.

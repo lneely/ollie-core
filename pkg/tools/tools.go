@@ -113,6 +113,13 @@ type LockDirSetter interface {
 	SetLockDir(dir string)
 }
 
+// ToolRestrictionSetter is implemented by tool servers that support restricting
+// which executors and tool scripts are available.
+type ToolRestrictionSetter interface {
+	SetAllowExecutors(names []string)
+	SetAllowTools(names []string)
+}
+
 // ParallelClassifier is implemented by tool servers that can report whether a
 // named tool is safe to run concurrently with other read-class tools.
 // Returns false for unknown tools (conservative default).
