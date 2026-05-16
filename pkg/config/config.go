@@ -61,6 +61,8 @@ func (p Prompt) MarshalJSON() ([]byte, error) {
 type Config struct {
 	Hooks               map[string]HookCmds `json:"hooks,omitempty"`
 	Prompt              Prompt              `json:"prompt,omitempty"`
+	Backend             string              `json:"backend,omitempty"`
+	Model               string              `json:"model,omitempty"`
 	Tools               *bool               `json:"tools,omitempty"`
 	TrustedTools        []string            `json:"trustedTools,omitempty"`
 	AllowExecutors      []string            `json:"allowExecutors,omitempty"`
