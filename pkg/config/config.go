@@ -59,16 +59,28 @@ func (p Prompt) MarshalJSON() ([]byte, error) {
 }
 
 type Config struct {
-	Hooks            map[string]HookCmds `json:"hooks,omitempty"`
-	Prompt           Prompt              `json:"prompt,omitempty"`
-	Tools            *bool               `json:"tools,omitempty"`
-	TrustedTools     []string            `json:"trustedTools,omitempty"`
-	MaxTokens        int                 `json:"maxTokens,omitempty"`
+	Hooks               map[string]HookCmds `json:"hooks,omitempty"`
+	Prompt              Prompt              `json:"prompt,omitempty"`
+	Tools               *bool               `json:"tools,omitempty"`
+	TrustedTools        []string            `json:"trustedTools,omitempty"`
+	MaxTokens           int                 `json:"maxTokens,omitempty"`
+	MaxCompletionTokens int                 `json:"maxCompletionTokens,omitempty"`
 	// MaxSteps caps the number of tool-call rounds per turn. 0 means unlimited.
-	MaxSteps         int                 `json:"maxSteps,omitempty"`
-	Temperature      *float64            `json:"temperature,omitempty"`
-	FrequencyPenalty *float64            `json:"frequencyPenalty,omitempty"`
-	PresencePenalty  *float64            `json:"presencePenalty,omitempty"`
+	MaxSteps          int      `json:"maxSteps,omitempty"`
+	Temperature       *float64 `json:"temperature,omitempty"`
+	TopP              *float64 `json:"topP,omitempty"`
+	TopK              *int     `json:"topK,omitempty"`
+	MinP              *float64 `json:"minP,omitempty"`
+	TopA              *float64 `json:"topA,omitempty"`
+	FrequencyPenalty  *float64 `json:"frequencyPenalty,omitempty"`
+	PresencePenalty   *float64 `json:"presencePenalty,omitempty"`
+	RepetitionPenalty *float64 `json:"repetitionPenalty,omitempty"`
+	Reasoning         int      `json:"reasoning,omitempty"`
+	ReasoningEffort   string   `json:"reasoningEffort,omitempty"`
+	IncludeReasoning  *bool    `json:"includeReasoning,omitempty"`
+	ResponseFormat    string   `json:"responseFormat,omitempty"`
+	Stop              []string `json:"stop,omitempty"`
+	Verbosity         string   `json:"verbosity,omitempty"`
 }
 
 // Load parses a Config from r.

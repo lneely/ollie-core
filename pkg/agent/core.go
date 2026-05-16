@@ -78,10 +78,22 @@ func BuildAgentEnv(cfg *config.Config, d tools.Dispatcher, cwd string) AgentEnv 
 			preamble = resolved
 		}
 		genParams = backend.GenerationParams{
-			MaxTokens:        cfg.MaxTokens,
-			Temperature:      cfg.Temperature,
-			FrequencyPenalty: cfg.FrequencyPenalty,
-			PresencePenalty:  cfg.PresencePenalty,
+			MaxTokens:           cfg.MaxTokens,
+			MaxCompletionTokens: cfg.MaxCompletionTokens,
+			Temperature:         cfg.Temperature,
+			TopP:                cfg.TopP,
+			TopK:                cfg.TopK,
+			MinP:                cfg.MinP,
+			TopA:                cfg.TopA,
+			FrequencyPenalty:    cfg.FrequencyPenalty,
+			PresencePenalty:     cfg.PresencePenalty,
+			RepetitionPenalty:   cfg.RepetitionPenalty,
+			ThinkingBudget:      cfg.Reasoning,
+			ReasoningEffort:     cfg.ReasoningEffort,
+			IncludeReasoning:    cfg.IncludeReasoning,
+			ResponseFormat:      cfg.ResponseFormat,
+			Stop:                cfg.Stop,
+			Verbosity:           cfg.Verbosity,
 		}
 		maxSteps = cfg.MaxSteps
 		if len(cfg.TrustedTools) > 0 {
