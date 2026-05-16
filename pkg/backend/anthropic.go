@@ -54,6 +54,9 @@ type anthropicRequest struct {
 	Tools       []anthropicTool        `json:"tools,omitempty"`
 	Stream      bool                   `json:"stream"`
 	Temperature *float64               `json:"temperature,omitempty"`
+	TopP        *float64               `json:"top_p,omitempty"`
+	TopK        *int                   `json:"top_k,omitempty"`
+	StopSeqs    []string               `json:"stop_sequences,omitempty"`
 	Thinking    *anthropicThinking     `json:"thinking,omitempty"`
 }
 
@@ -113,6 +116,9 @@ func (b *AnthropicBackend) ChatStream(ctx context.Context, messages []Message, t
 		Messages:    wireMessages,
 		Stream:      true,
 		Temperature: params.Temperature,
+		TopP:        params.TopP,
+		TopK:        params.TopK,
+		StopSeqs:    params.Stop,
 	}
 	if params.ThinkingBudget > 0 {
 		areq.Thinking = &anthropicThinking{Type: "enabled", BudgetTokens: params.ThinkingBudget}

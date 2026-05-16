@@ -170,15 +170,25 @@ type openAIStreamOptions struct {
 }
 
 type openAIChatRequest struct {
-	Model            string               `json:"model"`
-	Messages         []openAIMessage      `json:"messages"`
-	Tools            []openAITool         `json:"tools,omitempty"`
-	Stream           bool                 `json:"stream"`
-	StreamOptions    *openAIStreamOptions `json:"stream_options,omitempty"`
-	MaxTokens        int                  `json:"max_tokens,omitempty"`
-	Temperature      *float64             `json:"temperature,omitempty"`
-	FrequencyPenalty *float64             `json:"frequency_penalty,omitempty"`
-	PresencePenalty  *float64             `json:"presence_penalty,omitempty"`
+	Model               string               `json:"model"`
+	Messages            []openAIMessage      `json:"messages"`
+	Tools               []openAITool         `json:"tools,omitempty"`
+	Stream              bool                 `json:"stream"`
+	StreamOptions       *openAIStreamOptions `json:"stream_options,omitempty"`
+	MaxTokens           int                  `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int                  `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64             `json:"temperature,omitempty"`
+	TopP                *float64             `json:"top_p,omitempty"`
+	FrequencyPenalty    *float64             `json:"frequency_penalty,omitempty"`
+	PresencePenalty     *float64             `json:"presence_penalty,omitempty"`
+	Stop                []string             `json:"stop,omitempty"`
+	ResponseFormat      *openAIResponseFmt   `json:"response_format,omitempty"`
+	ReasoningEffort     string               `json:"reasoning_effort,omitempty"`
+	IncludeReasoning    *bool                `json:"include_reasoning,omitempty"`
+}
+
+type openAIResponseFmt struct {
+	Type string `json:"type"`
 }
 
 type openAIUsage struct {
@@ -462,15 +472,23 @@ func (b *OpenAIBackend) ChatStream(ctx context.Context, messages []Message, tool
 		}
 	}
 	req := openAIChatRequest{
-		Model:            b.model,
-		Messages:         wireMessages,
-		Tools:            wireTools,
-		Stream:           true,
-		StreamOptions:    &openAIStreamOptions{IncludeUsage: true},
-		MaxTokens:        params.MaxTokens,
-		Temperature:      params.Temperature,
-		FrequencyPenalty: params.FrequencyPenalty,
-		PresencePenalty:  params.PresencePenalty,
+		Model:               b.model,
+		Messages:            wireMessages,
+		Tools:               wireTools,
+		Stream:              true,
+		StreamOptions:       &openAIStreamOptions{IncludeUsage: true},
+		MaxTokens:           params.MaxTokens,
+		MaxCompletionTokens: params.MaxCompletionTokens,
+		Temperature:         params.Temperature,
+		TopP:                params.TopP,
+		FrequencyPenalty:    params.FrequencyPenalty,
+		PresencePenalty:     params.PresencePenalty,
+		Stop:                params.Stop,
+		ReasoningEffort:     params.ReasoningEffort,
+		IncludeReasoning:    params.IncludeReasoning,
+	}
+	if params.ResponseFormat != "" {
+		req.ResponseFormat = &openAIResponseFmt{Type: params.ResponseFormat}
 	}
 
 	data, _ := json.Marshal(req)

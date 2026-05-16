@@ -134,10 +134,12 @@ type ollamaToolFunction struct {
 }
 
 type ollamaChatRequest struct {
-	Model    string          `json:"model"`
-	Messages []ollamaMessage `json:"messages"`
-	Tools    []ollamaTool    `json:"tools,omitempty"`
-	Stream   bool            `json:"stream"`
+	Model    string                 `json:"model"`
+	Messages []ollamaMessage        `json:"messages"`
+	Tools    []ollamaTool           `json:"tools,omitempty"`
+	Stream   bool                   `json:"stream"`
+	Options  map[string]interface{} `json:"options,omitempty"`
+	Stop     []string               `json:"stop,omitempty"`
 }
 
 type ollamaChatResponse struct {
@@ -150,7 +152,7 @@ type ollamaChatResponse struct {
 
 // -- implementation --
 
-func (b *OllamaBackend) ChatStream(ctx context.Context, messages []Message, tools []Tool, _ GenerationParams) (<-chan StreamEvent, error) {
+func (b *OllamaBackend) ChatStream(ctx context.Context, messages []Message, tools []Tool, params GenerationParams) (<-chan StreamEvent, error) {
 	model := b.model
 	wireMessages := make([]ollamaMessage, len(messages))
 	for i, m := range messages {
@@ -174,11 +176,45 @@ func (b *OllamaBackend) ChatStream(ctx context.Context, messages []Message, tool
 		})
 	}
 
+	opts := make(map[string]interface{})
+	if params.Temperature != nil {
+		opts["temperature"] = *params.Temperature
+	}
+	if params.TopP != nil {
+		opts["top_p"] = *params.TopP
+	}
+	if params.TopK != nil {
+		opts["top_k"] = *params.TopK
+	}
+	if params.MinP != nil {
+		opts["min_p"] = *params.MinP
+	}
+	if params.TopA != nil {
+		opts["top_a"] = *params.TopA
+	}
+	if params.RepetitionPenalty != nil {
+		opts["repeat_penalty"] = *params.RepetitionPenalty
+	}
+	if params.FrequencyPenalty != nil {
+		opts["frequency_penalty"] = *params.FrequencyPenalty
+	}
+	if params.PresencePenalty != nil {
+		opts["presence_penalty"] = *params.PresencePenalty
+	}
+	if params.MaxTokens > 0 {
+		opts["num_predict"] = params.MaxTokens
+	}
+	if len(opts) == 0 {
+		opts = nil
+	}
+
 	data, _ := json.Marshal(ollamaChatRequest{
 		Model:    model,
 		Messages: wireMessages,
 		Tools:    wireTools,
 		Stream:   true,
+		Options:  opts,
+		Stop:     params.Stop,
 	})
 
 	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, b.baseURL.JoinPath("/api/chat").String(), bytes.NewReader(data))
