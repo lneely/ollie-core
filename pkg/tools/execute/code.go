@@ -107,6 +107,9 @@ var languagePatterns = map[string][]*regexp.Regexp{
 
 // Dispatch routes a named execute tool call.
 func (e *Server) Dispatch(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	if len(e.allowExecutors) > 0 && !e.allowExecutors[name] {
+		return "", fmt.Errorf("executor %q not permitted in this agent context", name)
+	}
 	switch name {
 	case "execute_code":
 		return dispatchExecuteCode(ctx, e, args)
@@ -209,11 +212,17 @@ func dispatchCallTool(ctx context.Context, e *Server, args json.RawMessage) (str
 				if p.Tool == "" {
 					return "", fmt.Errorf("call_tool: calls[%d].parallel[%d]: tool name is required", i, j)
 				}
+				if len(e.allowTools) > 0 && !e.allowTools[p.Tool] {
+					return "", fmt.Errorf("call_tool: tool %q not permitted in this agent context", p.Tool)
+				}
 			}
 			continue
 		}
 		if c.Tool == "" {
 			return "", fmt.Errorf("call_tool: calls[%d]: tool name is required", i)
+		}
+		if len(e.allowTools) > 0 && !e.allowTools[c.Tool] {
+			return "", fmt.Errorf("call_tool: tool %q not permitted in this agent context", c.Tool)
 		}
 	}
 	return e.dispatchSteps(ctx, calls, timeout, sandboxName)
@@ -299,6 +308,19 @@ func (e *Server) dispatchPipe(ctx context.Context, pipe []CodeStep, timeout int,
 	if e.Strict {
 		if err := enforceStrict(pipe); err != nil {
 			return "", err
+		}
+	}
+
+	if len(e.allowTools) > 0 {
+		for i, s := range pipe {
+			if s.Tool != "" && !e.allowTools[s.Tool] {
+				return "", fmt.Errorf("pipe: stage %d: tool %q not permitted in this agent context", i, s.Tool)
+			}
+			for j, p := range s.Parallel {
+				if p.Tool != "" && !e.allowTools[p.Tool] {
+					return "", fmt.Errorf("pipe: stage %d.parallel[%d]: tool %q not permitted in this agent context", i, j, p.Tool)
+				}
+			}
 		}
 	}
 

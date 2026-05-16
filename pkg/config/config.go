@@ -63,6 +63,8 @@ type Config struct {
 	Prompt              Prompt              `json:"prompt,omitempty"`
 	Tools               *bool               `json:"tools,omitempty"`
 	TrustedTools        []string            `json:"trustedTools,omitempty"`
+	AllowExecutors      []string            `json:"allowExecutors,omitempty"`
+	AllowTools          []string            `json:"allowTools,omitempty"`
 	MaxTokens           int                 `json:"maxTokens,omitempty"`
 	MaxCompletionTokens int                 `json:"maxCompletionTokens,omitempty"`
 	// MaxSteps caps the number of tool-call rounds per turn. 0 means unlimited.

@@ -55,6 +55,14 @@ type Server struct {
 	// Yolo skips the landrun sandbox for all execution.
 	Yolo bool
 
+	// allowExecutors restricts which executors (execute_code, call_tool, pipe)
+	// are available. Empty means all are allowed.
+	allowExecutors map[string]bool
+
+	// allowTools restricts which named tool scripts can be invoked via call_tool/pipe.
+	// Empty means all are allowed.
+	allowTools map[string]bool
+
 	// rate limiting state (per-Server)
 	rateLimitMu        sync.Mutex
 	validationFailures int
@@ -71,6 +79,42 @@ func WithStrict() Option { return func(s *Server) { s.Strict = true } }
 // WithYolo skips the landrun sandbox.
 func WithYolo() Option { return func(s *Server) { s.Yolo = true } }
 
+// WithAllowExecutors restricts which executors are available.
+func WithAllowExecutors(names []string) Option {
+	return func(s *Server) {
+		if len(names) > 0 {
+			s.allowExecutors = make(map[string]bool, len(names))
+			for _, n := range names {
+				s.allowExecutors[n] = true
+			}
+		}
+	}
+}
+
+// WithAllowTools restricts which tool scripts can be invoked.
+func WithAllowTools(names []string) Option {
+	return func(s *Server) {
+		if len(names) > 0 {
+			s.allowTools = make(map[string]bool, len(names))
+			for _, n := range names {
+				s.allowTools[n] = true
+			}
+		}
+	}
+}
+
+// AllowTools returns the set of allowed tool names, or nil if unrestricted.
+func (e *Server) AllowTools() []string {
+	if len(e.allowTools) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(e.allowTools))
+	for k := range e.allowTools {
+		out = append(out, k)
+	}
+	return out
+}
+
 // Decl returns a factory for an execute Server with the given working directory.
 func Decl(cwd string, opts ...Option) func() tools.Server {
 	return func() tools.Server {
@@ -85,7 +129,7 @@ func Decl(cwd string, opts ...Option) func() tools.Server {
 // ListTools implements tools.Server, returning ToolInfo for execute_code,
 // call_tool, and pipe.
 func (e *Server) ListTools() ([]tools.ToolInfo, error) {
-	return []tools.ToolInfo{
+	all := []tools.ToolInfo{
 		{
 			Name: "execute_code",
 			Description: `Run one or more inline code steps in a sandboxed environment.
@@ -141,10 +185,10 @@ Examples:
 		},
 		{
 			Name: "call_tool",
-			Description: `Run one or more named scripts from $OLLIE/t (the tools directory).
+			Description: `Run one or more named scripts from $OLLIE/s/$SID/t (the tools directory).
 
 Tool names and their arguments are discoverable via:
-  grep -iA2 'keyword' $OLLIE/t/idx
+  grep -iA2 'keyword' $OLLIE/s/$SID/t/idx
 
 call_tool fans out in parallel when consecutive calls carry an ollie:parallel read
 annotation in their script header; write-annotated or unannotated tools run serially.
@@ -201,7 +245,7 @@ Use this when you need to chain heterogeneous code and tool steps together.
 
 Each stage is one of:
 - {code, language}              — inline code (default: bash)
-- {tool, args}                  — named script from $OLLIE/t
+- {tool, args}                  — named script from $OLLIE/s/$SID/t
 - {elevated: true, code/tool}   — run outside sandbox
 - {parallel: [{code/tool}...]}  — fan-out within a stage; outputs concatenated, fed to next stage
 
@@ -249,7 +293,17 @@ Examples:
 				}
 			}`),
 		},
-	}, nil
+	}
+	if len(e.allowExecutors) > 0 {
+		filtered := all[:0]
+		for _, t := range all {
+			if e.allowExecutors[t.Name] {
+				filtered = append(filtered, t)
+			}
+		}
+		return filtered, nil
+	}
+	return all, nil
 }
 
 // CallTool implements tools.Server.
